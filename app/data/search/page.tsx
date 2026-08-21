@@ -1,13 +1,22 @@
 "use client";
 import { useState, useRef } from "react";
 
-// Filter pivot wavelengths in microns
+// Filter pivot wavelengths in microns. Covers HST/ACS + the full JWST/NIRCam
+// wide + medium band set used across UNICORN fields (incl. CEERS-SPAM medium bands).
 const FILTER_WAVES: Record<string, number> = {
+  // HST/ACS
   F435W:0.433, F606W:0.592, F814W:0.806,
-  F090W:0.902, F115W:1.154, F150W:1.501, F200W:1.989,
-  F277W:2.758, F356W:3.568, F410M:4.082, F444W:4.436, F470N:4.706,
+  // NIRCam wide + medium
+  F070W:0.704, F090W:0.902, F115W:1.154, F140M:1.404, F150W:1.501, F162M:1.626,
+  F182M:1.845, F200W:1.989, F210M:2.093, F250M:2.503, F277W:2.758, F300M:2.996,
+  F335M:3.365, F356W:3.568, F360M:3.624, F410M:4.082, F430M:4.281, F444W:4.436,
+  F460M:4.630, F470N:4.706, F480M:4.815,
 };
 const ACS_FILTERS  = new Set(["F435W","F606W","F814W"]);
+// Medium/narrow bands render smaller so they don't crowd the broad-band points.
+const MEDIUM_FILTERS = new Set(
+  Object.keys(FILTER_WAVES).filter(f => f.endsWith("M") || f.endsWith("N"))
+);
 
 type SearchMode = "id" | "radec" | "upload";
 type ResultState = "idle" | "searching" | "found" | "notfound" | "multi";
@@ -79,12 +88,12 @@ function SEDPlot({ src }: { src: SourceResult }) {
   const ph = h - pad.t - pad.b;
 
   // Collect detections and upper limits
-  const points: { wav: number; flux: number; err: number; isACS: boolean; isUL: boolean }[] = [];
+  const points: { wav: number; flux: number; err: number; isACS: boolean; isMedium: boolean; isUL: boolean }[] = [];
   for (const [filt, wav] of Object.entries(FILTER_WAVES)) {
     const f = src.row[`FLUX_${filt}`];
     const e = src.row[`FLUXERR_${filt}`];
     if (f === undefined || e === undefined || e > 1e6) continue;
-    points.push({ wav, flux: f, err: e, isACS: ACS_FILTERS.has(filt), isUL: f / e < 1 });
+    points.push({ wav, flux: f, err: e, isACS: ACS_FILTERS.has(filt), isMedium: MEDIUM_FILTERS.has(filt), isUL: f / e < 1 });
   }
 
   const modelPts: { wav: number; flux: number }[] = Object.entries(src.modelFluxes)
@@ -114,10 +123,11 @@ function SEDPlot({ src }: { src: SourceResult }) {
       {points.filter(p=>!p.isUL).map((p,i) => {
         const x = cx(p.wav), y = cy(p.flux);
         const ey = (p.err/(ymax-ymin))*ph;
+        const color = p.isACS ? "#6b51a3" : p.isMedium ? "#d48ec9" : "#b07cc6";
         return (
           <g key={i}>
-            <line x1={x} x2={x} y1={y-ey} y2={y+ey} stroke={p.isACS?"#6b51a3":"#b07cc6"} strokeWidth={1.2}/>
-            <circle cx={x} cy={y} r={4} fill={p.isACS?"#6b51a3":"#b07cc6"}/>
+            <line x1={x} x2={x} y1={y-ey} y2={y+ey} stroke={color} strokeWidth={p.isMedium?0.9:1.2}/>
+            <circle cx={x} cy={y} r={p.isMedium?2.5:4} fill={color}/>
           </g>
         );
       })}
