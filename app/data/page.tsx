@@ -19,7 +19,7 @@ export default function DataOverview() {
     <main style={{ padding: "3rem 2rem", maxWidth: "920px", margin: "0 auto" }}>
 
       <div style={{ marginBottom: "3rem" }}>
-        <h1 className="mono" style={{ fontSize: "1.5rem", fontWeight: 700, color: "var(--text)", marginBottom: "8px" }}>
+        <h1 className="page-title" style={{ fontSize: "2rem", color: "var(--text)", marginBottom: "8px" }}>
           Data Overview
         </h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.95rem" }}>

@@ -41,16 +41,7 @@ export default function Home() {
             UNICORN
           </span>
         </div>
-        <Link href="/login" style={{
-          background: "var(--accent-dim)",
-          color: "var(--accent)",
-          border: "1px solid var(--accent)",
-          borderRadius: "4px",
-          padding: "6px 16px",
-          fontSize: "0.85rem",
-          fontFamily: "'Space Mono', monospace",
-          textDecoration: "none",
-        }}>
+        <Link href="/login" className="btn btn-primary" style={{ padding: "7px 18px", fontSize: "0.78rem" }}>
           Access Data →
         </Link>
       </nav>
@@ -115,30 +106,10 @@ export default function Home() {
         </p>
 
         <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-          <Link href="/login" style={{
-            background: "linear-gradient(135deg, var(--purple-mid), var(--lavender))",
-            color: "#f0e8f8",
-            borderRadius: "4px",
-            padding: "12px 28px",
-            fontFamily: "'Space Mono', monospace",
-            fontSize: "0.875rem",
-            fontWeight: 700,
-            textDecoration: "none",
-            letterSpacing: "0.04em",
-          }}>
+          <Link href="/login" className="btn btn-primary" style={{ padding: "12px 28px", fontSize: "0.9rem" }}>
             Access Catalogs
           </Link>
-          <a href="#fields" style={{
-            background: "transparent",
-            color: "var(--text-muted)",
-            border: "1px solid var(--border-bright)",
-            borderRadius: "4px",
-            padding: "12px 28px",
-            fontFamily: "'Space Mono', monospace",
-            fontSize: "0.875rem",
-            textDecoration: "none",
-            letterSpacing: "0.04em",
-          }}>
+          <a href="#fields" className="btn btn-ghost" style={{ padding: "12px 28px", fontSize: "0.9rem" }}>
             Survey Fields ↓
           </a>
         </div>

@@ -242,7 +242,7 @@ export default function CatalogsPage() {
 
       {/* Header */}
       <div style={{ marginBottom: "2.5rem" }}>
-        <h1 className="mono" style={{ fontSize: "1.5rem", fontWeight: 700, color: "var(--text)", marginBottom: "6px" }}>
+        <h1 className="page-title" style={{ fontSize: "2rem", color: "var(--text)", marginBottom: "6px" }}>
           Catalogs
         </h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.95rem", maxWidth: "640px" }}>
@@ -387,7 +387,7 @@ export default function CatalogsPage() {
                         borderBottom: idx < files.length - 1 ? "1px solid var(--border)" : "none",
                         background: idx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)",
                       }}>
-                        <span className="mono" style={{ fontSize: "0.8rem", color: "var(--lavender)", fontWeight: 700 }}>
+                        <span className="mono" style={{ fontSize: "0.82rem", color: "var(--accent-bright)", fontWeight: 700 }}>
                           {f.label}
                         </span>
                         <div>

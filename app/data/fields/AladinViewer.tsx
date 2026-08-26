@@ -17,44 +17,53 @@ export default function AladinViewer({ ra, dec, fov, name }: Props) {
     if (typeof window === "undefined") return;
 
     const initAladin = () => {
-      if (!divRef.current || !(window as any).A) return;
-      // Destroy previous instance if field changed
-      if (divRef.current) divRef.current.innerHTML = "";
-
       const A = (window as any).A;
-      aladinRef.current = A.aladin(divRef.current, {
-        survey: "P/JWST/CEERSMosaic",
-        target: `${ra} ${dec}`,
-        fov: fov,
-        showReticle: true,
-        showZoomControl: true,
-        showFullscreenControl: true,
-        showLayersControl: true,
-        showGotoControl: false,
-        showShareControl: false,
-        showCatalog: false,
-        showFrame: false,
-        cooFrame: "J2000",
-        showProjectionControl: false,
+      if (!A || !divRef.current) return;
+      // Aladin Lite v3 loads its engine asynchronously — A.aladin() must be called
+      // only after the A.init promise resolves, or the viewer renders blank.
+      A.init.then(() => {
+        if (!divRef.current) return;
+        divRef.current.innerHTML = "";
+        aladinRef.current = A.aladin(divRef.current, {
+          survey: "P/DSS2/color",
+          target: `${ra} ${dec}`,
+          fov: fov,
+          showReticle: true,
+          showZoomControl: true,
+          showFullscreenControl: true,
+          showLayersControl: true,
+          showGotoControl: false,
+          showShareControl: false,
+          showCatalog: false,
+          showFrame: false,
+          cooFrame: "J2000",
+          showProjectionControl: false,
+        });
       });
     };
 
     if ((window as any).A) {
       initAladin();
     } else {
-      // Load Aladin Lite script
-      const script = document.createElement("script");
-      script.src = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js";
-      script.charset = "utf-8";
-      script.async = true;
-      script.onload = initAladin;
-      document.head.appendChild(script);
+      const existing = document.getElementById("aladin-lite-script");
+      if (existing) {
+        existing.addEventListener("load", initAladin);
+      } else {
+        // Load Aladin Lite script (once)
+        const script = document.createElement("script");
+        script.id = "aladin-lite-script";
+        script.src = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js";
+        script.charset = "utf-8";
+        script.async = true;
+        script.onload = initAladin;
+        document.head.appendChild(script);
 
-      // Load Aladin CSS
-      const link = document.createElement("link");
-      link.rel = "stylesheet";
-      link.href = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.min.css";
-      document.head.appendChild(link);
+        // Load Aladin CSS
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.min.css";
+        document.head.appendChild(link);
+      }
     }
   }, []);
 

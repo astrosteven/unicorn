@@ -35,23 +35,24 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <nav style={{
         borderBottom: "1px solid var(--border)",
-        padding: "0 2rem",
-        height: "56px",
+        padding: "0 clamp(1.25rem, 4vw, 2.5rem)",
+        height: "64px",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        background: "rgba(13,10,26,0.92)",
-        backdropFilter: "blur(12px)",
+        background: "rgba(11,8,23,0.72)",
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
         position: "sticky",
         top: 0,
         zIndex: 10,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: "2rem" }}>
-          <Link href="/data" style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: "8px" }}>
-            <Image src="/unicorn/logo.png" alt="UNICORN" width={28} height={28} style={{ objectFit: "contain" }} />
+          <Link href="/data" style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: "10px" }}>
+            <Image src="/unicorn/logo.png" alt="UNICORN" width={30} height={30} style={{ objectFit: "contain" }} />
             <span className="mono" style={{
-              fontSize: "1rem", fontWeight: 700, letterSpacing: "0.1em",
-              background: "linear-gradient(135deg, var(--purple), var(--pink))",
+              fontSize: "1.05rem", fontWeight: 700, letterSpacing: "0.12em",
+              background: "linear-gradient(135deg, var(--lavender), var(--pink))",
               WebkitBackgroundClip: "text",
               WebkitTextFillColor: "transparent",
               backgroundClip: "text",
@@ -59,40 +60,19 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
               UNICORN
             </span>
           </Link>
-          <div style={{ display: "flex", gap: "2px" }}>
+          <div style={{ display: "flex", gap: "4px" }}>
             {NAV_LINKS.map(link => {
               const active = pathname === link.href ||
                 (link.href !== "/data" && pathname.startsWith(link.href));
               return (
-                <Link key={link.href} href={link.href} style={{
-                  padding: "6px 14px",
-                  borderRadius: "4px",
-                  fontSize: "0.83rem",
-                  textDecoration: "none",
-                  color: active ? "var(--lavender)" : "var(--text-muted)",
-                  background: active ? "rgba(176,124,198,0.12)" : "transparent",
-                  fontFamily: "'Space Mono', monospace",
-                  border: active ? "1px solid rgba(176,124,198,0.25)" : "1px solid transparent",
-                }}>
+                <Link key={link.href} href={link.href} className={active ? "navlink active" : "navlink"}>
                   {link.label}
                 </Link>
               );
             })}
           </div>
         </div>
-        <button
-          onClick={() => { logout(); router.push("/"); }}
-          style={{
-            background: "transparent",
-            border: "1px solid var(--border)",
-            borderRadius: "4px",
-            padding: "6px 14px",
-            color: "var(--text-dim)",
-            fontSize: "0.78rem",
-            fontFamily: "'Space Mono', monospace",
-            cursor: "pointer",
-          }}
-        >
+        <button className="signout" onClick={() => { logout(); router.push("/"); }}>
           Sign out
         </button>
       </nav>
