@@ -43,7 +43,7 @@ interface SourceResult {
 
 // ---- Corral data wiring ----------------------------------------------------
 const VERSION = "0.97";
-const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn";
+const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";
 
 // Data source root. Defaults to public Corral, but a `?data=<url>` query param can
 // point it elsewhere (e.g. a local server) for previewing not-yet-uploaded data.
@@ -57,7 +57,7 @@ function corralBase(): string {
 
 // Fields with a web search index live on Corral. Add entries as fields go live.
 const SEARCH_FIELDS: { field: string; dir: string; prefix: string; available: boolean }[] = [
-  { field: "CEERS-SPAM", dir: "CEERS-SPAM", prefix: "ceers-spam", available: true },
+  { field: "CEERS", dir: "CEERS", prefix: "ceers-spam", available: true },
 ];
 
 type FieldIndex = {

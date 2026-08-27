@@ -3,8 +3,8 @@
 const VERSION = "0.97";
 
 const FIELDS = [
-  { name: "CEERS-SPAM",    sources: "—", color: "#b07cc6", available: true  },
-  { name: "CEERS-EGS",     sources: "—", color: "#8e6bb8", available: false },
+  { name: "CEERS",         sources: "—", color: "#b07cc6", available: true  },
+  { name: "EGS",           sources: "—", color: "#8e6bb8", available: false },
   { name: "PRIMER-UDS",    sources: "—", color: "#b07cc6", available: false },
   { name: "PRIMER-COSMOS", sources: "—", color: "#d48ec9", available: false },
   { name: "GOODS-S",       sources: "—", color: "#6b51a3", available: false },

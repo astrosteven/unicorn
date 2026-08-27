@@ -2,7 +2,8 @@ import Link from "next/link";
 import Image from "next/image";
 
 const FIELDS = [
-  { name: "CEERS-EGS",      full: "Cosmic Evolution Early Release Science — Extended Groth Strip" },
+  { name: "CEERS",          full: "Cosmic Evolution Early Release Science — Extended Groth Strip (single-tile reduction)" },
+  { name: "EGS",            full: "Extended Groth Strip — tiled reduction" },
   { name: "PRIMER-UDS",     full: "Public Release IMaging for Extragalactic Research — Ultra Deep Survey" },
   { name: "PRIMER-COSMOS",  full: "Public Release IMaging for Extragalactic Research — COSMOS" },
   { name: "GOODS-S",        full: "Great Observatories Origins Deep Survey South (JADES DR5)" },

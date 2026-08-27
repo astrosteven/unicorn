@@ -5,8 +5,21 @@ import AladinViewer from "./AladinViewer";
 const FIELDS = [
   {
     id: "ceers",
-    name: "CEERS-EGS",
-    full: "Cosmic Evolution Early Release Science — Extended Groth Strip",
+    name: "CEERS",
+    full: "Cosmic Evolution Early Release Science — Extended Groth Strip (single-tile reduction)",
+    ra: 214.825,
+    dec: 52.825,
+    fov: 0.25,
+    area: "~100 arcmin²",
+    imaging: "JWST NIRCam + HST ACS/WFC3",
+    filters: ["F435W","F606W","F814W","F070W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
+    program: "CEERS (ERS 1345)",
+    notes: "Custom UNICORN single-tile reduction",
+  },
+  {
+    id: "egs",
+    name: "EGS",
+    full: "Extended Groth Strip — tiled reduction",
     ra: 214.825,
     dec: 52.825,
     fov: 0.25,
@@ -14,7 +27,7 @@ const FIELDS = [
     imaging: "JWST NIRCam + HST ACS/WFC3",
     filters: ["F435W","F606W","F814W","F090W","F115W","F150W","F200W","F277W","F356W","F410M","F444W","F470N"],
     program: "CEERS (ERS 1345)",
-    notes: "Custom UNICORN reduction",
+    notes: "Tiled reduction (coming soon)",
   },
   {
     id: "goods-s",

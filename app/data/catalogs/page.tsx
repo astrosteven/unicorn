@@ -2,7 +2,7 @@
 import { useState } from "react";
 
 const VERSION = "0.97";
-const BASE_URL = "https://web.corral.tacc.utexas.edu/unicorn";  // public Corral HTTPS root
+const BASE_URL = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";  // public Corral HTTPS root (catalog data)
 
 // Photo-z variants. The FITS filename is identical in every variant dir
 // (<prefix>_photz_v<ver>.fits); only the Corral SUBDIRECTORY changes.
@@ -25,10 +25,11 @@ type Field = {
   variants: string[];  // PZ_VARIANTS keys present for this field
 };
 
-// CEERS-SPAM is live on Corral; the rest are still coming soon.
+// CEERS is live on Corral; the rest are still coming soon.
+// NOTE: v0.97 files keep the ceers-spam_* prefix; at v0.98 the prefix becomes ceers_*.
 const FIELDS: Field[] = [
-  { id: "ceers-spam",    name: "CEERS-SPAM",    dir: "CEERS-SPAM", prefix: "ceers-spam", available: true,  variants: ALL_PZ  },
-  { id: "ceers",         name: "CEERS-EGS",     dir: "CEERS",      prefix: "ceers",      available: false, variants: ALL_PZ  },
+  { id: "ceers",         name: "CEERS",         dir: "CEERS",      prefix: "ceers-spam", available: true,  variants: ALL_PZ  },
+  { id: "egs",           name: "EGS",           dir: "EGS",        prefix: "egs",        available: false, variants: ALL_PZ  },
   { id: "goods-s",       name: "GOODS-S",       dir: "GOODS-S",    prefix: "goods-s",    available: false, variants: ALL_PZ  },
   { id: "goods-n",       name: "GOODS-N",       dir: "GOODS-N",    prefix: "goods-n",    available: false, variants: ALL_PZ  },
   { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primer-cosmos", available: false, variants: NO_WFC3 },
@@ -68,19 +69,19 @@ const PROJECT_FILES = [
   {
     label: "Templates — Fiducial",
     desc: "LAZY SED template library used for fiducial photo-z fits",
-    href: `${BASE_URL}/CEERS-SPAM/unicorn_templates_fiducial.fits`,
+    href: `${BASE_URL}/CEERS/unicorn_templates_fiducial.fits`,
     size: "1.2 GB",
   },
   {
     label: "Templates — EELG",
     desc: "LAZY SED template library for the EELG photo-z variant",
-    href: `${BASE_URL}/CEERS-SPAM/unicorn_templates_eelg.fits`,
+    href: `${BASE_URL}/CEERS/unicorn_templates_eelg.fits`,
     size: "1.3 GB",
   },
   {
     label: "Templates — LRD",
     desc: "LAZY SED template library for the LRD photo-z variant",
-    href: `${BASE_URL}/CEERS-SPAM/unicorn_templates_lrd.fits`,
+    href: `${BASE_URL}/CEERS/unicorn_templates_lrd.fits`,
     size: "1.4 GB",
   },
 ];
