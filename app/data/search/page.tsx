@@ -511,6 +511,7 @@ export default function SearchPage() {
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryTotal, setQueryTotal] = useState(0);
   const [queryCard, setQueryCard] = useState<SourceResult | null>(null);
+  const [searchField, setSearchField] = useState<string>("all");
   const [status, setStatus] = useState<ResultState>("idle");
   const [results, setResults] = useState<SourceResult[]>([]);
   const [matchSummary, setMatchSummary] = useState("");
@@ -540,7 +541,8 @@ export default function SearchPage() {
     setStatus("searching");
     setResults([]);
     setMatchSummary("");
-    const fields = SEARCH_FIELDS.filter(f => f.available);
+    const avail = SEARCH_FIELDS.filter(f => f.available);
+    const fields = searchField === "all" ? avail : avail.filter(f => f.field === searchField);
     if (fields.length === 0) {
       setStatus("notfound");
       setMatchSummary("No fields are connected yet.");
@@ -727,6 +729,7 @@ export default function SearchPage() {
         {/* ID input */}
         {mode === "id" && (
           <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", flexWrap: "wrap" }}>
+            <FieldSelect value={searchField} onChange={setSearchField} includeAll={true} />
             <div style={{ flex: 1, minWidth: "200px" }}>
               <label style={{ display: "block", fontSize: "0.72rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", letterSpacing: "0.1em", marginBottom: "6px" }}>
                 OBJECT ID
@@ -751,6 +754,7 @@ export default function SearchPage() {
         {/* RA/Dec input */}
         {mode === "radec" && (
           <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", flexWrap: "wrap" }}>
+            <FieldSelect value={searchField} onChange={setSearchField} includeAll={true} />
             {[
               { label: "RA (deg)", val: raInput,     set: setRaInput,     ph: "e.g. 214.943" },
               { label: "Dec (deg)", val: decInput,   set: setDecInput,    ph: "e.g. 52.942" },
@@ -1155,6 +1159,25 @@ function DownloadControls({ resolveRows, count, note }: {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function FieldSelect({ value, onChange, includeAll }: { value: string; onChange: (v: string) => void; includeAll: boolean }) {
+  const avail = SEARCH_FIELDS.filter(f => f.available);
+  return (
+    <div style={{ minWidth: "150px" }}>
+      <label style={{ display: "block", fontSize: "0.72rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", letterSpacing: "0.1em", marginBottom: "6px" }}>
+        FIELD
+      </label>
+      <select value={value} onChange={e => onChange(e.target.value)} style={{
+        width: "100%", background: "var(--bg)", border: "1px solid var(--border-bright)",
+        borderRadius: "4px", padding: "9px 12px", color: "var(--text)",
+        fontSize: "0.9rem", fontFamily: "'Space Mono', monospace", outline: "none", cursor: "pointer",
+      }}>
+        {includeAll && <option value="all">All fields</option>}
+        {avail.map(f => <option key={f.field} value={f.field}>{f.field}</option>)}
+      </select>
     </div>
   );
 }

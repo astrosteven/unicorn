@@ -23,13 +23,14 @@ type Field = {
   prefix: string;      // filename prefix
   available: boolean;  // true once files are live on Corral
   variants: string[];  // PZ_VARIANTS keys present for this field
+  programs?: string[]; // JWST programs whose imaging is included
 };
 
 // CEERS is live on Corral; the rest are still coming soon.
 // NOTE: v0.97 files keep the ceers-spam_* prefix; at v0.98 the prefix becomes ceers_*.
 const FIELDS: Field[] = [
-  { id: "ceers",         name: "CEERS",         dir: "CEERS",      prefix: "ceers-spam", available: true,  variants: ALL_PZ  },
-  { id: "egs",           name: "EGS",           dir: "EGS",        prefix: "egs",        available: false, variants: ALL_PZ  },
+  { id: "ceers",         name: "CEERS",         dir: "CEERS",      prefix: "ceers-spam", available: true,  variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"]  },
+  { id: "egs",           name: "EGS",           dir: "EGS",        prefix: "egs",        available: false, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"]  },
   { id: "goods-s",       name: "GOODS-S",       dir: "GOODS-S",    prefix: "goods-s",    available: false, variants: ALL_PZ  },
   { id: "goods-n",       name: "GOODS-N",       dir: "GOODS-N",    prefix: "goods-n",    available: false, variants: ALL_PZ  },
   { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primer-cosmos", available: false, variants: NO_WFC3 },
@@ -378,6 +379,26 @@ export default function CatalogsPage() {
                     borderTop: "1px solid var(--border)",
                     padding: "0.5rem 0",
                   }}>
+                    {field.programs && field.programs.length > 0 && (
+                      <div style={{
+                        display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px",
+                        padding: "0.6rem 1.25rem 0.8rem",
+                        borderBottom: "1px solid var(--border)",
+                      }}>
+                        <span className="mono" style={{ fontSize: "0.68rem", color: "var(--text-dim)", letterSpacing: "0.1em" }}>
+                          PROGRAMS INCLUDED
+                        </span>
+                        {field.programs.map(p => (
+                          <span key={p} className="mono" style={{
+                            fontSize: "0.72rem", padding: "2px 9px", borderRadius: "999px",
+                            background: "var(--accent-dim)", color: "var(--accent)",
+                            border: "1px solid rgba(196,144,216,0.25)",
+                          }}>
+                            {p}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {files.map((f, idx) => (
                       <div key={f.file} style={{
                         padding: "0.7rem 1.25rem",
