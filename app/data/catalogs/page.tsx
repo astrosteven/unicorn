@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 
-const VERSION = "0.97";
+const VERSION = "0.98";
 const BASE_URL = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";  // public Corral HTTPS root (catalog data)
 
 // Photo-z variants. The FITS filename is identical in every variant dir
@@ -29,7 +29,7 @@ type Field = {
 // CEERS is live on Corral; the rest are still coming soon.
 // NOTE: v0.97 files keep the ceers-spam_* prefix; at v0.98 the prefix becomes ceers_*.
 const FIELDS: Field[] = [
-  { id: "ceers",         name: "CEERS",         dir: "CEERS",      prefix: "ceers-spam", available: true,  variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"]  },
+  { id: "ceers",         name: "CEERS",         dir: "CEERS",      prefix: "ceers",      available: true,  variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"]  },
   { id: "egs",           name: "EGS",           dir: "EGS",        prefix: "egs",        available: false, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"]  },
   { id: "goods-s",       name: "GOODS-S",       dir: "GOODS-S",    prefix: "goods-s",    available: false, variants: ALL_PZ  },
   { id: "goods-n",       name: "GOODS-N",       dir: "GOODS-N",    prefix: "goods-n",    available: false, variants: ALL_PZ  },

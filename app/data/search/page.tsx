@@ -39,10 +39,14 @@ interface SourceResult {
   sample?: number | null;
   interestLabel?: string;
   zspec?: number;
+  zaCirc?: number;
+  dchi2?: number;
+  aperflags?: number;
+  neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
 }
 
 // ---- Corral data wiring ----------------------------------------------------
-const VERSION = "0.97";
+const VERSION = "0.98";
 const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";
 
 // Data source root. Defaults to public Corral, but a `?data=<url>` query param can
@@ -57,16 +61,18 @@ function corralBase(): string {
 
 // Fields with a web search index live on Corral. Add entries as fields go live.
 const SEARCH_FIELDS: { field: string; dir: string; prefix: string; available: boolean }[] = [
-  { field: "CEERS", dir: "CEERS", prefix: "ceers-spam", available: true },
+  { field: "CEERS", dir: "CEERS", prefix: "ceers", available: true },
 ];
 
+type NumCol = (number | null)[] | null;
 type FieldIndex = {
   field: string; version: string; n: number; filters: string[];
   id: number[]; ra: number[]; dec: number[]; za: (number | null)[];
-  m277: (number | null)[]; m444: (number | null)[];
-  selected: (number | null)[] | null;
-  inspected: (number | null)[] | null;
-  sample: (number | null)[] | null;
+  m277: NumCol; m444: NumCol;
+  selected: NumCol; inspected: NumCol; sample: NumCol;
+  zl68?: NumCol; zu68?: NumCol; z_lowz?: NumCol; chia?: NumCol; zspec?: NumCol;
+  rh_277?: NumCol; rh_444?: NumCol; kron_radius?: NumCol; a_image?: NumCol; b_image?: NumCol;
+  x?: NumCol; y?: NumCol; depthtier?: NumCol; detectcat?: (string | null)[] | null;
 };
 type ZGrid = { zgrid: number[]; zgridLowz: number[]; sedWave: number[] };
 
@@ -99,6 +105,7 @@ async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): 
       sedWave: zg.sedWave, sed: o.sed, sedLowz: o.sedLowz,
       selected: o.selected, inspected: o.inspected, sample: o.sample,
       interestLabel: o.interestLabel, zspec: o.zspec,
+      zaCirc: o.zaCirc, dchi2: o.dchi2, aperflags: o.aperflags, neighbor: o.neighbor,
     };
   } catch {
     return null;
@@ -114,18 +121,19 @@ function angSep(ra1: number, dec1: number, ra2: number, dec2: number): number {
 }
 
 // ---- SQL-style query over the search index ---------------------------------
-type IdxRow = {
-  za: number | null; m277: number | null; m444: number | null; ra: number; dec: number;
-  selected: number | null; inspected: number | null; sample: number | null;
-};
-const QUERY_FIELDS = ["za", "m277", "m444", "ra", "dec", "selected", "inspected", "sample"];
+type IdxRow = Record<string, number | string | null>;
+// Numeric queryable columns (must exist in the index).
+const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "zspec",
+  "rh_277", "rh_444", "kron_radius", "a_image", "b_image", "x", "y", "depthtier",
+  "ra", "dec", "selected", "inspected", "sample"];
+const QUERY_STR = ["field", "detectcat"];
 
-// Parse a WHERE-style expression into a predicate. Supports comparisons
-// (> < >= <= = != ), `between a and b`, and a single connector level (all AND or all OR).
+// Parse a WHERE-style expression into a predicate. Numeric fields support
+// > < >= <= = != and `between a and b`; string fields (field, detectcat) support = / !=.
+// A single connector level (all AND or all OR).
 function makePredicate(query: string): ((r: IdxRow) => boolean) | { error: string } {
   let q = query.trim().toLowerCase();
   if (!q) return { error: "Type a condition, e.g.  za > 9 and m444 < 28" };
-  // protect the "and" inside "between a and b" before splitting
   q = q.replace(/between\s+(-?[\d.]+)\s+and\s+(-?[\d.]+)/g, "between $1 :and: $2");
   const connectors: string[] = q.match(/\b(and|or)\b/g) ?? [];
   const useOr = connectors.includes("or");
@@ -137,20 +145,28 @@ function makePredicate(query: string): ((r: IdxRow) => boolean) | { error: strin
     let m: RegExpMatchArray | null;
     if ((m = part.match(/^(\w+)\s+between\s+(-?[\d.]+)\s+and\s+(-?[\d.]+)$/))) {
       const f = m[1], lo = parseFloat(m[2]), hi = parseFloat(m[3]);
-      if (!QUERY_FIELDS.includes(f)) return { error: `Unknown field "${f}"` };
-      conds.push(r => { const v = (r as any)[f]; return v != null && v >= lo && v <= hi; });
-    } else if ((m = part.match(/^(\w+)\s*(>=|<=|!=|==|=|>|<)\s*(-?[\d.]+)$/))) {
-      const f = m[1], op = m[2], x = parseFloat(m[3]);
-      if (!QUERY_FIELDS.includes(f)) return { error: `Unknown field "${f}"` };
-      conds.push(r => {
-        const v = (r as any)[f];
-        if (v == null || !Number.isFinite(v)) return false;
-        switch (op) {
-          case ">": return v > x; case "<": return v < x;
-          case ">=": return v >= x; case "<=": return v <= x;
-          case "!=": return v !== x; default: return v === x;
-        }
-      });
+      if (!QUERY_NUM.includes(f)) return { error: `"${f}" can't use between (unknown or non-numeric)` };
+      conds.push(r => { const v = r[f]; return typeof v === "number" && v >= lo && v <= hi; });
+    } else if ((m = part.match(/^(\w+)\s*(>=|<=|!=|==|=|>|<)\s*(.+)$/))) {
+      const f = m[1], op = m[2], valraw = m[3].trim().replace(/^['"]|['"]$/g, "");
+      if (QUERY_STR.includes(f)) {
+        if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != on "${f}"` };
+        conds.push(r => { const v = r[f]; if (v == null) return false; const eq = String(v).toLowerCase() === valraw; return op === "!=" ? !eq : eq; });
+      } else if (QUERY_NUM.includes(f)) {
+        const x = parseFloat(valraw);
+        if (!Number.isFinite(x)) return { error: `"${valraw}" is not a number` };
+        conds.push(r => {
+          const v = r[f];
+          if (typeof v !== "number" || !Number.isFinite(v)) return false;
+          switch (op) {
+            case ">": return v > x; case "<": return v < x;
+            case ">=": return v >= x; case "<=": return v <= x;
+            case "!=": return v !== x; default: return v === x;
+          }
+        });
+      } else {
+        return { error: `Unknown field "${f}"` };
+      }
     } else {
       return { error: `Could not parse "${part}". Try  field op value  (e.g. za > 9).` };
     }
@@ -441,7 +457,7 @@ function ResultCard({ src }: { src: SourceResult }) {
       </div>
 
       {/* Status badges */}
-      {(src.selected != null || (src.inspected != null && src.inspected > 0) || (src.sample != null && src.sample >= 0) || src.zspec != null) && (
+      {(src.selected != null || (src.inspected != null && src.inspected > 0) || (src.sample != null && src.sample >= 0) || src.zspec != null || (src.aperflags != null && src.aperflags > 0)) && (
         <div className="mono" style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "1rem", marginTop: "-4px" }}>
           {src.selected != null && (
             <span style={chip(src.selected ? "var(--amber)" : "var(--text-dim)")}>
@@ -456,6 +472,9 @@ function ResultCard({ src }: { src: SourceResult }) {
           )}
           {src.zspec != null && (
             <span style={chip("var(--pink)")}>z-spec {src.zspec.toFixed(3)}</span>
+          )}
+          {src.aperflags != null && src.aperflags > 0 && (
+            <span style={chip("var(--red)")}>aper-flag {src.aperflags}</span>
           )}
         </div>
       )}
@@ -482,10 +501,15 @@ function ResultCard({ src }: { src: SourceResult }) {
                 ["ID",     String(src.row["ID"])],
                 ["z_a",    za.toFixed(3)],
                 ["68% CI", `${zl68.toFixed(2)} – ${zu68.toFixed(2)}`],
+                ["z_circ", src.zaCirc != null ? src.zaCirc.toFixed(3) : "—"],
+                ["z_lowz", src.pz["Z_LOWZ"] != null ? Number(src.pz["Z_LOWZ"]).toFixed(3) : "—"],
+                ["Δχ²",   src.dchi2 != null ? src.dchi2.toFixed(1) : "—"],
                 ["m₂₇₇",  flux2mag(f277)],
                 ["m₄₄₄",  flux2mag(f444)],
                 ["rh,277", rh277 > 0 ? `${rh277.toFixed(2)} pix` : "—"],
                 ["rh,444", rh444 > 0 ? `${rh444.toFixed(2)} pix` : "—"],
+                ...(src.neighbor?.dClosest != null ? [["nbr (near)", `${src.neighbor.magClosest?.toFixed(1) ?? "?"} @ ${src.neighbor.dClosest.toFixed(2)}"`]] : []),
+                ...(src.neighbor?.dBrightest != null ? [["nbr (bright)", `${src.neighbor.magBrightest?.toFixed(1) ?? "?"} @ ${src.neighbor.dBrightest.toFixed(2)}"`]] : []),
               ].map(([label, val]) => (
                 <tr key={label} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td style={{ padding: "3px 0", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", fontSize: "0.75rem", paddingRight: "12px" }}>{label}</td>
@@ -561,14 +585,20 @@ export default function SearchPage() {
           const { idx } = await loadField(fc);
           for (let i = 0; i < idx.n; i++) {
             const r: IdxRow = {
-              za: idx.za[i], m277: idx.m277?.[i] ?? null, m444: idx.m444?.[i] ?? null,
-              ra: idx.ra[i], dec: idx.dec[i],
+              field: idx.field, za: idx.za[i], ra: idx.ra[i], dec: idx.dec[i],
+              m277: idx.m277?.[i] ?? null, m444: idx.m444?.[i] ?? null,
+              zl68: idx.zl68?.[i] ?? null, zu68: idx.zu68?.[i] ?? null, z_lowz: idx.z_lowz?.[i] ?? null,
+              chia: idx.chia?.[i] ?? null, zspec: idx.zspec?.[i] ?? null,
+              rh_277: idx.rh_277?.[i] ?? null, rh_444: idx.rh_444?.[i] ?? null,
+              kron_radius: idx.kron_radius?.[i] ?? null, a_image: idx.a_image?.[i] ?? null, b_image: idx.b_image?.[i] ?? null,
+              x: idx.x?.[i] ?? null, y: idx.y?.[i] ?? null, depthtier: idx.depthtier?.[i] ?? null,
+              detectcat: idx.detectcat?.[i] ?? null,
               selected: idx.selected?.[i] ?? null, inspected: idx.inspected?.[i] ?? null,
               sample: idx.sample?.[i] ?? null,
             };
             if (pred(r)) {
               total++;
-              if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: r.za, m444: r.m444, selected: r.selected });
+              if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: idx.za[i], m444: idx.m444?.[i] ?? null, selected: idx.selected?.[i] ?? null });
             }
           }
         }
@@ -831,13 +861,14 @@ export default function SearchPage() {
               }}
             />
             <div style={{ marginTop: "10px", fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", lineHeight: 1.9 }}>
-              fields: <span style={{ color: "var(--text-muted)" }}>za, m277, m444, ra, dec, selected, inspected, sample</span> · ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span>
+              fields: <span style={{ color: "var(--text-muted)" }}>za, zl68, zu68, z_lowz, chia, m277, m444, zspec, rh_277, rh_444, kron_radius, a_image, b_image, x, y, depthtier, selected, inspected, sample, field, detectcat</span> · ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
                 {[
                   "za > 9",
                   "za between 8 and 12",
                   "m444 < 27 and za > 6",
                   "selected = 1 and za > 8",
+                  "detectcat = cold and zspec > 0",
                 ].map(ex => (
                   <button key={ex} onClick={() => setQueryInput(ex)} style={{
                     background: "var(--accent-dim)", color: "var(--accent)",
@@ -952,6 +983,8 @@ const DL_COLS: { key: string; label: string; get: (s: SourceResult) => unknown }
   { key: "field",     label: "field",    get: s => s.field },
   { key: "RA",        label: "RA",       get: s => s.row["RA"] },
   { key: "DEC",       label: "DEC",      get: s => s.row["DEC"] },
+  { key: "X",         label: "x",        get: s => s.row["X"] },
+  { key: "Y",         label: "y",        get: s => s.row["Y"] },
   { key: "ZA",        label: "z_a",      get: s => s.pz["ZA"] },
   { key: "ZL68",      label: "z_l68",    get: s => s.pz["ZL68"] },
   { key: "ZU68",      label: "z_u68",    get: s => s.pz["ZU68"] },
