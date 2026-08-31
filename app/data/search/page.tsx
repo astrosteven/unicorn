@@ -79,18 +79,47 @@ type ZGrid = { zgrid: number[]; zgridLowz: number[]; sedWave: number[] };
 // Module-scoped caches: the index + grid for a field are fetched at most once per session.
 const _indexCache: Record<string, FieldIndex> = {};
 const _zgridCache: Record<string, ZGrid> = {};
+const _indexPromise: Record<string, Promise<{ idx: FieldIndex; zg: ZGrid }>> = {};
+
+// Fetch a JSON file, transparently handling a gzipped (.json.gz) sibling. The
+// large search index is served gzipped (~8x smaller) so it transfers reliably;
+// prefer the .gz and decompress in-browser, falling back to plain .json.
+async function fetchJsonMaybeGz(url: string): Promise<any> {
+  if (typeof DecompressionStream !== "undefined") {
+    try {
+      const r = await fetch(`${url}.gz`);
+      if (r.ok && r.body) {
+        const ds = new DecompressionStream("gzip");
+        const text = await new Response(r.body.pipeThrough(ds)).text();
+        return JSON.parse(text);
+      }
+    } catch { /* fall through to plain JSON */ }
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`fetch ${url} -> ${r.status}`);
+  return r.json();
+}
 
 async function loadField(fc: typeof SEARCH_FIELDS[0]): Promise<{ idx: FieldIndex; zg: ZGrid }> {
-  if (!_indexCache[fc.field]) {
+  // Dedupe concurrent loads (e.g. an "all fields" search) onto one in-flight fetch.
+  if (fc.field in _indexCache) return { idx: _indexCache[fc.field], zg: _zgridCache[fc.field] };
+  if (fc.field in _indexPromise) return _indexPromise[fc.field];
+  _indexPromise[fc.field] = (async () => {
     const webBase = `${corralBase()}/${fc.dir}/web`;
     const [idx, zg] = await Promise.all([
-      fetch(`${webBase}/${fc.prefix}_search_v${VERSION}.json`).then(r => r.json()),
-      fetch(`${webBase}/${fc.prefix}_zgrid_v${VERSION}.json`).then(r => r.json()),
+      fetchJsonMaybeGz(`${webBase}/${fc.prefix}_search_v${VERSION}.json`),
+      fetchJsonMaybeGz(`${webBase}/${fc.prefix}_zgrid_v${VERSION}.json`),
     ]);
     _indexCache[fc.field] = idx;
     _zgridCache[fc.field] = zg;
+    return { idx, zg };
+  })();
+  try {
+    return await _indexPromise[fc.field];
+  } catch (e) {
+    delete _indexPromise[fc.field];  // allow retry on next search
+    throw e;
   }
-  return { idx: _indexCache[fc.field], zg: _zgridCache[fc.field] };
 }
 
 async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): Promise<SourceResult | null> {
