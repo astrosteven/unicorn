@@ -45,18 +45,26 @@ interface SourceResult {
   neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
 }
 
-// ---- Corral data wiring ----------------------------------------------------
+// ---- data wiring -----------------------------------------------------------
 const VERSION = "0.98";
 const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";
+// The search index + zgrid are served from the site itself (GitHub Pages / Fastly
+// CDN) — fast + edge-cached for everyone — while the 174k per-object files stay on
+// Corral. Index files live in public/searchindex/ (see scripts/make_web_index.py).
+const INDEX_BASE = "/unicorn/searchindex";
 
-// Data source root. Defaults to public Corral, but a `?data=<url>` query param can
-// point it elsewhere (e.g. a local server) for previewing not-yet-uploaded data.
-function corralBase(): string {
+// Raw `?data=<url>` override (local preview of a full web/ mirror), or null.
+function dataOverride(): string | null {
   if (typeof window !== "undefined") {
     const o = new URLSearchParams(window.location.search).get("data");
     if (o) return o.replace(/\/$/, "");
   }
-  return CORRAL_DEFAULT;
+  return null;
+}
+
+// Base for per-object files: the ?data= override, else public Corral.
+function corralBase(): string {
+  return dataOverride() ?? CORRAL_DEFAULT;
 }
 
 // Fields with a web search index live on Corral. Add entries as fields go live.
@@ -105,11 +113,23 @@ async function loadField(fc: typeof SEARCH_FIELDS[0]): Promise<{ idx: FieldIndex
   if (fc.field in _indexCache) return { idx: _indexCache[fc.field], zg: _zgridCache[fc.field] };
   if (fc.field in _indexPromise) return _indexPromise[fc.field];
   _indexPromise[fc.field] = (async () => {
-    const webBase = `${corralBase()}/${fc.dir}/web`;
-    const [idx, zg] = await Promise.all([
-      fetchJsonMaybeGz(`${webBase}/${fc.prefix}_search_v${VERSION}.json`),
-      fetchJsonMaybeGz(`${webBase}/${fc.prefix}_zgrid_v${VERSION}.json`),
+    // Index + zgrid: from the ?data= mirror if set, else the site CDN (fast), with a
+    // Corral fallback if the site copy is missing (e.g. mid version-bump).
+    const override = dataOverride();
+    const idxName = `${fc.prefix}_search_v${VERSION}.json`;
+    const zgName = `${fc.prefix}_zgrid_v${VERSION}.json`;
+    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    const load = async (base: string) => Promise.all([
+      fetchJsonMaybeGz(`${base}/${idxName}`),
+      fetchJsonMaybeGz(`${base}/${zgName}`),
     ]);
+    let idx, zg;
+    try {
+      [idx, zg] = await load(primary);
+    } catch (e) {
+      if (override) throw e;  // explicit override: don't silently fall back
+      [idx, zg] = await load(`${CORRAL_DEFAULT}/${fc.dir}/web`);
+    }
     _indexCache[fc.field] = idx;
     _zgridCache[fc.field] = zg;
     return { idx, zg };
