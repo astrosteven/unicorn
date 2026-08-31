@@ -431,9 +431,12 @@ function PZPlot({ zgrid, pz, za, zgridLowz, pzLowz }: {
       <polygon points={fill} fill="rgba(196,144,216,0.18)" />
       {lowzOk && <polyline points={lowzPts} fill="none" stroke={LOWZ_COLOR} strokeWidth={1.5} strokeDasharray="4,3"/>}
       <polyline points={pts} fill="none" stroke="#c490d8" strokeWidth={1.8}/>
-      {/* z_a line */}
+      {/* z_a line — label flips to the left of the line near the right edge so it stays on-screen */}
       <line x1={cx(za)} x2={cx(za)} y1={pad.t} y2={pad.t+ph} stroke="var(--accent2)" strokeWidth={1.2} strokeDasharray="3,2"/>
-      <text x={cx(za)+4} y={pad.t+12} textAnchor="start" fontSize={11} fill="var(--accent2)" fontFamily="monospace">z_a</text>
+      {(() => {
+        const zaX = cx(za), flip = zaX > pad.l + pw * 0.6;
+        return <text x={flip ? zaX - 4 : zaX + 4} y={pad.t + 12} textAnchor={flip ? "end" : "start"} fontSize={11} fill="var(--accent2)" fontFamily="monospace">z_a</text>;
+      })()}
       {/* Plot frame + Y ticks */}
       <rect x={pad.l} y={pad.t} width={pw} height={ph} fill="none" stroke="var(--border-bright)" strokeWidth={1}/>
       {[0, 0.25, 0.5, 0.75, 1].map(fr => {
@@ -456,8 +459,8 @@ function PZPlot({ zgrid, pz, za, zgridLowz, pzLowz }: {
       {/* Y axis label */}
       <text x={12} y={pad.t+ph/2} textAnchor="middle" fontSize={11} fill="var(--text-muted)" fontFamily="monospace"
         transform={`rotate(-90,12,${pad.t+ph/2})`}>P(z)</text>
-      {/* Low-z legend hint */}
-      {lowzOk && <text x={pad.l+pw-4} y={pad.t+12} textAnchor="end" fontSize={9} fill={LOWZ_COLOR} fontFamily="monospace">z&lt;7 alt</text>}
+      {/* Low-z legend hint — second row so it never collides with the z_a label */}
+      {lowzOk && <text x={pad.l+pw-4} y={pad.t+26} textAnchor="end" fontSize={9} fill={LOWZ_COLOR} fontFamily="monospace">z&lt;7 alt</text>}
     </svg>
   );
 }
