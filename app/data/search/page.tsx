@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, type ReactNode, type CSSProperties } from "react";
+import { useState, useRef, Fragment, type ReactNode, type CSSProperties } from "react";
 
 // Filter pivot wavelengths in microns. Covers HST/ACS + the full JWST/NIRCam
 // wide + medium band set used across UNICORN fields (incl. CEERS-SPAM medium bands).
@@ -44,6 +44,21 @@ interface SourceResult {
   aperflags?: number;
   neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
   stampUrl?: string;
+  selFail?: { det: boolean; pix: boolean; z: boolean; zsub: string[] };  // which selection groups/criteria fail
+}
+
+// Build the "why not selected" breakdown for object at index position `pos`.
+function selFailFromIndex(idx: FieldIndex, pos: number): SourceResult["selFail"] | undefined {
+  if (pos < 0 || idx.detflag == null) return undefined;
+  const det = idx.detflag?.[pos] === 0;
+  const pix = idx.pixflag?.[pos] === 0;
+  const z = idx.zflag?.[pos] === 0;
+  const zsub: string[] = [];
+  const bits = idx.zsubBits?.[pos] ?? 0;
+  if (z && bits && idx.zsubCriteria) {
+    idx.zsubCriteria.forEach((name, b) => { if (bits & (1 << b)) zsub.push(name); });
+  }
+  return { det, pix, z, zsub };
 }
 
 // Cutout-montage panel: loads the per-object stamp PNG from Corral on demand.
@@ -103,6 +118,7 @@ type FieldIndex = {
   zl68?: NumCol; zu68?: NumCol; z_lowz?: NumCol; chia?: NumCol; zspec?: NumCol;
   rh_277?: NumCol; rh_444?: NumCol; kron_radius?: NumCol; a_image?: NumCol; b_image?: NumCol;
   x?: NumCol; y?: NumCol; depthtier?: NumCol; detectcat?: (string | null)[] | null;
+  detflag?: NumCol; pixflag?: NumCol; zflag?: NumCol; zsubBits?: NumCol; zsubCriteria?: string[] | null;
 };
 type ZGrid = { zgrid: number[]; zgridLowz: number[]; sedWave: number[] };
 
@@ -169,6 +185,8 @@ async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): 
     const r = await fetch(`${corralBase()}/${fc.dir}/web/objects/${fc.prefix}_${id}.json`);
     if (!r.ok) return null;
     const o = await r.json();
+    let selFail: SourceResult["selFail"] | undefined;
+    if (fc.field in _indexCache) selFail = selFailFromIndex(_indexCache[fc.field], _indexCache[fc.field].id.indexOf(id));
     return {
       field: o.field, row: o.row, pz: o.pz, modelFluxes: o.modelFluxes,
       zgrid: zg.zgrid, pzArr: o.pzArr,
@@ -178,6 +196,7 @@ async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): 
       interestLabel: o.interestLabel, zspec: o.zspec,
       zaCirc: o.zaCirc, dchi2: o.dchi2, aperflags: o.aperflags, neighbor: o.neighbor,
       stampUrl: `${corralBase()}/${fc.dir}/web/stamps/${fc.prefix}_${id}.png`,
+      selFail,
     };
   } catch {
     return null;
@@ -554,6 +573,18 @@ function ResultCard({ src }: { src: SourceResult }) {
         </div>
       )}
 
+      {/* Why-not-selected breakdown (mirrors the bioplot "Not Selected: ..." line) */}
+      {src.selected === 0 && src.selFail && (src.selFail.det || src.selFail.pix || src.selFail.z) && (
+        <div className="mono" style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "1rem", marginTop: "-4px" }}>
+          <span style={{ color: "var(--red)" }}>Fails:</span>{" "}
+          {[
+            src.selFail.det ? "detection" : null,
+            src.selFail.pix ? "image" : null,
+            src.selFail.z ? (src.selFail.zsub.length ? `photo-z (${src.selFail.zsub.join(", ")})` : "photo-z") : null,
+          ].filter(Boolean).join(" · ")}
+        </div>
+      )}
+
       {/* Plots + info */}
       <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", alignItems: "flex-start" }}>
         {/* SED */}
@@ -613,16 +644,23 @@ export default function SearchPage() {
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryTotal, setQueryTotal] = useState(0);
   const [queryCard, setQueryCard] = useState<SourceResult | null>(null);
+  const [queryCardId, setQueryCardId] = useState<number | null>(null);
   const [searchField, setSearchField] = useState<string>("all");
   const [status, setStatus] = useState<ResultState>("idle");
   const [results, setResults] = useState<SourceResult[]>([]);
   const [matchSummary, setMatchSummary] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const cardRef = useRef<HTMLTableRowElement>(null);
 
   async function viewQueryRow(fc: typeof SEARCH_FIELDS[0], id: number) {
+    if (queryCardId === id) { setQueryCard(null); setQueryCardId(null); return; }  // toggle off
+    setQueryCard(null); setQueryCardId(id);   // show a loading slot immediately under the row
     const { zg } = await loadField(fc);
     const src = await fetchObject(fc, id, zg);
-    if (src) setQueryCard(src);
+    if (src) {
+      setQueryCard(src);
+      requestAnimationFrame(() => cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+    }
   }
 
   // Fetch full per-object detail for the listed query rows (for CSV download).
@@ -1014,8 +1052,6 @@ export default function SearchPage() {
             note={queryTotal > queryRows.length ? `first ${queryRows.length} of ${queryTotal.toLocaleString()}` : undefined}
           />
 
-          {queryCard && <ResultCard src={queryCard} />}
-
           <div className="card" style={{ overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>
               <thead>
@@ -1026,20 +1062,34 @@ export default function SearchPage() {
                 </tr>
               </thead>
               <tbody>
-                {queryRows.map((r, i) => (
-                  <tr key={i}
+                {queryRows.map((r, i) => {
+                  const open = queryCardId === r.id;
+                  return (
+                  <Fragment key={i}>
+                  <tr
                     onClick={() => viewQueryRow(r.fc, r.id)}
-                    style={{ borderTop: "1px solid var(--border)", cursor: "pointer" }}
-                    onMouseEnter={e => (e.currentTarget.style.background = "rgba(176,124,198,0.06)")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                    style={{ borderTop: "1px solid var(--border)", cursor: "pointer", background: open ? "rgba(176,124,198,0.10)" : "transparent" }}
+                    onMouseEnter={e => { if (!open) e.currentTarget.style.background = "rgba(176,124,198,0.06)"; }}
+                    onMouseLeave={e => { if (!open) e.currentTarget.style.background = "transparent"; }}
                   >
                     <td style={{ padding: "7px 14px", color: "var(--accent)" }}>{r.id}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text)" }}>{r.za != null ? r.za.toFixed(3) : "—"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text-muted)" }}>{r.m444 != null ? r.m444.toFixed(2) : "—"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: r.selected ? "var(--amber)" : "var(--text-dim)" }}>{r.selected == null ? "—" : r.selected ? "★" : "·"}</td>
-                    <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--accent2)", fontSize: "0.72rem" }}>view →</td>
+                    <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--accent2)", fontSize: "0.72rem" }}>{open ? "▾ close" : "view →"}</td>
                   </tr>
-                ))}
+                  {open && (
+                    <tr ref={cardRef}>
+                      <td colSpan={5} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
+                        {queryCard && queryCard.row["ID"] === r.id
+                          ? <ResultCard src={queryCard} />
+                          : <div style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>Loading…</div>}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
