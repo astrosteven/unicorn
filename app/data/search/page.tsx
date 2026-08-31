@@ -43,6 +43,28 @@ interface SourceResult {
   dchi2?: number;
   aperflags?: number;
   neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
+  stampUrl?: string;
+}
+
+// Cutout-montage panel: loads the per-object stamp PNG from Corral on demand.
+// Hidden gracefully if the image 404s (e.g. field without stamps yet).
+function StampMontage({ url }: { url: string }) {
+  const [ok, setOk] = useState(true);
+  if (!ok) return null;
+  return (
+    <div style={{ width: "100%", marginTop: "1rem" }}>
+      <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "4px" }}>
+        CUTOUTS <span style={{ color: "var(--text-dim)" }}>(non-WFC3 filters + detection w/ Kron ellipse)</span>
+      </div>
+      <img
+        src={url}
+        alt="filter cutout montage"
+        loading="lazy"
+        onError={() => setOk(false)}
+        style={{ width: "100%", maxWidth: "760px", border: "1px solid var(--border)", borderRadius: "6px", display: "block" }}
+      />
+    </div>
+  );
 }
 
 // ---- data wiring -----------------------------------------------------------
@@ -155,6 +177,7 @@ async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): 
       selected: o.selected, inspected: o.inspected, sample: o.sample,
       interestLabel: o.interestLabel, zspec: o.zspec,
       zaCirc: o.zaCirc, dchi2: o.dchi2, aperflags: o.aperflags, neighbor: o.neighbor,
+      stampUrl: `${corralBase()}/${fc.dir}/web/stamps/${fc.prefix}_${id}.png`,
     };
   } catch {
     return null;
@@ -569,6 +592,9 @@ function ResultCard({ src }: { src: SourceResult }) {
           </table>
         </div>
       </div>
+
+      {/* Cutout montage */}
+      {src.stampUrl && <StampMontage url={src.stampUrl} />}
     </div>
   );
 }
