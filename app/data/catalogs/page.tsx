@@ -40,17 +40,18 @@ const FIELDS: Field[] = [
   { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",     prefix: "cosmos",     available: false, variants: NO_WFC3 },
 ];
 
-// Real file sizes for the live CEERS-SPAM release, keyed by row key.
-const CEERS_SPAM_SIZES: Record<string, string> = {
-  readme: "21.6 KB",
-  photom: "2.3 GB",
-  selected: "4.6 MB",
+// Real file sizes for the live CEERS v0.98 release, keyed by row key.
+const CEERS_SIZES: Record<string, string> = {
+  readme: "24 KB",
+  photom: "2.4 GB",
+  selected: "4.7 MB",
   detflags: "5.3 MB",
-  selflags: "20.6 MB",
-  segmap: "12.9 MB",
+  selflags: "21 MB",
+  segmap: "13 MB",
   psfs: "2.0 MB",
-  depths: "0.5 KB",
-  area: "0.1 KB",
+  depths: "4 KB",
+  area: "4 KB",
+  completeness: "32 KB",
   pz_fiducial: "2.6 GB",
   pz_eelg: "2.6 GB",
   pz_circles: "2.6 GB",
@@ -100,7 +101,7 @@ function fieldFiles(field: Field): FileRow[] {
   const { dir, prefix: f, available } = field;
   const v = VERSION;
   const base = `${BASE_URL}/${dir}`;
-  const size = (key: string) => (available ? CEERS_SPAM_SIZES[key] ?? "—" : "—");
+  const size = (key: string) => (available ? CEERS_SIZES[key] ?? "—" : "—");
 
   const files: FileRow[] = [
     {
@@ -184,6 +185,13 @@ function fieldFiles(field: Field): FileRow[] {
       file: `${f}_area.txt`,
       href: `${base}/${f}_area.txt`,
       size: size("area"),
+    },
+    {
+      label: "Completeness",
+      desc: "Point-source completeness vs. magnitude, per depth tier",
+      file: `${f}_pointsource_completeness_v${v}.txt`,
+      href: `${base}/${f}_pointsource_completeness_v${v}.txt`,
+      size: size("completeness"),
     },
   );
   return files;
