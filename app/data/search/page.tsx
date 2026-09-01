@@ -641,7 +641,7 @@ export default function SearchPage() {
   const [decInput, setDecInput] = useState("");
   const [radiusInput, setRadiusInput] = useState("0.2");
   const [uploadText, setUploadText] = useState("");
-  const [queryInput, setQueryInput] = useState("za > 9 and m444 < 28");
+  const [queryInput, setQueryInput] = useState("za > 9 and m444 < 28 and selected = 1");
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryTotal, setQueryTotal] = useState(0);
   const [queryCard, setQueryCard] = useState<SourceResult | null>(null);
