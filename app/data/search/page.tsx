@@ -41,6 +41,9 @@ interface SourceResult {
   zspec?: number;
   zaCirc?: number;
   dchi2?: number;
+  m1500?: number;
+  m1300?: number;
+  beta?: number;
   aperflags?: number;
   neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
   stampUrl?: string;
@@ -83,7 +86,6 @@ function StampMontage({ url }: { url: string }) {
 }
 
 // ---- data wiring -----------------------------------------------------------
-const VERSION = "0.98";
 const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";
 // The search index + zgrid are served from the site itself (GitHub Pages / Fastly
 // CDN) — fast + edge-cached for everyone — while the 174k per-object files stay on
@@ -104,16 +106,21 @@ function corralBase(): string {
   return dataOverride() ?? CORRAL_DEFAULT;
 }
 
-// Fields with a web search index live on Corral. Add entries as fields go live.
-const SEARCH_FIELDS: { field: string; dir: string; prefix: string; available: boolean }[] = [
-  { field: "CEERS", dir: "CEERS", prefix: "ceers", available: true },
+// Fields with a web search index. The index (+ zgrid) is served from the site CDN
+// (public/searchindex/); per-object cards + stamps come from Corral (unicorn/<dir>/web/).
+// Each field carries its own version — fields release on independent cadences.
+// `available` gates a field in the UI; flip to true once its index is committed.
+const SEARCH_FIELDS: { field: string; dir: string; prefix: string; version: string; available: boolean }[] = [
+  { field: "CEERS",   dir: "CEERS",  prefix: "ceers",  version: "0.98", available: true },
+  { field: "GOODS-S", dir: "GOODSS", prefix: "goodss", version: "0.95", available: true },
+  { field: "COSMOS",  dir: "COSMOS", prefix: "cosmos", version: "0.95", available: false },
 ];
 
 type NumCol = (number | null)[] | null;
 type FieldIndex = {
   field: string; version: string; n: number; filters: string[];
   id: number[]; ra: number[]; dec: number[]; za: (number | null)[];
-  m277: NumCol; m444: NumCol;
+  m277: NumCol; m444: NumCol; m1500?: NumCol; m1300?: NumCol; beta?: NumCol;
   selected: NumCol; inspected: NumCol; sample: NumCol;
   zl68?: NumCol; zu68?: NumCol; z_lowz?: NumCol; chia?: NumCol; zspec?: NumCol;
   rh_277?: NumCol; rh_444?: NumCol; kron_radius?: NumCol; a_image?: NumCol; b_image?: NumCol;
@@ -154,8 +161,8 @@ async function loadField(fc: typeof SEARCH_FIELDS[0]): Promise<{ idx: FieldIndex
     // Index + zgrid: from the ?data= mirror if set, else the site CDN (fast), with a
     // Corral fallback if the site copy is missing (e.g. mid version-bump).
     const override = dataOverride();
-    const idxName = `${fc.prefix}_search_v${VERSION}.json`;
-    const zgName = `${fc.prefix}_zgrid_v${VERSION}.json`;
+    const idxName = `${fc.prefix}_search_v${fc.version}.json`;
+    const zgName = `${fc.prefix}_zgrid_v${fc.version}.json`;
     const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
     const load = async (base: string) => Promise.all([
       fetchJsonMaybeGz(`${base}/${idxName}`),
@@ -182,7 +189,12 @@ async function loadField(fc: typeof SEARCH_FIELDS[0]): Promise<{ idx: FieldIndex
 
 async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): Promise<SourceResult | null> {
   try {
-    const r = await fetch(`${corralBase()}/${fc.dir}/web/objects/${fc.prefix}_${id}.json`);
+    // Per-object cards live under web/cards/; older uploads used web/objects/ — try
+    // the current path first, fall back to the legacy one so a field mid-migration
+    // (e.g. CEERS before its rename) keeps working.
+    const objBase = `${corralBase()}/${fc.dir}/web`;
+    let r = await fetch(`${objBase}/cards/${fc.prefix}_${id}.json`);
+    if (!r.ok) r = await fetch(`${objBase}/objects/${fc.prefix}_${id}.json`);
     if (!r.ok) return null;
     const o = await r.json();
     let selFail: SourceResult["selFail"] | undefined;
@@ -194,7 +206,8 @@ async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): 
       sedWave: zg.sedWave, sed: o.sed, sedLowz: o.sedLowz,
       selected: o.selected, inspected: o.inspected, sample: o.sample,
       interestLabel: o.interestLabel, zspec: o.zspec,
-      zaCirc: o.zaCirc, dchi2: o.dchi2, aperflags: o.aperflags, neighbor: o.neighbor,
+      zaCirc: o.zaCirc, dchi2: o.dchi2, m1500: o.m1500, m1300: o.m1300, beta: o.beta,
+      aperflags: o.aperflags, neighbor: o.neighbor,
       stampUrl: `${corralBase()}/${fc.dir}/web/stamps/${fc.prefix}_${id}.png`,
       selFail,
     };
@@ -214,7 +227,7 @@ function angSep(ra1: number, dec1: number, ra2: number, dec2: number): number {
 // ---- SQL-style query over the search index ---------------------------------
 type IdxRow = Record<string, number | string | null>;
 // Numeric queryable columns (must exist in the index).
-const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "zspec",
+const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m1500", "m1300", "beta", "zspec",
   "rh_277", "rh_444", "kron_radius", "a_image", "b_image", "x", "y", "depthtier",
   "ra", "dec", "selected", "inspected", "sample"];
 const QUERY_STR = ["field", "detectcat"];
@@ -613,6 +626,8 @@ function ResultCard({ src }: { src: SourceResult }) {
             ["Δχ²",   src.dchi2 != null ? src.dchi2.toFixed(1) : "—"],
             ["m₂₇₇",  flux2mag(f277)],
             ["m₄₄₄",  flux2mag(f444)],
+            ["m₁₅₀₀", src.m1500 != null ? src.m1500.toFixed(2) : "—"],
+            ["β",      src.beta != null ? src.beta.toFixed(2) : "—"],
             ["rh,277", rh277 > 0 ? `${rh277.toFixed(2)}px` : "—"],
             ["rh,444", rh444 > 0 ? `${rh444.toFixed(2)}px` : "—"],
           ].map(([label, val]) => (
@@ -971,7 +986,7 @@ export default function SearchPage() {
               }}
             />
             <div style={{ marginTop: "10px", fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", lineHeight: 1.9 }}>
-              fields: <span style={{ color: "var(--text-muted)" }}>za, zl68, zu68, z_lowz, chia, m277, m444, zspec, rh_277, rh_444, kron_radius, a_image, b_image, x, y, depthtier, selected, inspected, sample, field, detectcat</span> · ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span>
+              fields: <span style={{ color: "var(--text-muted)" }}>za, zl68, zu68, z_lowz, chia, m277, m444, m1500, m1300, beta, zspec, rh_277, rh_444, kron_radius, a_image, b_image, x, y, depthtier, selected, inspected, sample, field, detectcat</span> · ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
                 {[
                   "za > 9",
@@ -1114,6 +1129,9 @@ const DL_COLS: { key: string; label: string; get: (s: SourceResult) => unknown }
   { key: "CHIA",      label: "chi2",     get: s => s.pz["CHIA"] },
   { key: "m277",      label: "m277",     get: s => magOr(s.row["FLUX_F277W"]) },
   { key: "m444",      label: "m444",     get: s => magOr(s.row["FLUX_F444W"]) },
+  { key: "m1500",     label: "m1500",    get: s => s.m1500 },
+  { key: "m1300",     label: "m1300",    get: s => s.m1300 },
+  { key: "beta",      label: "beta",     get: s => s.beta },
   { key: "RH_F277W",  label: "rh277",    get: s => s.row["RH_F277W"] },
   { key: "RH_F444W",  label: "rh444",    get: s => s.row["RH_F444W"] },
   { key: "DEPTHTIER", label: "depthtier",get: s => s.row["DEPTHTIER"] },
