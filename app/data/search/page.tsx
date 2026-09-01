@@ -586,50 +586,43 @@ function ResultCard({ src }: { src: SourceResult }) {
         </div>
       )}
 
-      {/* Plots + info */}
+      {/* Plots */}
       <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", alignItems: "flex-start" }}>
-        {/* SED */}
         <div>
-          <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "4px" }}>SED</div>
+          <div className="mono" style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginBottom: "4px" }}>SED</div>
           <SEDPlot src={src} />
         </div>
-        {/* P(z) */}
         <div>
-          <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "4px" }}>P(z)</div>
+          <div className="mono" style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginBottom: "4px" }}>P(z)</div>
           <PZPlot zgrid={src.zgrid} pz={pzNorm} za={za} zgridLowz={src.zgridLowz} pzLowz={pzLowzNorm} />
-        </div>
-        {/* Info table */}
-        <div style={{ flex: 1, minWidth: "160px" }}>
-          <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "8px" }}>PROPERTIES</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
-            <tbody>
-              {[
-                ["Field",  src.field],
-                ["ID",     String(src.row["ID"])],
-                ["z_a",    za.toFixed(3)],
-                ["68% CI", `${zl68.toFixed(2)} – ${zu68.toFixed(2)}`],
-                ["z_circ", src.zaCirc != null ? src.zaCirc.toFixed(3) : "—"],
-                ["z_lowz", src.pz["Z_LOWZ"] != null ? Number(src.pz["Z_LOWZ"]).toFixed(3) : "—"],
-                ["Δχ²",   src.dchi2 != null ? src.dchi2.toFixed(1) : "—"],
-                ["m₂₇₇",  flux2mag(f277)],
-                ["m₄₄₄",  flux2mag(f444)],
-                ["rh,277", rh277 > 0 ? `${rh277.toFixed(2)} pix` : "—"],
-                ["rh,444", rh444 > 0 ? `${rh444.toFixed(2)} pix` : "—"],
-                ...(src.neighbor?.dClosest != null ? [["nbr (near)", `${src.neighbor.magClosest?.toFixed(1) ?? "?"} @ ${src.neighbor.dClosest.toFixed(2)}"`]] : []),
-                ...(src.neighbor?.dBrightest != null ? [["nbr (bright)", `${src.neighbor.magBrightest?.toFixed(1) ?? "?"} @ ${src.neighbor.dBrightest.toFixed(2)}"`]] : []),
-              ].map(([label, val]) => (
-                <tr key={label} style={{ borderBottom: "1px solid var(--border)" }}>
-                  <td style={{ padding: "3px 0", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", fontSize: "0.75rem", paddingRight: "12px" }}>{label}</td>
-                  <td style={{ padding: "3px 0", color: "var(--text)", fontFamily: "'Space Mono', monospace" }}>{val}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       </div>
 
-      {/* Cutout montage */}
+      {/* Cutout montage — right below the plots */}
       {src.stampUrl && <StampMontage url={src.stampUrl} />}
+
+      {/* Properties — slim multi-column strip */}
+      <div style={{ marginTop: "1.25rem" }}>
+        <div className="mono" style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginBottom: "8px" }}>PROPERTIES</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: "10px 18px" }}>
+          {[
+            ["Field",  src.field],
+            ["ID",     String(src.row["ID"])],
+            ["z_a",    za.toFixed(3)],
+            ["68% CI", `${zl68.toFixed(2)}–${zu68.toFixed(2)}`],
+            ["Δχ²",   src.dchi2 != null ? src.dchi2.toFixed(1) : "—"],
+            ["m₂₇₇",  flux2mag(f277)],
+            ["m₄₄₄",  flux2mag(f444)],
+            ["rh,277", rh277 > 0 ? `${rh277.toFixed(2)}px` : "—"],
+            ["rh,444", rh444 > 0 ? `${rh444.toFixed(2)}px` : "—"],
+          ].map(([label, val]) => (
+            <div key={label}>
+              <div className="mono" style={{ fontSize: "0.6rem", color: "var(--text-dim)", letterSpacing: "0.04em", marginBottom: "2px" }}>{label}</div>
+              <div className="mono" style={{ fontSize: "0.8rem", color: "var(--text)" }}>{val}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
