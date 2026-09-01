@@ -436,10 +436,11 @@ function PZPlot({ zgrid, pz, za, zgridLowz, pzLowz }: {
   if (!pz.length) return null;
 
   const lowzOk = !!(zgridLowz && pzLowz && pzLowz.length === zgridLowz.length && pzLowz.length);
-  const pzMax = Math.max(Math.max(...pz), lowzOk ? Math.max(...pzLowz!) : 0) || 1;
+  // y-axis top = 1.1x the FIDUCIAL peak (a taller low-z solution may clip at the top).
+  const pzMax = 1.1 * (Math.max(...pz) || 1);
   const zmax = 16;
   const cx = (z: number) => pad.l + (Math.min(z,zmax)/zmax)*pw;
-  const cy = (p: number) => pad.t + ph - (p/pzMax)*ph;
+  const cy = (p: number) => Math.max(pad.t, Math.min(pad.t + ph, pad.t + ph - (p/pzMax)*ph));
 
   const pts = zgrid.map((z,i) => `${cx(z)},${cy(pz[i])}`).join(" ");
   const fill = pts + ` ${cx(zgrid[zgrid.length-1])},${cy(0)} ${cx(zgrid[0])},${cy(0)}`;
