@@ -72,7 +72,7 @@ function StampMontage({ url }: { url: string }) {
   return (
     <div style={{ width: "100%", marginTop: "1rem" }}>
       <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "4px" }}>
-        CUTOUTS <span style={{ color: "var(--text-dim)" }}>(non-WFC3 filters + detection w/ Kron ellipse)</span>
+        CUTOUTS <span style={{ color: "var(--text-dim)" }}>(non-WFC3 filters + detection w/ Kron ellipse · each ≈1.5″×1.5″, 51 px @ 30 mas)</span>
       </div>
       <img
         src={url}
