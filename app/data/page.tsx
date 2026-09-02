@@ -1,17 +1,15 @@
 "use client";
 
-const VERSION = "0.97";
-
 const FIELDS = [
-  { name: "CEERS",         sources: "—", color: "#b07cc6", available: true  },
-  { name: "EGS",           sources: "—", color: "#8e6bb8", available: false },
-  { name: "PRIMER-UDS",    sources: "—", color: "#b07cc6", available: false },
-  { name: "PRIMER-COSMOS", sources: "—", color: "#d48ec9", available: false },
-  { name: "GOODS-S",       sources: "—", color: "#6b51a3", available: false },
-  { name: "GOODS-N",       sources: "—", color: "#4a3a8a", available: false },
-  { name: "NGDEEP",        sources: "—", color: "#ef9fcd", available: false },
-  { name: "Abell 2744",    sources: "—", color: "#ffb3d9", available: false },
-  { name: "COSMOS",        sources: "—", color: "#b07cc6", available: false },
+  { name: "CEERS",         version: "0.98", sources: "174,454", color: "#b07cc6", available: true  },
+  { name: "GOODS-S",       version: "0.95", sources: "343,147", color: "#6b51a3", available: true  },
+  { name: "GOODS-N",       version: "0.95", sources: "223,092", color: "#4a3a8a", available: true  },
+  { name: "A2744",         version: "0.98", sources: "107,015", color: "#ffb3d9", available: true  },
+  { name: "EGS",           version: "0.98", sources: "—", color: "#8e6bb8", available: false },
+  { name: "COSMOS",        version: "0.95", sources: "—", color: "#b07cc6", available: false },
+  { name: "PRIMER-UDS",    version: "0.95", sources: "—", color: "#b07cc6", available: false },
+  { name: "PRIMER-COSMOS", version: "0.95", sources: "—", color: "#d48ec9", available: false },
+  { name: "NGDEEP",        version: "0.95", sources: "—", color: "#ef9fcd", available: false },
 ];
 
 export default function DataOverview() {
@@ -54,7 +52,7 @@ export default function DataOverview() {
                 letterSpacing: "0.04em",
                 whiteSpace: "nowrap",
               }}>
-                {field.available ? `v${VERSION}` : "coming soon"}
+                {field.available ? `v${field.version}` : "coming soon"}
               </span>
             </div>
             <div style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
@@ -73,8 +71,8 @@ export default function DataOverview() {
           FIRST DATA RELEASE
         </p>
         <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
-          CEERS-SPAM (v{VERSION}) catalogs are now available on the{" "}
-          <span className="mono" style={{ color: "var(--accent)" }}>Catalogs</span> page.
+          Four fields — CEERS, GOODS-S, GOODS-N, and A2744 — are now live and searchable via the{" "}
+          <span className="mono" style={{ color: "var(--accent)" }}>Query</span> page.
           The remaining fields are being prepared — check back for downloadable catalogs, field maps, and object pages.
         </p>
       </div>
