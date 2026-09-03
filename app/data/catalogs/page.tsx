@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const VERSION = "0.98";
 const BASE_URL = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";  // public Corral HTTPS root (catalog data)
@@ -246,6 +246,12 @@ function DownloadButton({ href, available }: { href: string; available: boolean 
 
 export default function CatalogsPage() {
   const [openField, setOpenField] = useState<string | null>("ceers");
+
+  // Deep-link from the overview field cards: /data/catalogs?field=<id> opens that field.
+  useEffect(() => {
+    const f = new URLSearchParams(window.location.search).get("field");
+    if (f && FIELDS.some(x => x.id === f)) setOpenField(f);
+  }, []);
 
   return (
     <main style={{ padding: "3rem 2rem", maxWidth: "960px", margin: "0 auto" }}>

@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 
 const FIELDS = [
   { name: "CEERS",         version: "0.98", sources: "174,454", color: "#b07cc6", available: true  },
@@ -31,10 +32,13 @@ export default function DataOverview() {
         gap: "10px",
         marginBottom: "3rem",
       }}>
-        {FIELDS.map(field => (
-          <div key={field.name} className="card" style={{
+        {FIELDS.map(field => {
+          const inner = (
+          <div className="card" style={{
             padding: "1.25rem 1.5rem",
             borderLeft: `3px solid ${field.color}`,
+            height: "100%",
+            cursor: field.available ? "pointer" : "default",
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
               <span className="mono" style={{ fontSize: "0.88rem", fontWeight: 700, color: field.color }}>
@@ -59,7 +63,15 @@ export default function DataOverview() {
               Sources: <span className="mono" style={{ color: "var(--text)" }}>{field.sources}</span>
             </div>
           </div>
-        ))}
+          );
+          return field.available ? (
+            <Link key={field.name} href={`/data/catalogs?field=${field.name.toLowerCase()}`} style={{ textDecoration: "none" }}>
+              {inner}
+            </Link>
+          ) : (
+            <div key={field.name}>{inner}</div>
+          );
+        })}
       </div>
 
       <div className="card" style={{
