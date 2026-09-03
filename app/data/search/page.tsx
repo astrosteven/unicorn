@@ -111,11 +111,14 @@ function corralBase(): string {
 // Each field carries its own version — fields release on independent cadences.
 // `available` gates a field in the UI; flip to true once its index is committed.
 const SEARCH_FIELDS: { field: string; dir: string; prefix: string; version: string; available: boolean }[] = [
-  { field: "CEERS",   dir: "CEERS",  prefix: "ceers",  version: "0.98", available: true },
-  { field: "GOODS-S", dir: "GOODSS", prefix: "goodss", version: "0.95", available: true },
-  { field: "GOODS-N", dir: "GOODSN", prefix: "goodsn", version: "0.95", available: true },
-  { field: "A2744",   dir: "A2744",  prefix: "a2744",  version: "0.98", available: true },
-  { field: "COSMOS",  dir: "COSMOS", prefix: "cosmos", version: "0.95", available: false },
+  { field: "CEERS",         dir: "CEERS",         prefix: "ceers",        version: "0.98", available: true },
+  { field: "GOODS-S",       dir: "GOODSS",        prefix: "goodss",       version: "0.95", available: true },
+  { field: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.95", available: true },
+  { field: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.98", available: true },
+  { field: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.95", available: true },
+  { field: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.95", available: true },
+  { field: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.95", available: false },
+  { field: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: false },
 ];
 
 type NumCol = (number | null)[] | null;

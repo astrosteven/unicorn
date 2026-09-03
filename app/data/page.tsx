@@ -5,11 +5,11 @@ const FIELDS = [
   { name: "GOODS-S",       version: "0.95", sources: "343,147", color: "#6b51a3", available: true  },
   { name: "GOODS-N",       version: "0.95", sources: "223,092", color: "#4a3a8a", available: true  },
   { name: "A2744",         version: "0.98", sources: "107,015", color: "#ffb3d9", available: true  },
-  { name: "EGS",           version: "0.98", sources: "—", color: "#8e6bb8", available: false },
+  { name: "NGDEEP",        version: "0.95", sources: "29,955",  color: "#ef9fcd", available: true  },
+  { name: "PRIMER-COSMOS", version: "0.95", sources: "413,936", color: "#d48ec9", available: true  },
+  { name: "PRIMER-UDS",    version: "0.95", sources: "366,679", color: "#b07cc6", available: false },
   { name: "COSMOS",        version: "0.95", sources: "—", color: "#b07cc6", available: false },
-  { name: "PRIMER-UDS",    version: "0.95", sources: "—", color: "#b07cc6", available: false },
-  { name: "PRIMER-COSMOS", version: "0.95", sources: "—", color: "#d48ec9", available: false },
-  { name: "NGDEEP",        version: "0.95", sources: "—", color: "#ef9fcd", available: false },
+  { name: "EGS",           version: "0.98", sources: "—", color: "#8e6bb8", available: false },
 ];
 
 export default function DataOverview() {
@@ -71,7 +71,7 @@ export default function DataOverview() {
           FIRST DATA RELEASE
         </p>
         <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
-          Four fields — CEERS, GOODS-S, GOODS-N, and A2744 — are now live and searchable via the{" "}
+          Six fields — CEERS, GOODS-S, GOODS-N, A2744, NGDEEP, and PRIMER-COSMOS — are now live and searchable via the{" "}
           <span className="mono" style={{ color: "var(--accent)" }}>Query</span> page.
           The remaining fields are being prepared — check back for downloadable catalogs, field maps, and object pages.
         </p>
