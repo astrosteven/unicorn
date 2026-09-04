@@ -43,6 +43,7 @@ interface SourceResult {
   dchi2?: number;
   m1500?: number;
   m1300?: number;
+  mabs?: number;
   beta?: number;
   aperflags?: number;
   neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
@@ -125,11 +126,11 @@ type NumCol = (number | null)[] | null;
 type FieldIndex = {
   field: string; version: string; n: number; filters: string[];
   id: number[]; ra: number[]; dec: number[]; za: (number | null)[];
-  m277: NumCol; m444: NumCol; m1500?: NumCol; m1300?: NumCol; beta?: NumCol;
+  m277: NumCol; m444: NumCol; m1500?: NumCol; m1300?: NumCol; mabs?: NumCol; beta?: NumCol;
   selected: NumCol; inspected: NumCol; sample: NumCol;
   zl68?: NumCol; zu68?: NumCol; z_lowz?: NumCol; chia?: NumCol; zspec?: NumCol;
   rh_277?: NumCol; rh_444?: NumCol; kron_radius?: NumCol; a_image?: NumCol; b_image?: NumCol;
-  x?: NumCol; y?: NumCol; depthtier?: NumCol; detectcat?: (string | null)[] | null;
+  x?: NumCol; y?: NumCol; depthtier?: NumCol; detectcat?: (string | null)[] | null; tile?: (string | null)[] | null;
   detflag?: NumCol; pixflag?: NumCol; zflag?: NumCol; zsubBits?: NumCol; zsubCriteria?: string[] | null;
 };
 type ZGrid = { zgrid: number[]; zgridLowz: number[]; sedWave: number[] };
@@ -211,7 +212,7 @@ async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): 
       sedWave: zg.sedWave, sed: o.sed, sedLowz: o.sedLowz,
       selected: o.selected, inspected: o.inspected, sample: o.sample,
       interestLabel: o.interestLabel, zspec: o.zspec,
-      zaCirc: o.zaCirc, dchi2: o.dchi2, m1500: o.m1500, m1300: o.m1300, beta: o.beta,
+      zaCirc: o.zaCirc, dchi2: o.dchi2, m1500: o.m1500, m1300: o.m1300, mabs: o.mabs, beta: o.beta,
       aperflags: o.aperflags, neighbor: o.neighbor,
       stampUrl: `${corralBase()}/${fc.dir}/web/stamps/${fc.prefix}_${id}.png`,
       selFail,
@@ -232,10 +233,10 @@ function angSep(ra1: number, dec1: number, ra2: number, dec2: number): number {
 // ---- SQL-style query over the search index ---------------------------------
 type IdxRow = Record<string, number | string | null>;
 // Numeric queryable columns (must exist in the index).
-const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m1500", "m1300", "beta", "zspec",
+const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m1500", "m1300", "mabs", "beta", "zspec",
   "rh_277", "rh_444", "kron_radius", "a_image", "b_image", "x", "y", "depthtier",
   "ra", "dec", "selected", "inspected", "sample"];
-const QUERY_STR = ["field", "detectcat"];
+const QUERY_STR = ["field", "detectcat", "tile"];
 
 // Parse a WHERE-style expression into a predicate. Numeric fields support
 // > < >= <= = != and `between a and b`; string fields (field, detectcat) support = / !=.
@@ -628,13 +629,14 @@ function ResultCard({ src }: { src: SourceResult }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: "10px 18px" }}>
           {[
             ["Field",  src.field],
+            ...(src.row["TILE"] ? [["Tile", String(src.row["TILE"])]] : []),
             ["ID",     String(src.row["ID"])],
             ["z_a",    za.toFixed(3)],
             ["68% CI", `${zl68.toFixed(2)}–${zu68.toFixed(2)}`],
             ["Δχ²",   src.dchi2 != null ? src.dchi2.toFixed(1) : "—"],
             ["m₂₇₇",  flux2mag(f277)],
             ["m₄₄₄",  flux2mag(f444)],
-            ["m₁₅₀₀", src.m1500 != null ? src.m1500.toFixed(2) : "—"],
+            ["M_UV",   src.mabs != null ? src.mabs.toFixed(2) : "—"],
             ["β",      src.beta != null ? src.beta.toFixed(2) : "—"],
             ["rh,277", rh277 > 0 ? `${rh277.toFixed(2)}px` : "—"],
             ["rh,444", rh444 > 0 ? `${rh444.toFixed(2)}px` : "—"],
@@ -720,12 +722,13 @@ export default function SearchPage() {
             const r: IdxRow = {
               field: idx.field, za: idx.za[i], ra: idx.ra[i], dec: idx.dec[i],
               m277: idx.m277?.[i] ?? null, m444: idx.m444?.[i] ?? null,
+              m1500: idx.m1500?.[i] ?? null, m1300: idx.m1300?.[i] ?? null, mabs: idx.mabs?.[i] ?? null, beta: idx.beta?.[i] ?? null,
               zl68: idx.zl68?.[i] ?? null, zu68: idx.zu68?.[i] ?? null, z_lowz: idx.z_lowz?.[i] ?? null,
               chia: idx.chia?.[i] ?? null, zspec: idx.zspec?.[i] ?? null,
               rh_277: idx.rh_277?.[i] ?? null, rh_444: idx.rh_444?.[i] ?? null,
               kron_radius: idx.kron_radius?.[i] ?? null, a_image: idx.a_image?.[i] ?? null, b_image: idx.b_image?.[i] ?? null,
               x: idx.x?.[i] ?? null, y: idx.y?.[i] ?? null, depthtier: idx.depthtier?.[i] ?? null,
-              detectcat: idx.detectcat?.[i] ?? null,
+              detectcat: idx.detectcat?.[i] ?? null, tile: idx.tile?.[i] ?? null,
               selected: idx.selected?.[i] ?? null, inspected: idx.inspected?.[i] ?? null,
               sample: idx.sample?.[i] ?? null,
             };
@@ -1004,7 +1007,8 @@ export default function SearchPage() {
                   ["z_lowz", "best z of the low-z (z<7) solution"],
                   ["chia", "χ² of the best fit"],
                   ["m277 / m444", "AB mag, F277W / F444W (Kron)"],
-                  ["m1500 / m1300", "AB mag at rest 1500 / 1300 Å"],
+                  ["mabs", "absolute UV magnitude M_UV (rest 1500 Å)"],
+                  ["m1500 / m1300", "apparent AB mag at rest 1500 / 1300 Å"],
                   ["beta", "rest-UV continuum slope β"],
                   ["zspec", "spectroscopic redshift (>0 if known)"],
                   ["rh_277 / rh_444", "half-light radius (pixels)"],
@@ -1016,6 +1020,7 @@ export default function SearchPage() {
                   ["selected / inspected / sample", "flags (0 or 1)"],
                   ["field", "field name, e.g. CEERS"],
                   ["detectcat", "detection catalog: cold / hot"],
+                  ["tile", "mosaic tile (COSMOS, EGS), e.g. A1 / NE"],
                 ] as [string, string][]).map(([k, v]) => (
                   <div key={k}><span style={{ color: "var(--accent)" }}>{k}</span> — {v}</div>
                 ))}
@@ -1162,9 +1167,11 @@ const DL_COLS: { key: string; label: string; get: (s: SourceResult) => unknown }
   { key: "CHIA",      label: "chi2",     get: s => s.pz["CHIA"] },
   { key: "m277",      label: "m277",     get: s => magOr(s.row["FLUX_F277W"]) },
   { key: "m444",      label: "m444",     get: s => magOr(s.row["FLUX_F444W"]) },
+  { key: "mabs",      label: "M_UV",     get: s => s.mabs },
   { key: "m1500",     label: "m1500",    get: s => s.m1500 },
   { key: "m1300",     label: "m1300",    get: s => s.m1300 },
   { key: "beta",      label: "beta",     get: s => s.beta },
+  { key: "TILE",      label: "tile",     get: s => s.row["TILE"] },
   { key: "RH_F277W",  label: "rh277",    get: s => s.row["RH_F277W"] },
   { key: "RH_F444W",  label: "rh444",    get: s => s.row["RH_F444W"] },
   { key: "DEPTHTIER", label: "depthtier",get: s => s.row["DEPTHTIER"] },
