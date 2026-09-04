@@ -683,6 +683,7 @@ export default function SearchPage() {
   const [queryInput, setQueryInput] = useState("za > 9 and m444 < 28 and selected = 1");
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryCols, setQueryCols] = useState<string[]>([]);
+  const [defsOpen, setDefsOpen] = useState(false);
   const [queryTotal, setQueryTotal] = useState(0);
   const [queryCard, setQueryCard] = useState<SourceResult | null>(null);
   const [queryCardId, setQueryCardId] = useState<number | null>(null);
@@ -1023,6 +1024,10 @@ export default function SearchPage() {
               <div style={{ marginBottom: "6px" }}>
                 ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span> · combine conditions with <span style={{ color: "var(--text-muted)" }}>and</span> / <span style={{ color: "var(--text-muted)" }}>or</span>
               </div>
+              <button onClick={() => setDefsOpen(o => !o)} style={{ background: "none", border: "none", padding: "0 0 6px", color: "var(--accent2)", fontFamily: "'Space Mono', monospace", fontSize: "0.75rem", cursor: "pointer", letterSpacing: "0.04em" }}>
+                {defsOpen ? "▾" : "▸"} field definitions
+              </button>
+              {defsOpen && (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "1px 16px", color: "var(--text-muted)" }}>
                 {([
                   ["za", "photometric redshift (best fit)"],
@@ -1048,6 +1053,7 @@ export default function SearchPage() {
                   <div key={k}><span style={{ color: "var(--accent)" }}>{k}</span> — {v}</div>
                 ))}
               </div>
+              )}
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
                 {[
                   "za > 9",
