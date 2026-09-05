@@ -1133,7 +1133,7 @@ export default function SearchPage() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>
               <thead>
                 <tr style={{ background: "rgba(176,124,198,0.08)" }}>
-                  {["ID", "z_a", "m₄₄₄", "zspec", ...queryCols, "selected", ""].map((h, i) => (
+                  {["ID", "field", "z_a", "m₄₄₄", "zspec", ...queryCols, "selected", ""].map((h, i) => (
                     <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 400, fontSize: "0.72rem", letterSpacing: "0.06em" }}>{h}</th>
                   ))}
                 </tr>
@@ -1150,6 +1150,7 @@ export default function SearchPage() {
                     onMouseLeave={e => { if (!open) e.currentTarget.style.background = "transparent"; }}
                   >
                     <td style={{ padding: "7px 14px", color: "var(--accent)" }}>{r.id}</td>
+                    <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text-muted)", fontSize: "0.72rem" }}>{r.fc.field}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text)" }}>{r.za != null ? r.za.toFixed(3) : "—"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text-muted)" }}>{r.m444 != null ? r.m444.toFixed(2) : "—"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text-muted)" }}>{r.zspec != null && r.zspec > 0 ? r.zspec.toFixed(3) : "—"}</td>
@@ -1161,7 +1162,7 @@ export default function SearchPage() {
                   </tr>
                   {open && (
                     <tr ref={cardRef}>
-                      <td colSpan={5 + queryCols.length} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
+                      <td colSpan={6 + queryCols.length} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
                         {queryCard && queryCard.row["ID"] === r.id
                           ? <ResultCard src={queryCard} />
                           : <div style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>Loading…</div>}

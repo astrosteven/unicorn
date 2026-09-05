@@ -1,7 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
 
-const VERSION = "0.98";
 const BASE_URL = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";  // public Corral HTTPS root (catalog data)
 
 // Photo-z variants. The FITS filename is identical in every variant dir
@@ -13,31 +12,35 @@ const PZ_VARIANTS = [
   { key: "bbonly",   label: "Photo-z — Broadband", dir: "Photoz_BBonly",  desc: "Photo-z using broad-band filters only (medium bands excluded)" },
   { key: "wfc3",     label: "Photo-z — WFC3",      dir: "Photoz_WFC3",    desc: "Photo-z including HST WFC3 aperture photometry" },
 ];
-const ALL_PZ = PZ_VARIANTS.map(v => v.key);
-const NO_WFC3 = ALL_PZ.filter(k => k !== "wfc3");
+// Per-field photo-z variant sets (verified against the public Corral tree — every
+// field has fiducial/eelg/circles; bbonly + wfc3 vary by field).
+const ALL_PZ    = ["fiducial", "eelg", "circles", "bbonly", "wfc3"];  // CEERS, EGS
+const WFC3_NOBB = ["fiducial", "eelg", "circles", "wfc3"];            // GOODS-S
+const NO_WFC3   = ["fiducial", "eelg", "circles", "bbonly"];          // PRIMER-UDS, A2744
+const BASE_PZ   = ["fiducial", "eelg", "circles"];                    // GOODS-N, NGDEEP, PRIMER-COSMOS, COSMOS
 
 type Field = {
   id: string;
   name: string;
   dir: string;         // Corral subdirectory
   prefix: string;      // filename prefix
+  version: string;     // per-field release version
   available: boolean;  // true once files are live on Corral
   variants: string[];  // PZ_VARIANTS keys present for this field
   programs?: string[]; // JWST programs whose imaging is included
 };
 
-// CEERS is live on Corral; the rest are still coming soon.
-// NOTE: v0.97 files keep the ceers-spam_* prefix; at v0.98 the prefix becomes ceers_*.
+// All nine fields are live on the public Corral tree (unicorn/Catalogs/<DIR>/).
 const FIELDS: Field[] = [
-  { id: "ceers",         name: "CEERS",         dir: "CEERS",      prefix: "ceers",      available: true,  variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"]  },
-  { id: "egs",           name: "EGS",           dir: "EGS",        prefix: "egs",        available: false, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"]  },
-  { id: "goods-s",       name: "GOODS-S",       dir: "GOODS-S",    prefix: "goods-s",    available: false, variants: ALL_PZ  },
-  { id: "goods-n",       name: "GOODS-N",       dir: "GOODS-N",    prefix: "goods-n",    available: false, variants: ALL_PZ  },
-  { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primer-cosmos", available: false, variants: NO_WFC3 },
-  { id: "primer-uds",    name: "PRIMER-UDS",    dir: "PRIMER-UDS", prefix: "primer-uds", available: false, variants: NO_WFC3 },
-  { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",     prefix: "ngdeep",     available: false, variants: NO_WFC3 },
-  { id: "a2744",         name: "Abell 2744",    dir: "A2744",      prefix: "a2744",      available: false, variants: NO_WFC3 },
-  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",     prefix: "cosmos",     available: false, variants: NO_WFC3 },
+  { id: "ceers",         name: "CEERS",         dir: "CEERS",         prefix: "ceers",        version: "0.98", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
+  { id: "egs",           name: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.98", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
+  { id: "goods-s",       name: "GOODS-S",       dir: "GOODSS",        prefix: "goodss",       version: "0.95", available: true, variants: WFC3_NOBB },
+  { id: "goods-n",       name: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.95", available: true, variants: BASE_PZ },
+  { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.95", available: true, variants: BASE_PZ },
+  { id: "primer-uds",    name: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.95", available: true, variants: NO_WFC3 },
+  { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.95", available: true, variants: BASE_PZ },
+  { id: "a2744",         name: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.98", available: true, variants: NO_WFC3 },
+  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: true, variants: BASE_PZ },
 ];
 
 // Real file sizes for the live CEERS v0.98 release, keyed by row key.
@@ -99,9 +102,26 @@ type FileRow = {
 
 function fieldFiles(field: Field): FileRow[] {
   const { dir, prefix: f, available } = field;
-  const v = VERSION;
+  const v = field.version;
   const base = `${BASE_URL}/${dir}`;
-  const size = (key: string) => (available ? CEERS_SIZES[key] ?? "—" : "—");
+  // Real byte sizes are only tabulated for CEERS; other fields show "—" (file still downloads).
+  const size = (key: string) => (available && field.id === "ceers" ? CEERS_SIZES[key] ?? "—" : "—");
+
+  // COSMOS is the no-VIS release (the site serves the no-VIS solution): selected/flags carry
+  // the _novis suffix and the photo-z variants live in Photoz*_novis dirs. Segmap/PSFs/depths
+  // aren't on the public tree for COSMOS, so they're omitted.
+  if (field.id === "cosmos") {
+    return [
+      { label: "README", desc: "Column descriptions, data model, selection criteria", file: `${f}_unicorn.readme`, href: `${base}/${f}_unicorn.readme`, size: "—" },
+      { label: "Photometry", desc: "Source positions, morphology, fluxes in all filters (Kron + circular apertures; ext 2 = aperture diameters)", file: `${f}_photom_v${v}.fits`, href: `${base}/${f}_photom_v${v}.fits`, size: "—", ext: 2 },
+      { label: "Photo-z — Fiducial (no-VIS)", desc: "Fiducial photo-z, Euclid VIS excluded (the COSMOS default)", file: `Photoz_novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
+      { label: "Photo-z — EELG (no-VIS)", desc: "EELG template set, no-VIS", file: `Photoz_eelg_novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_eelg_novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
+      { label: "Photo-z — Circles (no-VIS)", desc: "Circular-aperture photometry, no-VIS", file: `Photoz_Circles_Novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_Circles_Novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
+      { label: "Selected Sample", desc: "High-confidence galaxy sample with inspection flags and redshift assignments", file: `${f}_selected_v${v}_novis.fits`, href: `${base}/${f}_selected_v${v}_novis.fits`, size: "—", ext: 1 },
+      { label: "Detection Flags", desc: "Per-source detection criteria (SNR, Lyman-break, error-map, edge)", file: `Flags/${f}_detectionflags_v${v}_novis.fits`, href: `${base}/Flags/${f}_detectionflags_v${v}_novis.fits`, size: "—", ext: 1 },
+      { label: "Selection Flags", desc: "Per-source photo-z selection criteria (int P(z), za, chi², dchi², sample)", file: `Flags/${f}_selectionflags_v${v}_novis.fits`, href: `${base}/Flags/${f}_selectionflags_v${v}_novis.fits`, size: "—", ext: 1 },
+    ];
+  }
 
   const files: FileRow[] = [
     {
@@ -263,7 +283,7 @@ export default function CatalogsPage() {
         </h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.95rem", maxWidth: "640px" }}>
           All UNICORN data products are FITS binary tables with embedded column descriptions
-          and units. Version <span className="mono" style={{ color: "var(--accent)" }}>{VERSION}</span>.
+          and units (per-field versions <span className="mono" style={{ color: "var(--accent)" }}>v0.95–v0.98</span>).
           See the README for full documentation.
         </p>
       </div>
@@ -373,7 +393,7 @@ export default function CatalogsPage() {
                       background: field.available ? "var(--accent-dim)" : "transparent",
                       border: `1px solid ${field.available ? "rgba(196,144,216,0.3)" : "var(--border)"}`,
                     }}>
-                      {field.available ? `v${VERSION}` : "COMING SOON"}
+                      {field.available ? `v${field.version}` : "COMING SOON"}
                     </span>
                   </div>
                   <span style={{
