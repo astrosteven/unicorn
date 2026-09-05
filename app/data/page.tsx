@@ -8,9 +8,9 @@ const FIELDS = [
   { name: "A2744",         version: "0.98", sources: "107,015", color: "#ffb3d9", available: true  },
   { name: "NGDEEP",        version: "0.95", sources: "29,955",  color: "#ef9fcd", available: true  },
   { name: "PRIMER-COSMOS", version: "0.95", sources: "413,936", color: "#d48ec9", available: true  },
-  { name: "PRIMER-UDS",    version: "0.95", sources: "366,679", color: "#b07cc6", available: false },
-  { name: "COSMOS",        version: "0.95", sources: "—", color: "#b07cc6", available: false },
-  { name: "EGS",           version: "0.98", sources: "—", color: "#8e6bb8", available: false },
+  { name: "PRIMER-UDS",    version: "0.95", sources: "366,679",   color: "#b07cc6", available: true  },
+  { name: "COSMOS",        version: "0.95", sources: "1,466,817", color: "#b07cc6", available: true  },
+  { name: "EGS",           version: "0.98", sources: "264,916",   color: "#8e6bb8", available: true  },
 ];
 
 export default function DataOverview() {
@@ -83,7 +83,7 @@ export default function DataOverview() {
           FIRST DATA RELEASE
         </p>
         <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
-          Six fields — CEERS, GOODS-S, GOODS-N, A2744, NGDEEP, and PRIMER-COSMOS — are now live and searchable via the{" "}
+          All nine fields — CEERS, EGS, GOODS-S, GOODS-N, A2744, NGDEEP, COSMOS, PRIMER-COSMOS, and PRIMER-UDS — are now live and searchable via the{" "}
           <span className="mono" style={{ color: "var(--accent)" }}>Query</span> page.
           The remaining fields are being prepared — check back for downloadable catalogs, field maps, and object pages.
         </p>

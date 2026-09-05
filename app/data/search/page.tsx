@@ -117,9 +117,10 @@ const SEARCH_FIELDS: { field: string; dir: string; prefix: string; version: stri
   { field: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.95", available: true },
   { field: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.98", available: true },
   { field: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.95", available: true },
+  { field: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.98", available: true },
   { field: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.95", available: true },
-  { field: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.95", available: false },
-  { field: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: false },
+  { field: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.95", available: true },
+  { field: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: true },
 ];
 
 type NumCol = (number | null)[] | null;
