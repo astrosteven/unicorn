@@ -653,6 +653,8 @@ function ResultCard({ src }: { src: SourceResult }) {
             ["Field",  src.field],
             ...(src.row["TILE"] ? [["Tile", String(src.row["TILE"])]] : []),
             ["ID",     String(src.row["ID"])],
+            ["RA",     src.row["RA"] != null ? Number(src.row["RA"]).toFixed(6) : "—"],
+            ["Dec",    src.row["DEC"] != null ? Number(src.row["DEC"]).toFixed(6) : "—"],
             ["z_a",    za.toFixed(3)],
             ["68% CI", `${zl68.toFixed(2)}–${zu68.toFixed(2)}`],
             ["Δχ²",   src.dchi2 != null ? src.dchi2.toFixed(1) : "—"],
@@ -1025,11 +1027,12 @@ export default function SearchPage() {
               <div style={{ marginBottom: "6px" }}>
                 ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span> · combine conditions with <span style={{ color: "var(--text-muted)" }}>and</span> / <span style={{ color: "var(--text-muted)" }}>or</span>
               </div>
-              <button onClick={() => setDefsOpen(o => !o)} style={{ background: "none", border: "none", padding: "0 0 6px", color: "var(--accent2)", fontFamily: "'Space Mono', monospace", fontSize: "0.75rem", cursor: "pointer", letterSpacing: "0.04em" }}>
-                {defsOpen ? "▾" : "▸"} field definitions
+              <div style={{ background: "rgba(176,124,198,0.07)", border: "1px solid var(--border)", borderRadius: "6px", padding: "7px 12px" }}>
+              <button onClick={() => setDefsOpen(o => !o)} style={{ background: "none", border: "none", padding: "2px 0", color: "var(--accent2)", fontFamily: "'Space Mono', monospace", fontSize: "0.82rem", fontWeight: 700, cursor: "pointer", letterSpacing: "0.04em", display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left" }}>
+                <span style={{ fontSize: "1.05rem", lineHeight: 1 }}>{defsOpen ? "▾" : "▸"}</span> Field Search Options
               </button>
               {defsOpen && (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "1px 16px", color: "var(--text-muted)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "1px 16px", color: "var(--text-muted)", marginTop: "8px" }}>
                 {([
                   ["za", "photometric redshift (best fit)"],
                   ["zl68 / zu68", "68% credible interval on za"],
@@ -1055,6 +1058,7 @@ export default function SearchPage() {
                 ))}
               </div>
               )}
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
                 {[
                   "za > 9",
