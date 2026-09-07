@@ -240,17 +240,63 @@ const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m150
   "ra", "dec", "selected", "inspected", "sample"];
 const QUERY_STR = ["field", "detectcat", "tile"];
 
+// Per-filter photometry is queryable too, via synthetic column names computed from the
+// index at query time (see make_web_index.py `mag_<f>` / `snr_<f>` columns):
+//   mag_<filt>   AB magnitude in a filter           e.g.  mag_f277w < 28
+//   snr_<filt>   S/N (flux/err) in a filter          e.g.  snr_f444w > 5
+//   flux_<filt>  flux in nJy (derived from mag_<f>)  e.g.  flux_f150w > 100
+//   <filtA>-<filtB>  color = mag_A − mag_B           e.g.  f150w-f277w < 0.5
+// Any filter present in a field's catalog works; a field lacking the band yields no match.
+const KNOWN_FILTERS = new Set(Object.keys(FILTER_WAVES).map(f => f.toLowerCase()));
+const RE_MAGSNR = /^(mag|snr|flux)_([a-z0-9]+)$/;
+const RE_COLOR  = /^([a-z][a-z0-9]*)-([a-z][a-z0-9]*)$/;
+
+// Is `f` a queryable field name (built-in, per-filter, or color)?
+function isKnownField(f: string): boolean {
+  if (QUERY_NUM.includes(f) || QUERY_STR.includes(f)) return true;
+  let m: RegExpMatchArray | null;
+  if ((m = f.match(RE_MAGSNR))) return KNOWN_FILTERS.has(m[2]);
+  if ((m = f.match(RE_COLOR)))  return KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2]);
+  return false;
+}
+// A value-extractor for a column: stored built-ins read `r[col]`; flux_<f> and colors are
+// derived from the stored `mag_<f>` column(s) (flux nJy = 10^((31.4−mag)/2.5)).
+function colGetter(col: string): (r: IdxRow) => number | string | null {
+  let m: RegExpMatchArray | null;
+  if ((m = col.match(/^flux_([a-z0-9]+)$/))) {
+    const mc = `mag_${m[1]}`;
+    return r => { const mg = r[mc]; return typeof mg === "number" ? Math.pow(10, (31.4 - mg) / 2.5) : null; };
+  }
+  if ((m = col.match(RE_COLOR)) && KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2])) {
+    const a = `mag_${m[1]}`, b = `mag_${m[2]}`;
+    return r => { const x = r[a], y = r[b]; return (typeof x === "number" && typeof y === "number") ? x - y : null; };
+  }
+  return r => r[col] ?? null;   // stored: QUERY_NUM/STR, mag_<f>, snr_<f>
+}
+// The raw index columns a query must have attached to each row (the stored `mag_<f>`/`snr_<f>`
+// its mag/snr/flux/color tokens read from). flux + color derive from mag_<f>.
+function neededIndexCols(query: string): string[] {
+  const q = query.toLowerCase();
+  const set = new Set<string>();
+  for (const m of q.matchAll(/\b(mag|snr)_([a-z0-9]+)\b/g)) if (KNOWN_FILTERS.has(m[2])) set.add(`${m[1]}_${m[2]}`);
+  for (const m of q.matchAll(/\bflux_([a-z0-9]+)\b/g))       if (KNOWN_FILTERS.has(m[1])) set.add(`mag_${m[1]}`);
+  for (const m of q.matchAll(/\b([a-z][a-z0-9]*)-([a-z][a-z0-9]*)\b/g))
+    if (KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2])) { set.add(`mag_${m[1]}`); set.add(`mag_${m[2]}`); }
+  return [...set];
+}
+
 // Columns the results table always shows; other queried columns are added dynamically.
 const TABLE_FIXED_COLS = new Set(["id", "za", "m444", "zspec", "selected"]);
 // Which queryable columns a query references (as whole words), minus the fixed ones —
-// these get added to the results table so you see what you filtered on.
+// these get added to the results table so you see what you filtered on. Includes the
+// per-filter mag/snr/flux columns and color terms.
 function queriedColumns(query: string): string[] {
   const q = query.toLowerCase();
   const out: string[] = [];
-  for (const c of [...QUERY_NUM, ...QUERY_STR]) {
-    if (TABLE_FIXED_COLS.has(c) || out.includes(c)) continue;
-    if (new RegExp(`\\b${c}\\b`).test(q)) out.push(c);
-  }
+  const add = (c: string) => { if (!TABLE_FIXED_COLS.has(c) && !out.includes(c)) out.push(c); };
+  for (const c of [...QUERY_NUM, ...QUERY_STR]) if (new RegExp(`\\b${c}\\b`).test(q)) add(c);
+  for (const m of q.matchAll(/\b(?:mag|snr|flux)_[a-z0-9]+\b/g)) { const c = m[0]; if (isKnownField(c)) add(c); }
+  for (const m of q.matchAll(/\b[a-z][a-z0-9]*-[a-z][a-z0-9]*\b/g)) { const c = m[0]; if (isKnownField(c)) add(c); }
   return out;
 }
 
@@ -261,10 +307,11 @@ function fmtCell(v: number | string | null): string {
   return String(v);
 }
 
-// Parse a WHERE-style expression into a predicate. Numeric fields support
-// > < >= <= = != and `between a and b`; string fields (field, detectcat) support = / !=.
+// Parse a WHERE-style expression into a predicate + the raw index columns it needs attached.
+// Numeric fields support > < >= <= = != and `between a and b`; string fields (field, detectcat,
+// tile) support = / !=. Per-filter mag_<f>/snr_<f>/flux_<f> and colors <a>-<b> are numeric.
 // A single connector level (all AND or all OR).
-function makePredicate(query: string): ((r: IdxRow) => boolean) | { error: string } {
+function makePredicate(query: string): { test: (r: IdxRow) => boolean; need: string[] } | { error: string } {
   let q = query.trim().toLowerCase();
   if (!q) return { error: "Type a condition, e.g.  za > 9 and m444 < 28" };
   // Protect the "and" inside `between a and b` before splitting on the AND/OR
@@ -276,23 +323,29 @@ function makePredicate(query: string): ((r: IdxRow) => boolean) | { error: strin
   if (useOr && connectors.includes("and")) return { error: "Mixing AND and OR isn't supported — use one." };
   const parts = q.split(/\b(?:and|or)\b/).map(s => s.replace(/\u0001/g, "and").trim()).filter(Boolean);
 
+  // Field token: a built-in/mag_/snr_/flux_ name, or a color `<filtA>-<filtB>`.
+  const FIELD = "([a-z][\\w]*(?:-[a-z0-9]+)?)";
   const conds: ((r: IdxRow) => boolean)[] = [];
   for (const part of parts) {
     let m: RegExpMatchArray | null;
-    if ((m = part.match(/^(\w+)\s+between\s+(-?[\d.]+)\s+and\s+(-?[\d.]+)$/))) {
+    if ((m = part.match(new RegExp(`^${FIELD}\\s+between\\s+(-?[\\d.]+)\\s+and\\s+(-?[\\d.]+)$`)))) {
       const f = m[1], lo = parseFloat(m[2]), hi = parseFloat(m[3]);
-      if (!QUERY_NUM.includes(f)) return { error: `"${f}" can't use between (unknown or non-numeric)` };
-      conds.push(r => { const v = r[f]; return typeof v === "number" && v >= lo && v <= hi; });
-    } else if ((m = part.match(/^(\w+)\s*(>=|<=|!=|==|=|>|<)\s*(.+)$/))) {
+      if (!isKnownField(f)) return { error: `Unknown field "${f}"` };
+      if (QUERY_STR.includes(f)) return { error: `"${f}" can't use between (not numeric)` };
+      const get = colGetter(f);
+      conds.push(r => { const v = get(r); return typeof v === "number" && v >= lo && v <= hi; });
+    } else if ((m = part.match(new RegExp(`^${FIELD}\\s*(>=|<=|!=|==|=|>|<)\\s*(.+)$`)))) {
       const f = m[1], op = m[2], valraw = m[3].trim().replace(/^['"]|['"]$/g, "");
+      if (!isKnownField(f)) return { error: `Unknown field "${f}"` };
       if (QUERY_STR.includes(f)) {
         if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != on "${f}"` };
         conds.push(r => { const v = r[f]; if (v == null) return false; const eq = String(v).toLowerCase() === valraw; return op === "!=" ? !eq : eq; });
-      } else if (QUERY_NUM.includes(f)) {
+      } else {
         const x = parseFloat(valraw);
         if (!Number.isFinite(x)) return { error: `"${valraw}" is not a number` };
+        const get = colGetter(f);
         conds.push(r => {
-          const v = r[f];
+          const v = get(r);
           if (typeof v !== "number" || !Number.isFinite(v)) return false;
           switch (op) {
             case ">": return v > x; case "<": return v < x;
@@ -300,14 +353,12 @@ function makePredicate(query: string): ((r: IdxRow) => boolean) | { error: strin
             case "!=": return v !== x; default: return v === x;
           }
         });
-      } else {
-        return { error: `Unknown field "${f}"` };
       }
     } else {
       return { error: `Could not parse "${part}". Try  field op value  (e.g. za > 9).` };
     }
   }
-  return (r: IdxRow) => useOr ? conds.some(c => c(r)) : conds.every(c => c(r));
+  return { test: (r: IdxRow) => useOr ? conds.some(c => c(r)) : conds.every(c => c(r)), need: neededIndexCols(query) };
 }
 
 // Instrument / marker colors, shared with the legend.
@@ -790,11 +841,14 @@ export default function SearchPage() {
         const pred = makePredicate(queryInput);
         if ("error" in pred) { setStatus("notfound"); setMatchSummary(pred.error); return; }
         const cols = queriedColumns(queryInput);
+        const need = pred.need;                        // raw filter cols to attach (mag_<f>/snr_<f>)
+        const getters = cols.map(c => colGetter(c));   // value-extractors for the dynamic table cols
         const CAP = 500;
         const rows: QueryRow[] = [];
         let total = 0;
         for (const fc of fields) {
           const { idx } = await loadField(fc);
+          const ix = idx as unknown as Record<string, NumCol>;   // for dynamic mag_<f>/snr_<f> access
           for (let i = 0; i < idx.n; i++) {
             const r: IdxRow = {
               field: idx.field, za: idx.za[i], ra: idx.ra[i], dec: idx.dec[i],
@@ -809,9 +863,10 @@ export default function SearchPage() {
               selected: idx.selected?.[i] ?? null, inspected: idx.inspected?.[i] ?? null,
               sample: idx.sample?.[i] ?? null,
             };
-            if (pred(r)) {
+            for (const c of need) r[c] = ix[c]?.[i] ?? null;   // per-filter mag/snr for this query
+            if (pred.test(r)) {
               total++;
-              if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, extra: cols.map(c => r[c] ?? null) });
+              if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, extra: getters.map(g => g(r)) });
             }
           }
         }
@@ -1103,10 +1158,30 @@ export default function SearchPage() {
                   ["field", "field name, e.g. CEERS"],
                   ["detectcat", "detection catalog: cold / hot"],
                   ["tile", "mosaic tile (COSMOS, EGS), e.g. A1 / NE"],
+                  ["mag_<filt>", "AB mag in any filter, e.g. mag_f277w"],
+                  ["snr_<filt>", "S/N (flux/err) in any filter"],
+                  ["flux_<filt>", "flux (nJy) in any filter"],
+                  ["<filtA>-<filtB>", "color = mag_A − mag_B, e.g. f150w-f277w"],
                 ] as [string, string][]).map(([k, v]) => (
                   <div key={k}><span style={{ color: "var(--accent)" }}>{k}</span> — {v}</div>
                 ))}
               </div>
+              )}
+              {defsOpen && (
+                <div style={{ marginTop: "8px", color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.7 }}>
+                  Per-filter names use the filter&apos;s lowercase label — HST/ACS (f435w, f606w, f814w) and
+                  NIRCam wide/medium bands (f090w, f115w, f150w, f200w, f277w, f356w, f410m, f444w, …). A field
+                  that lacks a band simply returns no match for it.
+                </div>
+              )}
+              {defsOpen && (
+                <div style={{ marginTop: "8px", padding: "7px 10px", background: "rgba(240,192,112,0.06)", border: "1px solid rgba(240,192,112,0.22)", borderRadius: "6px", color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.7 }}>
+                  <span style={{ color: "var(--amber)", fontWeight: 700 }}>Precision:</span> the search index stores
+                  values rounded for fast in-browser querying — per-filter magnitudes to 0.01 mag, S/N to 0.1,
+                  colors to ~0.01 mag, and redshifts, M_UV, β, sizes and positions to 3–4 decimals. These are for
+                  discovery and filtering. For full-precision, science-grade values use the FITS catalogs on the{" "}
+                  <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page.
+                </div>
               )}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
@@ -1116,6 +1191,8 @@ export default function SearchPage() {
                   "m444 < 27 and za > 6",
                   "selected = 1 and za > 8",
                   "detectcat = cold and zspec > 0",
+                  "mag_f277w < 28 and snr_f277w > 5",
+                  "f150w-f277w < 0.5 and za > 6",
                 ].map(ex => (
                   <button key={ex} onClick={() => setQueryInput(ex)} style={{
                     background: "var(--accent-dim)", color: "var(--accent)",
