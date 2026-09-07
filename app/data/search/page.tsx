@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, Fragment, type ReactNode, type CSSProperties } from "react";
+import JSZip from "jszip";
 
 // Filter pivot wavelengths in microns. Covers HST/ACS + the full JWST/NIRCam
 // wide + medium band set used across UNICORN fields (incl. CEERS-SPAM medium bands).
@@ -705,6 +706,37 @@ export default function SearchPage() {
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryCols, setQueryCols] = useState<string[]>([]);
   const [defsOpen, setDefsOpen] = useState(false);
+  const [zipping, setZipping] = useState<string | null>(null);
+
+  // Fetch the cutout PNG for every result row from Corral, bundle into one zip.
+  // Capped at the shown rows (<=500). Missing stamps (field w/o stamps) are skipped.
+  async function downloadResultStamps() {
+    if (!queryRows.length || zipping) return;
+    const zip = new JSZip();
+    const rows = [...queryRows];
+    const total = rows.length;
+    let done = 0, ok = 0;
+    setZipping(`0/${total}`);
+    async function worker() {
+      while (rows.length) {
+        const r = rows.shift()!;
+        try {
+          const resp = await fetch(`${corralBase()}/${r.fc.dir}/web/stamps/${r.fc.prefix}_${r.id}.png`);
+          if (resp.ok) { zip.file(`${r.fc.field}_${r.id}.png`, await resp.blob()); ok++; }
+        } catch { /* skip */ }
+        done++; if (done % 5 === 0 || done === total) setZipping(`${done}/${total}`);
+      }
+    }
+    await Promise.all(Array.from({ length: 8 }, worker));
+    if (ok === 0) { setZipping(null); return; }
+    const blob = await zip.generateAsync({ type: "blob" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `unicorn_stamps_${ok}.zip`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    setZipping(null);
+  }
   const [queryTotal, setQueryTotal] = useState(0);
   const [queryCard, setQueryCard] = useState<SourceResult | null>(null);
   const [queryCardId, setQueryCardId] = useState<number | null>(null);
@@ -1150,6 +1182,14 @@ export default function SearchPage() {
             count={queryRows.length}
             note={queryTotal > queryRows.length ? `first ${queryRows.length} of ${queryTotal.toLocaleString()}` : undefined}
           />
+
+          <div style={{ margin: "-0.25rem 0 1rem" }}>
+            <button onClick={downloadResultStamps} disabled={!!zipping} className="mono"
+              title="Download a zip of the cutout stamp images for these results"
+              style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: zipping ? "wait" : "pointer" }}>
+              {zipping ? `zipping stamps… ${zipping}` : `↓ download stamp images (${queryRows.length})`}
+            </button>
+          </div>
 
           <div className="card" style={{ overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>
