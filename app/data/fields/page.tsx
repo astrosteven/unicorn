@@ -114,7 +114,7 @@ const FIELDS = [
     ra: 150.119,
     dec: 2.206,
     fov: 0.35,
-    area: "~230 arcmin²",
+    area: "1274 arcmin²",
     imaging: "JWST NIRCam",
     filters: ["F606W","F814W","F090W","F115W","F140M","F150W","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
     program: "COSMOS-Web (GO 1727)",

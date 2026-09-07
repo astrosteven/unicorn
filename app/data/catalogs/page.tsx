@@ -273,6 +273,24 @@ export default function CatalogsPage() {
     if (f && FIELDS.some(x => x.id === f)) setOpenField(f);
   }, []);
 
+  // Build + download a curl script. Paths are prefixed with the field dir so the
+  // per-field and all-fields scripts drop files into a clean <FIELD>/... layout.
+  function makeScript(rows: { file: string; href: string }[], name: string) {
+    const lines = ["#!/bin/bash", `# UNICORN catalog download — ${name}`,
+      "# Preserves the <FIELD>/Photoz*/ and <FIELD>/Flags/ subdirectory layout.", "set -e", ""];
+    for (const r of rows) lines.push(`curl -fL --create-dirs -o "${r.file}" "${r.href}"`);
+    lines.push("");
+    const blob = new Blob([lines.join("\n")], { type: "text/x-shellscript" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `download_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}.sh`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  const withDir = (field: Field) => fieldFiles(field).map(f => ({ file: `${field.dir}/${f.file}`, href: f.href }));
+  const fieldScript = (field: Field) => makeScript(withDir(field), field.name);
+  const allScript = () => makeScript(FIELDS.filter(f => f.available).flatMap(withDir), "all fields");
+
   return (
     <main style={{ padding: "3rem 2rem", maxWidth: "960px", margin: "0 auto" }}>
 
@@ -286,6 +304,9 @@ export default function CatalogsPage() {
           and units (per-field versions <span className="mono" style={{ color: "var(--accent)" }}>v0.95–v0.98</span>).
           See the README for full documentation.
         </p>
+        <button onClick={allScript} className="mono" style={{ marginTop: "14px", background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.35)", borderRadius: "5px", padding: "9px 16px", fontSize: "0.8rem", cursor: "pointer" }}>
+          ↓ Download script — all fields
+        </button>
       </div>
 
       {/* Citation notice */}
@@ -431,6 +452,13 @@ export default function CatalogsPage() {
                             {p}
                           </span>
                         ))}
+                      </div>
+                    )}
+                    {field.available && (
+                      <div style={{ padding: "0.5rem 1.25rem", borderBottom: "1px solid var(--border)" }}>
+                        <button onClick={() => fieldScript(field)} className="mono" style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.3)", borderRadius: "5px", padding: "6px 12px", fontSize: "0.72rem", cursor: "pointer" }}>
+                          ↓ download script — {field.name}
+                        </button>
                       </div>
                     )}
                     {files.map((f, idx) => (
