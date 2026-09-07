@@ -672,8 +672,26 @@ function ResultCard({ src }: { src: SourceResult }) {
           ))}
         </div>
       </div>
+      <div style={{ marginTop: "10px", textAlign: "right" }}>
+        <button onClick={() => flagSpurious(src)} className="mono" title="Report this source as spurious / an artifact"
+          style={{ background: "none", border: "none", color: "var(--text-dim)", fontSize: "0.68rem", cursor: "pointer", letterSpacing: "0.03em" }}>
+          ⚑ flag as spurious
+        </button>
+      </div>
     </div>
   );
+}
+
+// Feedback destination. Set FEEDBACK_URL to a Google Form / Formspree endpoint later;
+// until then, flag/feedback actions open the user's mail client to FEEDBACK_EMAIL.
+const FEEDBACK_EMAIL = "sf8542@eid.utexas.edu";
+const FEEDBACK_URL = "";  // e.g. "https://forms.gle/…" — takes precedence over mailto when set
+function flagSpurious(src: SourceResult) {
+  const id = src.row["ID"], ra = src.row["RA"], dec = src.row["DEC"];
+  if (FEEDBACK_URL) { window.open(FEEDBACK_URL, "_blank"); return; }
+  const subj = `UNICORN — spurious source: ${src.field} ${id}`;
+  const body = `Field: ${src.field}\nID: ${id}\nRA: ${ra}\nDec: ${dec}\n\nWhy it looks spurious:\n`;
+  window.location.href = `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(body)}`;
 }
 
 export default function SearchPage() {

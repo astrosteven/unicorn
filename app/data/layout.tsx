@@ -82,6 +82,9 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
       <footer style={{ borderTop: "1px solid var(--border)", padding: "1.5rem 2rem", textAlign: "center" }}>
         <p style={{ fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace" }}>
           UNICORN — Finkelstein et al. — UT Austin
+          {" · "}
+          <a href="mailto:sf8542@eid.utexas.edu?subject=UNICORN%20site%20feedback"
+             style={{ color: "var(--accent2)", textDecoration: "none" }}>Feedback</a>
         </p>
       </footer>
     </div>
