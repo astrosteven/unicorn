@@ -5,6 +5,17 @@
 // so a source looks identical however you reach it. Extracted verbatim from the
 // original app/data/search/page.tsx — behavior is unchanged.
 import { useState, type ReactNode, type CSSProperties } from "react";
+import dynamic from "next/dynamic";
+
+// On-the-fly WebGL color cutout (window + WebGL2), loaded client-only via next/dynamic
+// with { ssr: false } — required by this static export, same pattern as the /data/map
+// viewer. Replaces the retired pre-baked RGB PNG (RgbStamp) for fields with fitsgl tiles.
+const FitsglCutout = dynamic(() => import("./FitsglCutout").then((m) => m.FitsglCutout), {
+  ssr: false,
+});
+// Fields that have live fitsgl tiles (drives whether the card shows the on-the-fly
+// cutout). Kept in sync with FITSGL_BASE in FitsglCutout.tsx.
+const FITSGL_FIELDS = new Set(["CEERS"]);
 
 // Filter pivot wavelengths in microns. Covers HST/ACS + the full JWST/NIRCam
 // wide + medium band set used across UNICORN fields (incl. CEERS-SPAM medium bands).
@@ -88,8 +99,10 @@ export function StampMontage({ url }: { url: string }) {
   );
 }
 
-// Dynamically-rendered RGB color cutout (shared-luminance recipe). Loaded from Corral on
-// demand; hidden gracefully if the image 404s (e.g. field without color stamps yet).
+// RETIRED: static pre-baked RGB PNG cutout. Superseded by <FitsglCutout>, which renders
+// the color on the fly from the field's fitsgl tiles (same WebGL color as /data/map).
+// Kept only as a reference/fallback; ResultCard no longer uses it. (rgbUrl in
+// fetchObject is likewise vestigial — retained so nothing downstream breaks.)
 export function RgbStamp({ url }: { url: string }) {
   const [ok, setOk] = useState(true);
   if (!ok) return null;
@@ -628,8 +641,16 @@ export function ResultCard({ src }: { src: SourceResult }) {
         </div>
       </div>
 
-      {/* Cutout montage — right below the plots */}
-      {src.rgbUrl && <RgbStamp url={src.rgbUrl} />}
+      {/* On-the-fly color cutout — rendered live from the field's fitsgl tiles (same
+          WebGL trilogy color as /data/map), NOT a pre-baked PNG. Only for fields with
+          fitsgl tiles online; others show nothing. */}
+      {FITSGL_FIELDS.has(src.field?.toUpperCase?.() ?? "") && src.row["RA"] != null && src.row["DEC"] != null && (
+        <FitsglCutout
+          field={src.field.toUpperCase()}
+          ra={Number(src.row["RA"])}
+          dec={Number(src.row["DEC"])}
+        />
+      )}
       {src.stampUrl && <StampMontage url={src.stampUrl} />}
 
       {/* Properties — slim multi-column strip */}
