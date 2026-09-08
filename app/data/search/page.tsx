@@ -51,6 +51,7 @@ interface SourceResult {
   aperflags?: number;
   neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
   stampUrl?: string;
+  rgbUrl?: string;
   selFail?: { det: boolean; pix: boolean; z: boolean; zsub: string[] };  // which selection groups/criteria fail
 }
 
@@ -84,6 +85,27 @@ function StampMontage({ url }: { url: string }) {
         loading="lazy"
         onError={() => setOk(false)}
         style={{ width: "100%", maxWidth: "760px", border: "1px solid var(--border)", borderRadius: "6px", display: "block" }}
+      />
+    </div>
+  );
+}
+
+// Dynamically-rendered RGB color cutout (shared-luminance recipe). Loaded from Corral on
+// demand; hidden gracefully if the image 404s (e.g. field without color stamps yet).
+function RgbStamp({ url }: { url: string }) {
+  const [ok, setOk] = useState(true);
+  if (!ok) return null;
+  return (
+    <div style={{ marginTop: "1rem" }}>
+      <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "4px" }}>
+        COLOR <span style={{ color: "var(--text-dim)" }}>(NIRCam B:F090/115/150 · G:F200/277 · R:F356/410/444 · ≈2.4″, 30 mas)</span>
+      </div>
+      <img
+        src={url}
+        alt="RGB color cutout"
+        loading="lazy"
+        onError={() => setOk(false)}
+        style={{ width: "100%", maxWidth: "240px", border: "1px solid var(--border)", borderRadius: "6px", display: "block", imageRendering: "pixelated" }}
       />
     </div>
   );
@@ -249,6 +271,7 @@ async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): 
       zaCirc: o.zaCirc, dchi2: o.dchi2, m1500: o.m1500, m1300: o.m1300, mabs: o.mabs, beta: o.beta,
       aperflags: o.aperflags, neighbor: o.neighbor,
       stampUrl: `${corralBase()}/${fc.dir}/web/stamps/${fc.prefix}_${id}.png`,
+      rgbUrl: `${corralBase()}/${fc.dir}/web/rgb/${fc.prefix}_${id}.png`,
       selFail,
     };
   } catch {
@@ -748,6 +771,7 @@ function ResultCard({ src }: { src: SourceResult }) {
       </div>
 
       {/* Cutout montage — right below the plots */}
+      {src.rgbUrl && <RgbStamp url={src.rgbUrl} />}
       {src.stampUrl && <StampMontage url={src.stampUrl} />}
 
       {/* Properties — slim multi-column strip */}
