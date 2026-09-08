@@ -690,14 +690,21 @@ export function ResultCard({ src }: { src: SourceResult }) {
   );
 }
 
-// Feedback destination. Set FEEDBACK_URL to a Google Form / Formspree endpoint later;
-// until then, flag/feedback actions open the user's mail client to FEEDBACK_EMAIL.
-const FEEDBACK_EMAIL = "sf8542@eid.utexas.edu";
-const FEEDBACK_URL = "";  // e.g. "https://forms.gle/…" — takes precedence over mailto when set
-export function flagSpurious(src: SourceResult) {
-  const id = src.row["ID"], ra = src.row["RA"], dec = src.row["DEC"];
-  if (FEEDBACK_URL) { window.open(FEEDBACK_URL, "_blank"); return; }
-  const subj = `UNICORN — spurious source: ${src.field} ${id}`;
-  const body = `Field: ${src.field}\nID: ${id}\nRA: ${ra}\nDec: ${dec}\n\nWhy it looks spurious:\n`;
-  window.location.href = `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(body)}`;
+// Flag a source as spurious: file it into the Supabase `flags` queue (status 'pending')
+// for Steven to triage on /data/review. No email. Anonymous callers can insert only.
+export async function flagSpurious(src: SourceResult) {
+  const id = Number(src.row["ID"]);
+  const ra = src.row["RA"] != null ? Number(src.row["RA"]) : null;
+  const dec = src.row["DEC"] != null ? Number(src.row["DEC"]) : null;
+  const reason = window.prompt(
+    `Flag ${src.field} ${id} as spurious?\nOptionally, why does it look wrong? (OK to submit, Cancel to abort)`,
+    "",
+  );
+  if (reason === null) return;  // cancelled
+  const { supabase } = await import("@/lib/supabase");
+  const { error } = await supabase.from("flags").insert({
+    field: src.field, obj_id: id, ra, dec, reason: reason.trim() || null,
+  });
+  if (error) { window.alert(`Could not submit the flag: ${error.message}`); return; }
+  window.alert(`Flagged ${src.field} ${id} for review — thank you!`);
 }
