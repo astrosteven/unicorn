@@ -44,8 +44,16 @@ export const CAMPFIRE_TRILOGY = { noiselum: 0.12, satpercent: 0.01, noisesig: 2.
 // Per-field fitsgl base URL. Only fields present here render an on-the-fly cutout;
 // others render nothing (the card simply omits the color panel). Extend as each
 // field's tiles come online on Corral. Keys match SEARCH_FIELDS[].field.
+const FITSGL_ROOT = "https://web.corral.tacc.utexas.edu/unicorn/fitsgl";
 export const FITSGL_BASE: Record<string, string> = {
-  CEERS: "https://web.corral.tacc.utexas.edu/unicorn/fitsgl/ceers",
+  "CEERS":         `${FITSGL_ROOT}/ceers`,
+  "GOODS-S":       `${FITSGL_ROOT}/goodss`,
+  "GOODS-N":       `${FITSGL_ROOT}/goodsn`,
+  "A2744":         `${FITSGL_ROOT}/a2744`,
+  "NGDEEP":        `${FITSGL_ROOT}/ngdeep`,
+  "PRIMER-COSMOS": `${FITSGL_ROOT}/primercosmos`,
+  "PRIMER-UDS":    `${FITSGL_ROOT}/primeruds`,
+  // "EGS" / "COSMOS" added once their tiles are uploaded.
 };
 
 // The default cutout field of view, arcsec (matches the retired static RGB stamp).

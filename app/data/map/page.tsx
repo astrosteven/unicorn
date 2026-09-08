@@ -7,13 +7,14 @@
 //
 // The WebGL viewer (window + WebGL2) is loaded client-only via next/dynamic with
 // { ssr: false }, as required by this Next 16 static export (output: "export").
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   SEARCH_FIELDS,
   loadField,
   fetchObject,
   ResultCard,
+  type FieldConfig,
   type FieldIndex,
   type SourceResult,
 } from "@/app/data/_card/objectCard";
@@ -31,8 +32,11 @@ const MapViewer = dynamic(() => import("./MapViewer"), {
   ),
 });
 
-const CORRAL_TILES = "https://web.corral.tacc.utexas.edu/unicorn/fitsgl/ceers";
-const CEERS = SEARCH_FIELDS.find(f => f.field === "CEERS")!;
+const FITSGL_ROOT = "https://web.corral.tacc.utexas.edu/unicorn/fitsgl";
+// Fields whose fitsgl tile pyramids are live on Corral. Add "egs"/"cosmos" once their
+// tiles are uploaded — the switcher + per-field overlay then work automatically.
+const FITSGL_PREFIXES = ["ceers", "goodss", "goodsn", "a2744", "ngdeep", "primercosmos", "primeruds"];
+const FITSGL_FIELDS: FieldConfig[] = SEARCH_FIELDS.filter(f => FITSGL_PREFIXES.includes(f.prefix));
 
 // Bands offered in the magnitude-filter dropdown. F277W/F444W come straight from the
 // base index; the rest resolve from the lazy per-band filters file on demand.
@@ -42,12 +46,14 @@ const MAG_BANDS = ["F277W", "F444W", "F090W", "F115W", "F150W", "F200W", "F356W"
 // a target — enough to see the source and its neighbours.
 const GOTO_ZOOM = 4;
 
-function tileBase(): string {
+// Base URL for a field's fitsgl tiles: the ?data= mirror if set (…/fitsgl/<prefix>),
+// else the public Corral fitsgl root.
+function tileBase(field: FieldConfig): string {
   if (typeof window !== "undefined") {
     const o = new URLSearchParams(window.location.search).get("data");
-    if (o) return o.replace(/\/$/, "");
+    if (o) return `${o.replace(/\/$/, "")}/fitsgl/${field.prefix}`;
   }
-  return CORRAL_TILES;
+  return `${FITSGL_ROOT}/${field.prefix}`;
 }
 
 type PanelState =
@@ -57,7 +63,8 @@ type PanelState =
   | { kind: "notfound"; id: number };
 
 export default function MapPage() {
-  const [configUrl] = useState<string>(() => `${tileBase()}/fitsgl.json`);
+  const [activeField, setActiveField] = useState<FieldConfig>(() => FITSGL_FIELDS[0]);
+  const configUrl = useMemo(() => `${tileBase(activeField)}/fitsgl.json`, [activeField]);
   const [panel, setPanel] = useState<PanelState>({ kind: "hidden" });
   const [filters, setFilters] = useState<MapFilters>(DEFAULT_FILTERS);
   const [shown, setShown] = useState<number | null>(null);
@@ -74,8 +81,8 @@ export default function MapPage() {
   const openSource = useCallback(async (id: number) => {
     setPanel({ kind: "loading", id });
     try {
-      const { zg } = await loadField(CEERS);
-      const src = await fetchObject(CEERS, id, zg);
+      const { zg } = await loadField(activeField);
+      const src = await fetchObject(activeField, id, zg);
       setPanel(prev => {
         if (prev.kind === "hidden" || prev.id !== id) return prev;
         return src ? { kind: "found", id, src } : { kind: "notfound", id };
@@ -83,7 +90,7 @@ export default function MapPage() {
     } catch {
       setPanel(prev => (prev.kind !== "hidden" && prev.id === id ? { kind: "notfound", id } : prev));
     }
-  }, []);
+  }, [activeField]);
 
   // "Go to": recenter + zoom on an object ID, or an "ra,dec" (decimal deg) pair.
   const handleGoto = useCallback((raw: string) => {
@@ -131,9 +138,26 @@ export default function MapPage() {
       <div style={{ padding: "1rem 1.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap" }}>
           <div>
-            <h1 className="page-title" style={{ fontSize: "1.5rem", color: "var(--text)", marginBottom: "2px" }}>
-              Explore — CEERS
-            </h1>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", marginBottom: "2px" }}>
+              <h1 className="page-title" style={{ fontSize: "1.5rem", color: "var(--text)", margin: 0 }}>
+                Explore
+              </h1>
+              <select
+                aria-label="Field"
+                value={activeField.field}
+                onChange={e => {
+                  const f = FITSGL_FIELDS.find(x => x.field === e.target.value);
+                  if (f) { setActiveField(f); setPanel({ kind: "hidden" }); setGotoMsg(""); }
+                }}
+                style={{
+                  background: "var(--bg)", border: "1px solid var(--border-bright)", borderRadius: "5px",
+                  color: "var(--accent)", fontFamily: "'Space Mono', monospace", fontSize: "0.9rem",
+                  fontWeight: 700, letterSpacing: "0.04em", padding: "4px 10px", cursor: "pointer",
+                }}
+              >
+                {FITSGL_FIELDS.map(f => <option key={f.field} value={f.field}>{f.field}</option>)}
+              </select>
+            </div>
             <p style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
               Interactive NIRCam color map. Pan and zoom the mosaic; click a source (green = selected,
               yellow = not) to open its SED and P(z). Filter at left; jump to a source at right.
@@ -149,6 +173,8 @@ export default function MapPage() {
 
         <div style={{ flex: 1, minWidth: 0, position: "relative", background: "#0d0a1a" }}>
           <MapViewer
+            key={activeField.field}
+            field={activeField}
             configUrl={configUrl}
             filters={filters}
             onSourceClick={openSource}
@@ -171,7 +197,7 @@ export default function MapPage() {
               position: "sticky", top: 0, background: "var(--bg)", zIndex: 1,
             }}>
               <span className="mono" style={{ fontSize: "0.8rem", color: "var(--accent)", letterSpacing: "0.06em" }}>
-                CEERS · ID {panel.id}
+                {activeField.field} · ID {panel.id}
               </span>
               <button
                 onClick={() => setPanel({ kind: "hidden" })}
@@ -196,7 +222,7 @@ export default function MapPage() {
                   background: "rgba(240,192,112,0.05)", color: "var(--text-muted)", fontSize: "0.85rem",
                 }}>
                   <span className="mono" style={{ color: "var(--amber)", marginRight: "10px", fontSize: "0.75rem" }}>NO CARD</span>
-                  No object card is available for CEERS ID {panel.id}. (Per-object cards are served from Corral;
+                  No object card is available for {activeField.field} ID {panel.id}. (Per-object cards are served from Corral;
                   when previewing a local tile server with <code>?data=</code>, cards may be unavailable.)
                 </div>
               )}

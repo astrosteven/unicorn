@@ -26,16 +26,14 @@ import {
 } from "@fitsgl/core/react";
 import { loadFitsglConfig, type FitsglConfig, type ViewerConfig } from "@fitsgl/core";
 import {
-  SEARCH_FIELDS,
   loadField,
   loadFilters,
+  type FieldConfig,
   type FieldIndex,
   type NumCol,
 } from "@/app/data/_card/objectCard";
 
 type LoadState = "loading" | "ready" | "error";
-
-const CEERS = SEARCH_FIELDS.find(f => f.field === "CEERS")!;
 
 // Overlay colors: selected sources green, everything else yellow.
 const GREEN = "#43d17a";
@@ -114,12 +112,15 @@ function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters): Src[] {
 type Glyph = { id: number; sel: boolean; poly?: string; cx?: number; cy?: number; r?: number };
 
 export default function MapViewer({
+  field,
   configUrl,
   filters,
   onSourceClick,
   onCount,
   onReadyHandle,
 }: {
+  /** The active field's config — drives which search index the overlay loads. */
+  field: FieldConfig;
   configUrl: string;
   filters: MapFilters;
   onSourceClick: (id: number) => void;
@@ -178,7 +179,7 @@ export default function MapViewer({
   // Load our search index (positions, selected, za, geometry) once.
   useEffect(() => {
     let cancelled = false;
-    loadField(CEERS)
+    loadField(field)
       .then(({ idx }) => { if (!cancelled) setIdx(idx); })
       .catch(err => console.error("[map] failed to load search index:", err));
     return () => { cancelled = true; };
@@ -193,7 +194,7 @@ export default function MapViewer({
     if (magBand === "F277W" && idx.m277) { setMagCol(idx.m277); return; }
     if (magBand === "F444W" && idx.m444) { setMagCol(idx.m444); return; }
     (async () => {
-      const fx = await loadFilters(CEERS);
+      const fx = await loadFilters(field);
       if (cancelled || !fx) { setMagCol(null); return; }
       const flux = fx[`flux_${magBand.toLowerCase()}`];
       if (!flux) { setMagCol(null); return; }
