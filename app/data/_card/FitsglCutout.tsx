@@ -53,7 +53,8 @@ export const FITSGL_BASE: Record<string, string> = {
   "NGDEEP":        `${FITSGL_ROOT}/ngdeep`,
   "PRIMER-COSMOS": `${FITSGL_ROOT}/primercosmos`,
   "PRIMER-UDS":    `${FITSGL_ROOT}/primeruds`,
-  // "EGS" / "COSMOS" added once their tiles are uploaded.
+  "EGS":           `${FITSGL_ROOT}/egs`,
+  // "COSMOS" added once its tiles are uploaded.
 };
 
 // The default cutout field of view, arcsec (matches the retired static RGB stamp).
