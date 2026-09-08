@@ -9,6 +9,7 @@ const NAV_LINKS = [
   { href: "/data",          label: "Overview" },
   { href: "/data/catalogs", label: "Catalogs" },
   { href: "/data/fields",   label: "Fields" },
+  { href: "/data/map",      label: "Explore" },
   { href: "/data/search",   label: "Search" },
 ];
 
