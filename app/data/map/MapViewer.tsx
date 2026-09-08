@@ -235,9 +235,10 @@ export default function MapViewer({
     const asDot = zoom < DOT_ZOOM;
     for (let k = 0; k < list.length && out.length < MAX_GLYPHS; k++) {
       const s = list[k];
-      // Project the centre first; cheap reject if off-screen.
+      // Project the centre first; cheap reject if off-screen. imageToScreen returns
+      // viewport-relative CSS px (same frame as the wrapper rect), or null before load.
       const c = h.imageToScreen(s.x + 0.5, s.y + 0.5);
-      // imageToScreen is viewport-relative CSS px (same frame as the wrapper rect).
+      if (!c) continue;
       const scx = c.x - rect.left, scy = c.y - rect.top;
       if (scx < -margin || scx > W + margin || scy < -margin || scy > H + margin) continue;
 
@@ -248,14 +249,17 @@ export default function MapViewer({
       // Project the ellipse's world-space rim vertices → screen (handles North-up too).
       const ct = Math.cos(s.th), st = Math.sin(s.th);
       const pts: string[] = [];
+      let bad = false;
       for (let j = 0; j < ELLIPSE_SEGMENTS; j++) {
         const phi = (2 * Math.PI * j) / ELLIPSE_SEGMENTS;
         const ex = s.semiA * Math.cos(phi), ey = s.semiB * Math.sin(phi);
         const wx = s.x + 0.5 + ex * ct - ey * st;
         const wy = s.y + 0.5 + ex * st + ey * ct;
         const p = h.imageToScreen(wx, wy);
+        if (!p) { bad = true; break; }
         pts.push(`${(p.x - rect.left).toFixed(1)},${(p.y - rect.top).toFixed(1)}`);
       }
+      if (bad) continue;
       out.push({ id: s.id, sel: s.sel, poly: pts.join(" ") });
     }
     setGlyphs(out);
