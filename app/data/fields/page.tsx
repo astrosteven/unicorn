@@ -143,15 +143,6 @@ export default function FieldsPage() {
         <p style={{ color: "var(--text-muted)", fontSize: "0.95rem" }}>
           UNICORN covers nine legacy JWST fields. Select a field to view its sky coverage and properties.
         </p>
-        <p style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginTop: "10px", lineHeight: 1.7 }}>
-          <span style={{ color: "var(--amber)", fontWeight: 700 }}>Note on precision:</span> quantities exposed to
-          the in-browser <a href="/data/search" style={{ color: "var(--accent2)" }}>Search</a> are rounded for fast
-          querying. Per-filter queries use the native catalog flux stored to 4 significant figures (derived
-          mag/S/N/color match the catalog to ≲10⁻³; colors use a 1σ upper limit where S/N&lt;1); redshifts, M_UV, β
-          and sizes are stored to 3–4 decimals. They are meant for discovery and filtering; the FITS catalogs on the{" "}
-          <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page carry the full-precision,
-          science-grade values.
-        </p>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: "1.5rem", alignItems: "start" }}>

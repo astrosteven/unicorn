@@ -1142,6 +1142,14 @@ export default function SearchPage() {
           SQL-style query on redshift and magnitude. Each match shows photometry, photo-z,
           and a bio plot with the best-fit and low-z model spectra.
         </p>
+        <p style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginTop: "10px", lineHeight: 1.7 }}>
+          <span style={{ color: "var(--amber)", fontWeight: 700 }}>Note on precision:</span> query values are rounded
+          for fast in-browser search — per-filter queries use the native catalog flux to 4 significant figures
+          (derived mag/S/N/color match the catalog to ≲10⁻³; colors use a 1σ upper limit where S/N&lt;1); redshifts,
+          M_UV, β and sizes to 3–4 decimals. For full-precision, science-grade values use the FITS catalogs on the{" "}
+          <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page. See “Field Search Options”
+          below for the per-quantity detail.
+        </p>
       </div>
 
       {/* Search card */}
