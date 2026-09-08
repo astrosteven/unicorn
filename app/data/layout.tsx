@@ -78,6 +78,22 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
         </button>
       </nav>
 
+      {/* Persistent development / authorized-use disclaimer for the protected area */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: "10px",
+        padding: "9px clamp(1.25rem, 4vw, 2.5rem)",
+        background: "linear-gradient(90deg, rgba(240,192,112,0.13), rgba(240,192,112,0.06))",
+        borderBottom: "1px solid rgba(240,192,112,0.35)",
+        color: "var(--amber)",
+        fontFamily: "'Space Mono', monospace", fontSize: "0.8rem", lineHeight: 1.5,
+      }}>
+        <span style={{ fontSize: "1rem", flexShrink: 0 }} aria-hidden>⚠️</span>
+        <span style={{ color: "var(--text)" }}>
+          <b style={{ color: "var(--amber)" }}>Disclaimer:</b> All catalogs are still in active development — this
+          website is for use only by people authorized by Steven Finkelstein.
+        </span>
+      </div>
+
       <div style={{ flex: 1 }}>{children}</div>
 
       <footer style={{ borderTop: "1px solid var(--border)", padding: "1.5rem 2rem", textAlign: "center" }}>
