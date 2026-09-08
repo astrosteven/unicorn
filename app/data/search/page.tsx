@@ -1,5 +1,7 @@
 "use client";
 import { useState, useRef, Fragment, type ReactNode, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
 
 // Filter pivot wavelengths in microns. Covers HST/ACS + the full JWST/NIRCam
@@ -797,6 +799,64 @@ function flagSpurious(src: SourceResult) {
   window.location.href = `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(body)}`;
 }
 
+// Rasterize a live on-page <svg> (with CSS-variable colors resolved via getComputedStyle)
+// to a PNG blob, for bundling plots into the results download. No external refs → no taint.
+async function svgToPngBlob(svg: SVGSVGElement, scale = 2): Promise<Blob | null> {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  const live = svg.querySelectorAll("*");
+  const cl = clone.querySelectorAll("*");
+  const inline = (l: Element, c: Element) => {
+    const cs = getComputedStyle(l);
+    (["fill", "stroke", "color", "stop-color"] as const).forEach(p => {
+      const v = cs.getPropertyValue(p);
+      if (v && v !== "none" && !v.includes("var(")) c.setAttribute(p, v);
+    });
+  };
+  inline(svg, clone);
+  live.forEach((n, i) => { if (cl[i]) inline(n, cl[i]); });
+  const vb = svg.viewBox.baseVal;
+  const w = vb && vb.width ? vb.width : (svg.clientWidth || 480);
+  const h = vb && vb.height ? vb.height : (svg.clientHeight || 300);
+  clone.setAttribute("width", String(w));
+  clone.setAttribute("height", String(h));
+  const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  bg.setAttribute("width", "100%"); bg.setAttribute("height", "100%");
+  bg.setAttribute("fill", getComputedStyle(document.body).backgroundColor || "#0b0817");
+  clone.insertBefore(bg, clone.firstChild);
+  const xml = new XMLSerializer().serializeToString(clone);
+  const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml);
+  const img = new Image();
+  try {
+    await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(); img.src = url; });
+  } catch { return null; }
+  const cv = document.createElement("canvas");
+  cv.width = Math.round(w * scale); cv.height = Math.round(h * scale);
+  const ctx = cv.getContext("2d");
+  if (!ctx) return null;
+  ctx.scale(scale, scale);
+  ctx.drawImage(img, 0, 0);
+  return await new Promise<Blob | null>(res => cv.toBlob(b => res(b), "image/png"));
+}
+
+// The SED + P(z) plots for one object, rendered off-screen so the download can rasterize
+// them. Mirrors ResultCard's P(z) normalization.
+function CardPlots({ src }: { src: SourceResult }) {
+  const za = src.pz["ZA"] ?? 0;
+  const normalize = (arr: number[] | undefined, grid: number[] | undefined) => {
+    if (!arr || !grid || arr.length !== grid.length) return undefined;
+    const nrm = arr.reduce((s, v, i) => s + v * (grid[i + 1] - grid[i] || 0.02), 0) || 1;
+    return arr.map(v => v / nrm);
+  };
+  const pzNorm = normalize(src.pzArr, src.zgrid) ?? src.pzArr;
+  const pzLowzNorm = normalize(src.pzArrLowz, src.zgridLowz);
+  return (
+    <div style={{ width: 500 }}>
+      <SEDPlot src={src} />
+      <PZPlot zgrid={src.zgrid} pz={pzNorm} za={za} zgridLowz={src.zgridLowz} pzLowz={pzLowzNorm} />
+    </div>
+  );
+}
+
 export default function SearchPage() {
   const [mode, setMode] = useState<SearchMode>("id");
   const [idInput, setIdInput] = useState("");
@@ -810,31 +870,65 @@ export default function SearchPage() {
   const [defsOpen, setDefsOpen] = useState(false);
   const [zipping, setZipping] = useState<string | null>(null);
 
-  // Fetch the cutout PNG for every result row from Corral, bundle into one zip.
-  // Capped at the shown rows (<=500). Missing stamps (field w/o stamps) are skipped.
+  // Bundle a "result card" per shown row into one zip: the cutout montage (from Corral),
+  // plus the SED and P(z) plots rasterized to PNG. Per-object detail is fetched concurrently;
+  // the plots are rendered off-screen and rasterized serially (shared React root). <=500 rows.
   async function downloadResultStamps() {
     if (!queryRows.length || zipping) return;
     const zip = new JSZip();
     const rows = [...queryRows];
     const total = rows.length;
-    let done = 0, ok = 0;
     setZipping(`0/${total}`);
-    async function worker() {
-      while (rows.length) {
-        const r = rows.shift()!;
+
+    // 1) Fetch per-object detail concurrently.
+    const srcs: (SourceResult | null)[] = new Array(total).fill(null);
+    const queue = rows.map((_, i) => i);
+    let fetched = 0;
+    async function fetchWorker() {
+      while (queue.length) {
+        const i = queue.shift()!;
         try {
-          const resp = await fetch(`${corralBase()}/${r.fc.dir}/web/stamps/${r.fc.prefix}_${r.id}.png`);
-          if (resp.ok) { zip.file(`${r.fc.field}_${r.id}.png`, await resp.blob()); ok++; }
+          const { zg } = await loadField(rows[i].fc);
+          srcs[i] = await fetchObject(rows[i].fc, rows[i].id, zg);
         } catch { /* skip */ }
-        done++; if (done % 5 === 0 || done === total) setZipping(`${done}/${total}`);
+        fetched++; if (fetched % 5 === 0 || fetched === total) setZipping(`fetch ${fetched}/${total}`);
       }
     }
-    await Promise.all(Array.from({ length: 8 }, worker));
+    await Promise.all(Array.from({ length: 6 }, fetchWorker));
+
+    // 2) Add stamp + rasterized SED/P(z) per object (plot render is serial).
+    const holder = document.createElement("div");
+    holder.style.cssText = "position:fixed;left:-99999px;top:0;width:520px;pointer-events:none;";
+    document.body.appendChild(holder);
+    const root = createRoot(holder);
+    let ok = 0;
+    for (let i = 0; i < total; i++) {
+      const src = srcs[i]; const r = rows[i];
+      if (src) {
+        const base = `${r.fc.field}_${r.id}`;
+        try {
+          const resp = await fetch(src.stampUrl ?? `${corralBase()}/${r.fc.dir}/web/stamps/${r.fc.prefix}_${r.id}.png`);
+          if (resp.ok) zip.file(`${base}_stamp.png`, await resp.blob());
+        } catch { /* field w/o stamps: skip */ }
+        try {
+          flushSync(() => root.render(<CardPlots src={src} />));
+          const svgs = holder.querySelectorAll("svg");
+          if (svgs[0]) { const b = await svgToPngBlob(svgs[0] as SVGSVGElement); if (b) zip.file(`${base}_sed.png`, b); }
+          if (svgs[1]) { const b = await svgToPngBlob(svgs[1] as SVGSVGElement); if (b) zip.file(`${base}_pz.png`, b); }
+        } catch { /* rasterize failure: skip plots */ }
+        ok++;
+      }
+      if (i % 3 === 0 || i === total - 1) setZipping(`render ${i + 1}/${total}`);
+    }
+    root.unmount();
+    holder.remove();
+
     if (ok === 0) { setZipping(null); return; }
+    setZipping("zipping…");
     const blob = await zip.generateAsync({ type: "blob" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `unicorn_stamps_${ok}.zip`;
+    a.download = `unicorn_cards_${ok}.zip`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     setZipping(null);
@@ -1228,6 +1322,18 @@ export default function SearchPage() {
                 </div>
               )}
               {defsOpen && (
+                <div style={{ marginTop: "8px", padding: "7px 10px", background: "rgba(196,144,216,0.06)", border: "1px solid var(--border)", borderRadius: "6px", color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.7 }}>
+                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>Colors &amp; upper limits.</span>{" "}
+                  A color <span className="mono">fA-fB</span> is <span className="mono">−2.5·log₁₀(fluxA / fluxB)</span>,
+                  computed from the native catalog fluxes. When a band has <span className="mono">S/N &lt; 1</span> (a
+                  non-detection / dropout), its flux is replaced by the <b>1σ upper limit</b> (= that band&apos;s
+                  <span className="mono"> FLUXERR</span>) before the color is formed — so e.g. a source undetected in
+                  F444W gives a proper limiting color rather than a noise-driven value. For detected bands the color
+                  equals the magnitude difference <span className="mono">magA − magB</span>. S/N is
+                  <span className="mono"> flux/fluxerr</span> on the same native fluxes.
+                </div>
+              )}
+              {defsOpen && (
                 <div style={{ marginTop: "8px", padding: "7px 10px", background: "rgba(240,192,112,0.06)", border: "1px solid rgba(240,192,112,0.22)", borderRadius: "6px", color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.7 }}>
                   <span style={{ color: "var(--amber)", fontWeight: 700 }}>Precision:</span> per-filter queries use the
                   native catalog flux (bare <span className="mono">FLUX_&lt;f&gt;</span>/<span className="mono">FLUXERR</span>),
@@ -1316,9 +1422,9 @@ export default function SearchPage() {
 
           <div style={{ margin: "-0.25rem 0 1rem" }}>
             <button onClick={downloadResultStamps} disabled={!!zipping} className="mono"
-              title="Download a zip of the cutout stamp images for these results"
+              title="Download a zip of result cards for these sources — cutout montage + SED + P(z) per object"
               style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: zipping ? "wait" : "pointer" }}>
-              {zipping ? `zipping stamps… ${zipping}` : `↓ download stamp images (${queryRows.length})`}
+              {zipping ? `${zipping}…` : `↓ download result cards — stamp + SED + P(z) (${queryRows.length})`}
             </button>
           </div>
 
