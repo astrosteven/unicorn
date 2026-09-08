@@ -42,9 +42,11 @@ const FITSGL_FIELDS: FieldConfig[] = SEARCH_FIELDS.filter(f => FITSGL_PREFIXES.i
 // base index; the rest resolve from the lazy per-band filters file on demand.
 const MAG_BANDS = ["F277W", "F444W", "F090W", "F115W", "F150W", "F200W", "F356W", "F410M"];
 
-// A close field-of-view (zoom = drawing-buffer px per native px) when recentering on
-// a target — enough to see the source and its neighbours.
-const GOTO_ZOOM = 4;
+// "Go to" recenter field of view: show a ~5" region around the target. The viewer's
+// zoom is drawing-buffer px per native px, so the zoom that fits GOTO_FOV_ARCSEC across
+// the viewer width W (buffer px) is  W / (fov_arcsec / pixscale).
+const GOTO_FOV_ARCSEC = 5;
+const PIXSCALE_ARCSEC = 0.03;   // 30 mas mosaics — native pixel scale of the fitsgl tiles
 
 // Base URL for a field's fitsgl tiles: the ?data= mirror if set (…/fitsgl/<prefix>),
 // else the public Corral fitsgl root.
@@ -73,6 +75,7 @@ export default function MapPage() {
   // Viewer handle + loaded index, captured once ready — drives the "go to" control.
   const handleRef = useRef<FitsViewerHandle | null>(null);
   const idxRef = useRef<FieldIndex | null>(null);
+  const viewerBoxRef = useRef<HTMLDivElement | null>(null);  // measured for the go-to FOV
   const onReadyHandle = useCallback((h: FitsViewerHandle, idx: FieldIndex) => {
     handleRef.current = h;
     idxRef.current = idx;
@@ -126,7 +129,11 @@ export default function MapPage() {
     const px = skyToPix(wcs, ra, dec);
     if (!Number.isFinite(px.x) || !Number.isFinite(px.y)) { setGotoMsg("target off the projection"); return; }
     h.setCenter(px.x, px.y);
-    h.setZoom(GOTO_ZOOM);
+    // Zoom so the target spans ~GOTO_FOV_ARCSEC across the viewer (buffer px per native px).
+    const cssW = viewerBoxRef.current?.clientWidth ?? (typeof window !== "undefined" ? window.innerWidth : 1000);
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    const fovNativePx = GOTO_FOV_ARCSEC / PIXSCALE_ARCSEC;   // ~167 px for 5"
+    h.setZoom((cssW * dpr) / fovNativePx);
     setGotoMsg(`→ ${ra.toFixed(5)}, ${dec.toFixed(5)}`);
   }, []);
 
@@ -171,7 +178,7 @@ export default function MapPage() {
       <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
         <FilterSidebar filters={filters} setFilters={setFilters} shown={shown} />
 
-        <div style={{ flex: 1, minWidth: 0, position: "relative", background: "#0d0a1a" }}>
+        <div ref={viewerBoxRef} style={{ flex: 1, minWidth: 0, position: "relative", background: "#0d0a1a" }}>
           <MapViewer
             key={activeField.field}
             field={activeField}
