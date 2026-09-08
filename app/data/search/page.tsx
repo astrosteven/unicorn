@@ -2,7 +2,9 @@
 import { useState, useRef, Fragment } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import Link from "next/link";
 import JSZip from "jszip";
+import { FITSGL_BASE } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
 import {
   FILTER_WAVES,
@@ -817,7 +819,7 @@ export default function SearchPage() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>
               <thead>
                 <tr style={{ background: "rgba(176,124,198,0.08)" }}>
-                  {["ID", "field", "z_a", "m₄₄₄", "zspec", ...queryCols, "selected", ""].map((h, i) => (
+                  {["ID", "field", "z_a", "m₄₄₄", "zspec", ...queryCols, "selected", "", "map"].map((h, i) => (
                     <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 400, fontSize: "0.72rem", letterSpacing: "0.06em" }}>{h}</th>
                   ))}
                 </tr>
@@ -843,10 +845,16 @@ export default function SearchPage() {
                     ))}
                     <td style={{ padding: "7px 14px", textAlign: "right", color: r.selected ? "var(--amber)" : "var(--text-dim)" }}>{r.selected == null ? "—" : r.selected ? "★" : "·"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--accent2)", fontSize: "0.72rem" }}>{open ? "▾ close" : "view →"}</td>
+                    <td style={{ padding: "7px 14px", textAlign: "right", fontSize: "0.72rem" }} onClick={e => e.stopPropagation()}>
+                      {FITSGL_BASE[r.fc.field]
+                        ? <Link href={{ pathname: "/data/map", query: { field: r.fc.field, id: r.id } }} title="Open in the color map"
+                            style={{ color: "var(--accent)", textDecoration: "none" }}>map ↗</Link>
+                        : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                    </td>
                   </tr>
                   {open && (
                     <tr ref={cardRef}>
-                      <td colSpan={6 + queryCols.length} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
+                      <td colSpan={8 + queryCols.length} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
                         {queryCard && queryCard.row["ID"] === r.id
                           ? <ResultCard src={queryCard} />
                           : <div style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>Loading…</div>}

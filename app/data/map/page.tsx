@@ -7,7 +7,7 @@
 //
 // The WebGL viewer (window + WebGL2) is loaded client-only via next/dynamic with
 // { ssr: false }, as required by this Next 16 static export (output: "export").
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   SEARCH_FIELDS,
@@ -58,6 +58,22 @@ function tileBase(field: FieldConfig): string {
   return `${FITSGL_ROOT}/${field.prefix}`;
 }
 
+// Deep-link support: /data/map?field=<name|prefix>&id=<objid> opens that field and jumps
+// to the object (used by the Search page's "map" column).
+function initialField(): FieldConfig {
+  if (typeof window !== "undefined") {
+    const f = new URLSearchParams(window.location.search).get("field");
+    if (f) {
+      const fc = FITSGL_FIELDS.find(x => x.field === f || x.prefix === f.toLowerCase());
+      if (fc) return fc;
+    }
+  }
+  return FITSGL_FIELDS[0];
+}
+function initialGotoId(): string | null {
+  return typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") : null;
+}
+
 type PanelState =
   | { kind: "hidden" }
   | { kind: "loading"; id: number }
@@ -65,8 +81,10 @@ type PanelState =
   | { kind: "notfound"; id: number };
 
 export default function MapPage() {
-  const [activeField, setActiveField] = useState<FieldConfig>(() => FITSGL_FIELDS[0]);
+  const [activeField, setActiveField] = useState<FieldConfig>(initialField);
   const configUrl = useMemo(() => `${tileBase(activeField)}/fitsgl.json`, [activeField]);
+  const pendingGotoRef = useRef<string | null>(initialGotoId());
+  const [ready, setReady] = useState(false);
   const [panel, setPanel] = useState<PanelState>({ kind: "hidden" });
   const [filters, setFilters] = useState<MapFilters>(DEFAULT_FILTERS);
   const [shown, setShown] = useState<number | null>(null);
@@ -79,6 +97,7 @@ export default function MapPage() {
   const onReadyHandle = useCallback((h: FitsViewerHandle, idx: FieldIndex) => {
     handleRef.current = h;
     idxRef.current = idx;
+    setReady(true);
   }, []);
 
   const openSource = useCallback(async (id: number) => {
@@ -136,6 +155,16 @@ export default function MapPage() {
     h.setZoom((cssW * dpr) / fovNativePx);
     setGotoMsg(`→ ${ra.toFixed(5)}, ${dec.toFixed(5)}`);
   }, []);
+
+  // Deep-link (?id=…): jump to the object once the viewer + index are ready.
+  useEffect(() => {
+    if (ready && pendingGotoRef.current) {
+      const g = pendingGotoRef.current;
+      pendingGotoRef.current = null;
+      const t = setTimeout(() => handleGoto(g), 200);
+      return () => clearTimeout(t);
+    }
+  }, [ready, handleGoto]);
 
   const panelOpen = panel.kind !== "hidden";
 

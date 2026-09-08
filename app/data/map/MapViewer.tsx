@@ -26,6 +26,7 @@ import {
 } from "@fitsgl/core/react";
 import {
   loadFitsglConfig,
+  skyToPix,
   DEFAULT_TRILOGY_PARAMS,
   type FitsglConfig,
   type ViewerConfig,
@@ -107,7 +108,8 @@ export const DEFAULT_FILTERS: MapFilters = {
 // A source that passed the active filters, with the geometry needed to draw it.
 type Src = {
   i: number; id: number; sel: boolean;
-  x: number; y: number;               // detection-pixel centre (world coords)
+  x: number; y: number;               // world-pixel centre (from index x/y; overwritten from ra/dec for tiled fields)
+  ra: number; dec: number;            // sky position — used to resolve world px on tiled fields
   semiA: number; semiB: number; th: number;  // ellipse semi-axes (px) + PA (rad); th=NaN → circle
 };
 
@@ -142,7 +144,7 @@ function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters): Src[] {
     if (av != null && bv != null && kv != null && kv > 0 && tv != null) {
       semiA = av * kv; semiB = bv * kv; th = (tv * Math.PI) / 180;
     }
-    out.push({ i, id: idx.id[i], sel: isSel, x: xi, y: yi, semiA, semiB, th });
+    out.push({ i, id: idx.id[i], sel: isSel, x: xi, y: yi, ra: idx.ra[i], dec: idx.dec[i], semiA, semiB, th });
   }
   return out;
 }
@@ -193,6 +195,10 @@ export default function MapViewer({
   // The current filtered source list, held in a ref so the per-frame projector reads
   // the latest without being a hook dependency (projection must not re-subscribe onFrame).
   const sourcesRef = useRef<Src[]>([]);
+  // Tiled fields (COSMOS/EGS) have per-tile catalog x,y that don't map to the fitsgl
+  // virtual grid — resolve each source's world px from ra/dec via the viewer WCS instead.
+  const tiledRef = useRef(false);
+  const resolvedRef = useRef(false);   // world px resolved for the current source list?
   // Latest per-band trilogy stats + view kind, in a ref so applyScaling reads them
   // without re-subscribing. Set from the config memo.
   const statsRef = useRef<{ stats: TrilogyStats[] | null; single: boolean }>({ stats: null, single: false });
@@ -262,7 +268,7 @@ export default function MapViewer({
   useEffect(() => {
     let cancelled = false;
     loadField(field)
-      .then(({ idx }) => { if (!cancelled) setIdx(idx); })
+      .then(({ idx }) => { if (!cancelled) { tiledRef.current = idx.tile != null; setIdx(idx); } })
       .catch(err => console.error("[map] failed to load search index:", err));
     return () => { cancelled = true; };
   }, []);
@@ -293,6 +299,7 @@ export default function MapViewer({
   );
   useEffect(() => {
     sourcesRef.current = sources;
+    resolvedRef.current = false;   // new list → re-resolve tiled world px on next project
     countRef.current?.(sources.length);
     // Reproject against the current camera (filters changed between frames). A couple
     // of delayed retries cover the case where the viewer handle / first frame isn't
@@ -317,6 +324,20 @@ export default function MapViewer({
     const zoom = cam.zoom;
     const list = sourcesRef.current;
     const asDot = zoom < DOT_ZOOM;
+
+    // Tiled fields: the catalog x,y are per-tile and don't line up with the fitsgl virtual
+    // grid, so resolve each source's world px from its ra/dec via the viewer WCS (once per
+    // source list). Single-mosaic fields keep their index x,y (already world px).
+    if (tiledRef.current && !resolvedRef.current && list.length) {
+      const wcs = h.getViewer()?.getWcs();
+      if (wcs) {
+        for (const s of list) {
+          const p = skyToPix(wcs, s.ra, s.dec);
+          if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) { s.x = p.x; s.y = p.y; }
+        }
+        resolvedRef.current = true;
+      }
+    }
 
     // Phase 1 — WORLD-space viewport cull (cheap, no imageToScreen). The viewport spans
     // W/zoom × H/zoom world px about the camera centre; take a generous margin (×1.5 +
@@ -412,6 +433,10 @@ export default function MapViewer({
     return <MapMessage title="Loading color map…" body="Fetching tile pyramid + source catalog." spin />;
   }
 
+  // Thicken the glyph strokes when few are shown (a restrictive filter, or deep zoom) so
+  // sparse sources pop; thin out when the field is dense.
+  const glyphSW = glyphs.length <= 40 ? 3 : glyphs.length <= 200 ? 2.3 : glyphs.length <= 1200 ? 1.7 : 1.3;
+
   return (
     <div ref={wrapRef} style={{ width: "100%", height: "100%", position: "relative" }}>
       <FitsViewer
@@ -439,7 +464,7 @@ export default function MapViewer({
             return (
               <polygon
                 key={k} data-src-id={g.id} points={g.poly}
-                fill="transparent" stroke={color} strokeWidth={1.4}
+                fill="transparent" stroke={color} strokeWidth={glyphSW}
                 style={{ pointerEvents: "visible", cursor: "pointer" }}
                 onClick={onClick}
               >
@@ -450,7 +475,7 @@ export default function MapViewer({
           return (
             <circle
               key={k} data-src-id={g.id} cx={g.cx} cy={g.cy} r={g.r}
-              fill={g.r! <= 2 ? color : "transparent"} stroke={color} strokeWidth={1.4}
+              fill={g.r! <= 2 ? color : "transparent"} stroke={color} strokeWidth={glyphSW}
               style={{ pointerEvents: "visible", cursor: "pointer" }}
               onClick={onClick}
             >
