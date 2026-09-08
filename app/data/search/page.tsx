@@ -141,6 +141,10 @@ type ZGrid = { zgrid: number[]; zgridLowz: number[]; sedWave: number[] };
 const _indexCache: Record<string, FieldIndex> = {};
 const _zgridCache: Record<string, ZGrid> = {};
 const _indexPromise: Record<string, Promise<{ idx: FieldIndex; zg: ZGrid }>> = {};
+// Per-filter flux table (native flux_<f>/fluxerr_<f>): lazy — fetched only when a query
+// references a mag/snr/flux/color term, and cached per field for the session.
+const _filtersCache: Record<string, Record<string, NumCol>> = {};
+const _filtersPromise: Record<string, Promise<Record<string, NumCol>>> = {};
 
 // Fetch a JSON file, transparently handling a gzipped (.json.gz) sibling. The
 // large search index is served gzipped (~8x smaller) so it transfers reliably;
@@ -195,6 +199,32 @@ async function loadField(fc: typeof SEARCH_FIELDS[0]): Promise<{ idx: FieldIndex
   }
 }
 
+// Fetch a field's per-filter flux table (<prefix>_filters_v<ver>.json[.gz]) on demand.
+// Returns null (and leaves filter columns unmatched) if the file is missing.
+async function loadFilters(fc: typeof SEARCH_FIELDS[0]): Promise<Record<string, NumCol> | null> {
+  if (fc.field in _filtersCache) return _filtersCache[fc.field];
+  if (fc.field in _filtersPromise) return _filtersPromise[fc.field];
+  _filtersPromise[fc.field] = (async () => {
+    const override = dataOverride();
+    const name = `${fc.prefix}_filters_v${fc.version}.json`;
+    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    try {
+      return await fetchJsonMaybeGz(`${primary}/${name}`);
+    } catch (e) {
+      if (override) throw e;
+      return await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fc.dir}/web/${name}`);
+    }
+  })();
+  try {
+    const fx = await _filtersPromise[fc.field];
+    _filtersCache[fc.field] = fx;
+    return fx;
+  } catch {
+    delete _filtersPromise[fc.field];  // allow retry on next search
+    return null;
+  }
+}
+
 async function fetchObject(fc: typeof SEARCH_FIELDS[0], id: number, zg: ZGrid): Promise<SourceResult | null> {
   try {
     // Per-object cards live under web/cards/; older uploads used web/objects/ — try
@@ -240,16 +270,18 @@ const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m150
   "ra", "dec", "selected", "inspected", "sample"];
 const QUERY_STR = ["field", "detectcat", "tile"];
 
-// Per-filter photometry is queryable too, via synthetic column names computed from the
-// index at query time (see make_web_index.py `mag_<f>` / `snr_<f>` columns):
-//   mag_<filt>   AB magnitude in a filter           e.g.  mag_f277w < 28
-//   snr_<filt>   S/N (flux/err) in a filter          e.g.  snr_f444w > 5
-//   flux_<filt>  flux in nJy (derived from mag_<f>)  e.g.  flux_f150w > 100
-//   <filtA>-<filtB>  color = mag_A − mag_B           e.g.  f150w-f277w < 0.5
-// Any filter present in a field's catalog works; a field lacking the band yields no match.
+// Per-filter photometry is queryable too. The site stores NATIVE bare flux_<f> + fluxerr_<f>
+// (nJy) in a separate lazy-loaded <prefix>_filters file, and derives these on the fly:
+//   flux_<filt>  native catalog flux (nJy)          e.g.  flux_f150w > 100
+//   mag_<filt>   AB mag = 31.4 − 2.5·log10(flux)     e.g.  mag_f277w < 28
+//   snr_<filt>   S/N = flux / fluxerr                e.g.  snr_f444w > 5
+//   <filtA>-<filtB>  color = −2.5·log10(fA/fB)       e.g.  f150w-f277w < 0.5
+// Colors use a 1σ UPPER LIMIT (flux → fluxerr) for any band with S/N < 1, matching how
+// a dropout is treated in the catalog. A field lacking a band yields no match for it.
 const KNOWN_FILTERS = new Set(Object.keys(FILTER_WAVES).map(f => f.toLowerCase()));
 const RE_MAGSNR = /^(mag|snr|flux)_([a-z0-9]+)$/;
 const RE_COLOR  = /^([a-z][a-z0-9]*)-([a-z][a-z0-9]*)$/;
+const LIMIT_SNR = 1;   // bands with S/N below this are treated as non-detections in colors
 
 // Is `f` a queryable field name (built-in, per-filter, or color)?
 function isKnownField(f: string): boolean {
@@ -259,30 +291,48 @@ function isKnownField(f: string): boolean {
   if ((m = f.match(RE_COLOR)))  return KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2]);
   return false;
 }
-// A value-extractor for a column: stored built-ins read `r[col]`; flux_<f> and colors are
-// derived from the stored `mag_<f>` column(s) (flux nJy = 10^((31.4−mag)/2.5)).
+// The flux (nJy) to use for a band in a COLOR: the measured flux if S/N ≥ 1, else the
+// 1σ upper limit (= fluxerr). Returns null if the band's flux/err aren't available.
+function bandColorFlux(r: IdxRow, band: string): number | null {
+  const f = r[`flux_${band}`], e = r[`fluxerr_${band}`];
+  if (typeof f !== "number" || typeof e !== "number" || !(e > 0)) return null;
+  const used = (f / e >= LIMIT_SNR) ? f : e;   // non-detection → 1σ limit
+  return used > 0 ? used : null;
+}
+// A value-extractor for a column, all derived from the native stored flux_<f>/fluxerr_<f>.
 function colGetter(col: string): (r: IdxRow) => number | string | null {
   let m: RegExpMatchArray | null;
-  if ((m = col.match(/^flux_([a-z0-9]+)$/))) {
-    const mc = `mag_${m[1]}`;
-    return r => { const mg = r[mc]; return typeof mg === "number" ? Math.pow(10, (31.4 - mg) / 2.5) : null; };
+  if ((m = col.match(/^flux_([a-z0-9]+)$/)) && KNOWN_FILTERS.has(m[1])) {
+    const fc = `flux_${m[1]}`;
+    return r => { const f = r[fc]; return typeof f === "number" ? f : null; };
+  }
+  if ((m = col.match(/^mag_([a-z0-9]+)$/)) && KNOWN_FILTERS.has(m[1])) {
+    const fc = `flux_${m[1]}`;
+    return r => { const f = r[fc]; return (typeof f === "number" && f > 0) ? 31.4 - 2.5 * Math.log10(f) : null; };
+  }
+  if ((m = col.match(/^snr_([a-z0-9]+)$/)) && KNOWN_FILTERS.has(m[1])) {
+    const fc = `flux_${m[1]}`, ec = `fluxerr_${m[1]}`;
+    return r => { const f = r[fc], e = r[ec]; return (typeof f === "number" && typeof e === "number" && e > 0) ? f / e : null; };
   }
   if ((m = col.match(RE_COLOR)) && KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2])) {
-    const a = `mag_${m[1]}`, b = `mag_${m[2]}`;
-    return r => { const x = r[a], y = r[b]; return (typeof x === "number" && typeof y === "number") ? x - y : null; };
+    const a = m[1], b = m[2];
+    return r => { const fa = bandColorFlux(r, a), fb = bandColorFlux(r, b); return (fa != null && fb != null) ? -2.5 * Math.log10(fa / fb) : null; };
   }
-  return r => r[col] ?? null;   // stored: QUERY_NUM/STR, mag_<f>, snr_<f>
+  return r => r[col] ?? null;   // stored built-ins: QUERY_NUM/STR
 }
-// The raw index columns a query must have attached to each row (the stored `mag_<f>`/`snr_<f>`
-// its mag/snr/flux/color tokens read from). flux + color derive from mag_<f>.
+// The raw index columns a query needs attached to each row: the native flux_<f>/fluxerr_<f>
+// for every band its mag/snr/flux/color tokens reference (all derived quantities read these).
 function neededIndexCols(query: string): string[] {
   const q = query.toLowerCase();
-  const set = new Set<string>();
-  for (const m of q.matchAll(/\b(mag|snr)_([a-z0-9]+)\b/g)) if (KNOWN_FILTERS.has(m[2])) set.add(`${m[1]}_${m[2]}`);
-  for (const m of q.matchAll(/\bflux_([a-z0-9]+)\b/g))       if (KNOWN_FILTERS.has(m[1])) set.add(`mag_${m[1]}`);
-  for (const m of q.matchAll(/\b([a-z][a-z0-9]*)-([a-z][a-z0-9]*)\b/g))
-    if (KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2])) { set.add(`mag_${m[1]}`); set.add(`mag_${m[2]}`); }
-  return [...set];
+  const bands = new Set<string>();
+  for (const m of q.matchAll(/\b(?:mag|snr|flux)_([a-z0-9]+)\b/g)) if (KNOWN_FILTERS.has(m[1])) bands.add(m[1]);
+  for (const m of q.matchAll(/\b([a-z][a-z0-9]*)-([a-z][a-z0-9]*)\b/g)) {
+    if (KNOWN_FILTERS.has(m[1])) bands.add(m[1]);
+    if (KNOWN_FILTERS.has(m[2])) bands.add(m[2]);
+  }
+  const cols: string[] = [];
+  for (const b of bands) cols.push(`flux_${b}`, `fluxerr_${b}`);
+  return cols;
 }
 
 // Columns the results table always shows; other queried columns are added dynamically.
@@ -682,13 +732,14 @@ function ResultCard({ src }: { src: SourceResult }) {
         </div>
       )}
 
-      {/* Plots */}
+      {/* Plots — SED + P(z) shrink together so they stay side-by-side well below the
+          SED+P(z) natural width (the SVGs scale via viewBox); wrap only on very narrow screens. */}
       <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div>
+        <div style={{ flex: "2 1 300px", minWidth: 0 }}>
           <div className="mono" style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginBottom: "4px" }}>SED</div>
           <SEDPlot src={src} />
         </div>
-        <div>
+        <div style={{ flex: "1 1 220px", minWidth: 0 }}>
           <div className="mono" style={{ fontSize: "0.7rem", color: "var(--text-dim)", marginBottom: "4px" }}>P(z)</div>
           <PZPlot zgrid={src.zgrid} pz={pzNorm} za={za} zgridLowz={src.zgridLowz} pzLowz={pzLowzNorm} />
         </div>
@@ -841,14 +892,15 @@ export default function SearchPage() {
         const pred = makePredicate(queryInput);
         if ("error" in pred) { setStatus("notfound"); setMatchSummary(pred.error); return; }
         const cols = queriedColumns(queryInput);
-        const need = pred.need;                        // raw filter cols to attach (mag_<f>/snr_<f>)
+        const need = pred.need;                        // native flux_<f>/fluxerr_<f> cols to attach
         const getters = cols.map(c => colGetter(c));   // value-extractors for the dynamic table cols
         const CAP = 500;
         const rows: QueryRow[] = [];
         let total = 0;
         for (const fc of fields) {
           const { idx } = await loadField(fc);
-          const ix = idx as unknown as Record<string, NumCol>;   // for dynamic mag_<f>/snr_<f> access
+          // Only fetch the (larger) per-filter flux table when the query needs it.
+          const fx = need.length ? await loadFilters(fc) : null;
           for (let i = 0; i < idx.n; i++) {
             const r: IdxRow = {
               field: idx.field, za: idx.za[i], ra: idx.ra[i], dec: idx.dec[i],
@@ -863,7 +915,7 @@ export default function SearchPage() {
               selected: idx.selected?.[i] ?? null, inspected: idx.inspected?.[i] ?? null,
               sample: idx.sample?.[i] ?? null,
             };
-            for (const c of need) r[c] = ix[c]?.[i] ?? null;   // per-filter mag/snr for this query
+            if (fx) for (const c of need) r[c] = fx[c]?.[i] ?? null;   // native flux/fluxerr for this query
             if (pred.test(r)) {
               total++;
               if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, extra: getters.map(g => g(r)) });
@@ -1158,10 +1210,10 @@ export default function SearchPage() {
                   ["field", "field name, e.g. CEERS"],
                   ["detectcat", "detection catalog: cold / hot"],
                   ["tile", "mosaic tile (COSMOS, EGS), e.g. A1 / NE"],
-                  ["mag_<filt>", "AB mag in any filter, e.g. mag_f277w"],
-                  ["snr_<filt>", "S/N (flux/err) in any filter"],
-                  ["flux_<filt>", "flux (nJy) in any filter"],
-                  ["<filtA>-<filtB>", "color = mag_A − mag_B, e.g. f150w-f277w"],
+                  ["flux_<filt>", "native flux (nJy) in any filter"],
+                  ["mag_<filt>", "AB mag = 31.4 − 2.5·log(flux), e.g. mag_f277w"],
+                  ["snr_<filt>", "S/N = flux / fluxerr in any filter"],
+                  ["<filtA>-<filtB>", "color −2.5·log(fA/fB); 1σ limit if S/N<1"],
                 ] as [string, string][]).map(([k, v]) => (
                   <div key={k}><span style={{ color: "var(--accent)" }}>{k}</span> — {v}</div>
                 ))}
@@ -1171,15 +1223,17 @@ export default function SearchPage() {
                 <div style={{ marginTop: "8px", color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.7 }}>
                   Per-filter names use the filter&apos;s lowercase label — HST/ACS (f435w, f606w, f814w) and
                   NIRCam wide/medium bands (f090w, f115w, f150w, f200w, f277w, f356w, f410m, f444w, …). A field
-                  that lacks a band simply returns no match for it.
+                  that lacks a band simply returns no match for it. (The per-filter flux table loads on demand
+                  the first time you run a filter/color query.)
                 </div>
               )}
               {defsOpen && (
                 <div style={{ marginTop: "8px", padding: "7px 10px", background: "rgba(240,192,112,0.06)", border: "1px solid rgba(240,192,112,0.22)", borderRadius: "6px", color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.7 }}>
-                  <span style={{ color: "var(--amber)", fontWeight: 700 }}>Precision:</span> the search index stores
-                  values rounded for fast in-browser querying — per-filter magnitudes to 0.01 mag, S/N to 0.1,
-                  colors to ~0.01 mag, and redshifts, M_UV, β, sizes and positions to 3–4 decimals. These are for
-                  discovery and filtering. For full-precision, science-grade values use the FITS catalogs on the{" "}
+                  <span style={{ color: "var(--amber)", fontWeight: 700 }}>Precision:</span> per-filter queries use the
+                  native catalog flux (bare <span className="mono">FLUX_&lt;f&gt;</span>/<span className="mono">FLUXERR</span>),
+                  stored to 4 significant figures — derived mag/S/N/color match the catalog to ≲10⁻³. Redshifts, M_UV,
+                  β, sizes and positions are stored to 3–4 decimals. Colors use a 1σ upper limit for any band with
+                  S/N&lt;1. For full-precision values use the FITS catalogs on the{" "}
                   <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page.
                 </div>
               )}

@@ -145,11 +145,12 @@ export default function FieldsPage() {
         </p>
         <p style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginTop: "10px", lineHeight: 1.7 }}>
           <span style={{ color: "var(--amber)", fontWeight: 700 }}>Note on precision:</span> quantities exposed to
-          the in-browser <a href="/data/search" style={{ color: "var(--accent2)" }}>Search</a> (redshifts, M_UV, β,
-          per-filter magnitudes, colors, S/N, sizes) are rounded for fast querying — per-filter mags to 0.01 mag,
-          S/N to 0.1, and other quantities to 3–4 decimals. They are meant for discovery and filtering; the FITS
-          catalogs on the <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page carry the
-          full-precision, science-grade values.
+          the in-browser <a href="/data/search" style={{ color: "var(--accent2)" }}>Search</a> are rounded for fast
+          querying. Per-filter queries use the native catalog flux stored to 4 significant figures (derived
+          mag/S/N/color match the catalog to ≲10⁻³; colors use a 1σ upper limit where S/N&lt;1); redshifts, M_UV, β
+          and sizes are stored to 3–4 decimals. They are meant for discovery and filtering; the FITS catalogs on the{" "}
+          <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page carry the full-precision,
+          science-grade values.
         </p>
       </div>
 
