@@ -5,7 +5,7 @@
 //
 // The WebGL viewer (window + WebGL2) is loaded client-only via next/dynamic with
 // { ssr: false }, as required by this Next 16 static export (output: "export").
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   SEARCH_FIELDS,
@@ -53,11 +53,11 @@ type PanelState =
   | { kind: "notfound"; id: number };
 
 export default function MapPage() {
-  const [configUrl, setConfigUrl] = useState<string | null>(null);
+  // Resolved once, lazily: tileBase() reads window for the ?data= override (safe —
+  // returns the Corral default on the server). The WebGL viewer is client-only
+  // (dynamic ssr:false), so this value is only ever consumed after hydration.
+  const [configUrl] = useState<string>(() => `${tileBase()}/fitsgl.json`);
   const [panel, setPanel] = useState<PanelState>({ kind: "hidden" });
-
-  // Resolve the config URL on the client (needs window for the ?data= override).
-  useEffect(() => { setConfigUrl(`${tileBase()}/fitsgl.json`); }, []);
 
   async function openSource(id: number) {
     setPanel({ kind: "loading", id });
@@ -76,8 +76,9 @@ export default function MapPage() {
 
   const panelOpen = panel.kind !== "hidden";
 
+  // Memoized so re-renders (panel open/close) never remount the WebGL viewer.
   const viewer = useMemo(
-    () => (configUrl ? <MapViewer configUrl={configUrl} onSourceClick={openSource} /> : null),
+    () => <MapViewer configUrl={configUrl} onSourceClick={openSource} />,
     [configUrl]
   );
 
@@ -96,11 +97,7 @@ export default function MapPage() {
       {/* Viewer + side panel */}
       <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
         <div style={{ flex: 1, minWidth: 0, position: "relative", background: "#0d0a1a" }}>
-          {configUrl ? viewer : (
-            <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span className="mono" style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>Preparing map…</span>
-            </div>
-          )}
+          {viewer}
         </div>
 
         {/* Source card side panel — slides in over the map's right edge. */}

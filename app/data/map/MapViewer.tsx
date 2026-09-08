@@ -52,13 +52,15 @@ export default function MapViewer({
   const [config, setConfig] = useState<FitsglConfig | null>(null);
   const [errMsg, setErrMsg] = useState<string>("");
   // Keep the latest click handler in a ref so FitsExplorer's onMarkerClick closure
-  // always calls the current one without re-mounting the WebGL viewer.
+  // always calls the current one without re-mounting the WebGL viewer. Assigned in an
+  // effect (not during render) so it doesn't tear during a concurrent render.
   const clickRef = useRef(onSourceClick);
-  clickRef.current = onSourceClick;
+  useEffect(() => { clickRef.current = onSourceClick; }, [onSourceClick]);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Once the viewer is up, turn the catalog overlay on. Markers load asynchronously,
-  // so the toggle starts disabled — retry briefly until it takes (or gives up).
+  // so the toggle starts disabled — retry briefly until it takes (or gives up). The
+  // setState here happens inside async interval callbacks, not the effect body.
   useEffect(() => {
     if (state !== "ready") return;
     let tries = 0;
@@ -71,8 +73,13 @@ export default function MapViewer({
 
   useEffect(() => {
     let cancelled = false;
-    setState("loading");
-    setConfig(null);
+    // Reset to the loading state whenever configUrl changes — done asynchronously so
+    // it's not a synchronous setState in the effect body (avoids cascading renders).
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setState("loading");
+      setConfig(null);
+    });
     // loadFitsglConfig fetches + validates + URL-resolves tiles/catalog against configUrl.
     loadFitsglConfig(configUrl)
       .then(cfg => {
