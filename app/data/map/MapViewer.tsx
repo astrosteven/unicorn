@@ -24,7 +24,14 @@ import {
   defaultViewFromConfig,
   defaultExplorerState,
 } from "@fitsgl/core/react";
-import { loadFitsglConfig, type FitsglConfig, type ViewerConfig } from "@fitsgl/core";
+import {
+  loadFitsglConfig,
+  DEFAULT_TRILOGY_PARAMS,
+  type FitsglConfig,
+  type ViewerConfig,
+  type TrilogyParams,
+  type TrilogyStats,
+} from "@fitsgl/core";
 import {
   loadField,
   loadFilters,
@@ -38,6 +45,39 @@ type LoadState = "loading" | "ready" | "error";
 // Overlay colors: selected sources green, everything else yellow.
 const GREEN = "#43d17a";
 const YELLOW = "#f2d43a";
+
+// Default trilogy scaling — the CAMPFIRE values (campfire.hollisakins.com) the map
+// ships with; the scaling panel starts here and "Reset to default" returns here. Same
+// knobs FitsglCutout's CAMPFIRE_TRILOGY uses so the map matches the card cutouts.
+const CAMPFIRE_TRILOGY: TrilogyParams = {
+  ...DEFAULT_TRILOGY_PARAMS,
+  noiselum: 0.12,
+  satpercent: 0.01,
+  noisesig: 2.0,
+  noisesig0: 2.0,
+};
+
+// The scaling knobs surfaced in the panel, with drag range + step. These four are the
+// trilogy params that actually change the look (see @fitsgl/core TrilogyParams docs):
+//  noiselum   — output luminance the noise floor maps to (noise-floor brightness)
+//  noisesig   — where the noise level is anchored: x1 = mean + noisesig*sigma (contrast)
+//  satpercent — % of pixels allowed to saturate; the white point (log-ish, so a log slider)
+//  noisesig0  — black point below the sky: x0 = mean - noisesig0*sigma
+type Knob = {
+  key: keyof TrilogyParams;
+  label: string;
+  hint: string;
+  min: number;
+  max: number;
+  step: number;
+  log?: boolean; // slider position is log10-spaced across [min,max]
+};
+const SCALING_KNOBS: Knob[] = [
+  { key: "noiselum", label: "Noise floor", hint: "brightness of the sky/noise", min: 0, max: 0.4, step: 0.005 },
+  { key: "noisesig", label: "Contrast", hint: "noise anchor · mean + n·σ", min: 0.5, max: 4, step: 0.05 },
+  { key: "satpercent", label: "White point", hint: "% pixels saturated", min: 0.001, max: 1, step: 0.001, log: true },
+  { key: "noisesig0", label: "Black point", hint: "sky floor · mean − n·σ", min: 1, max: 3, step: 0.05 },
+];
 
 // Cap on drawn overlay glyphs per frame — the viewport cull keeps only what's visible,
 // and this bounds the SVG node count so pan/zoom stays smooth even zoomed all the way
@@ -135,6 +175,11 @@ export default function MapViewer({
   const [idx, setIdx] = useState<FieldIndex | null>(null);
   const [magCol, setMagCol] = useState<NumCol>(null);
   const [glyphs, setGlyphs] = useState<Glyph[]>([]);
+  // Live trilogy scaling params driven by the SCALING panel. Starts at CAMPFIRE; the
+  // panel mutates these and each change re-derives the stretch on the existing viewer
+  // via applyTrilogy — no camera move, no overlay rebuild.
+  const [trilogy, setTrilogy] = useState<TrilogyParams>(CAMPFIRE_TRILOGY);
+  const [panelOpen, setPanelOpen] = useState(true);
 
   const clickRef = useRef(onSourceClick);
   useEffect(() => { clickRef.current = onSourceClick; }, [onSourceClick]);
@@ -148,6 +193,9 @@ export default function MapViewer({
   // The current filtered source list, held in a ref so the per-frame projector reads
   // the latest without being a hook dependency (projection must not re-subscribe onFrame).
   const sourcesRef = useRef<Src[]>([]);
+  // Latest per-band trilogy stats + view kind, in a ref so applyScaling reads them
+  // without re-subscribing. Set from the config memo.
+  const statsRef = useRef<{ stats: TrilogyStats[] | null; single: boolean }>({ stats: null, single: false });
 
   // Load the tile config.
   useEffect(() => {
@@ -165,16 +213,50 @@ export default function MapViewer({
   }, [configUrl]);
 
   // Derive the bare-viewer ViewerConfig (bands + default RGB view) from the producer
-  // FitsglConfig — the same transform <FitsExplorer> does internally.
-  const viewerConfig = useMemo<ViewerConfig | null>(() => {
+  // FitsglConfig — the same transform <FitsExplorer> does internally — AND the per-band
+  // trilogy stats (in render-source order) that `viewer.applyTrilogy(stats, params)`
+  // needs, so the scaling panel can re-derive the stretch live from the panel's params
+  // without a tile rescan (exactly how FitsglCutout drives it). `single` distinguishes a
+  // one-band view (stats is a lone TrilogyStats) from the multiband composite (an array).
+  const prep = useMemo<{ viewer: ViewerConfig; stats: TrilogyStats[] | null; single: boolean } | null>(() => {
     if (!config) return null;
     const bands = explorerBandsFromConfig(config);
     const st = defaultExplorerState(bands, defaultViewFromConfig(config));
-    // Match campfire's trilogy scaling (same knobs as FitsglCutout's CAMPFIRE_TRILOGY),
-    // recomputed from each field's own per-band stats — so the map color matches campfire.
-    st.trilogyParams = { ...st.trilogyParams, noiselum: 0.12, satpercent: 0.01, noisesig: 2.0, noisesig0: 2.0 };
-    return deriveViewerConfig(bands, st);
+    // Start from CAMPFIRE's scaling (recomputed from each field's own per-band stats) so
+    // the map opens matching campfire / the card cutouts; the panel tunes from here.
+    st.trilogyParams = { ...st.trilogyParams, ...CAMPFIRE_TRILOGY };
+    const viewer = deriveViewerConfig(bands, st);
+    const v = viewer.view;
+    const names =
+      v.mode === "single" ? [v.band] : v.mode === "rgb" ? [v.r, v.g, v.b] : v.bands.map(b => b.band);
+    const raw = names.map(n => bands.find(b => b.name === n)?.trilogy);
+    const stats = raw.every(s => s !== undefined) ? (raw as TrilogyStats[]) : null;
+    return { viewer, stats, single: v.mode === "single" };
   }, [config]);
+  const viewerConfig = prep?.viewer ?? null;
+  useEffect(() => {
+    statsRef.current = { stats: prep?.stats ?? null, single: prep?.single ?? false };
+  }, [prep]);
+
+  // Re-derive + apply the trilogy stretch on the LIVE viewer from the given params. This
+  // is the exact FitsExplorer path (applyTrilogy + setStretchMode("trilogy")): it only
+  // updates the transfer curve — it does NOT touch the camera or the SVG overlay, so the
+  // Kron ellipses and the current pan/zoom are preserved. No-ops until the viewer's
+  // source mode has settled (else applyTrilogy would run against the wrong band set).
+  const applyScaling = useCallback((params: TrilogyParams) => {
+    const h = handleRef.current;
+    const viewer = h?.getViewer();
+    const { stats, single } = statsRef.current;
+    if (!viewer || !stats) return;
+    const expectedMode = single ? "single" : "multiband";
+    if (viewer.sourceMode !== expectedMode) return;
+    viewer.applyTrilogy(single ? stats[0] : stats, params);
+    viewer.setStretchMode("trilogy");
+  }, []);
+
+  // Apply live whenever the panel params change (viewer already up). The onReady/onFrame
+  // paths cover the pre-mode-settled window; this covers subsequent slider drags.
+  useEffect(() => { applyScaling(trilogy); }, [trilogy, applyScaling]);
 
   // Load our search index (positions, selected, za, geometry) once.
   useEffect(() => {
@@ -377,6 +459,110 @@ export default function MapViewer({
           );
         })}
       </svg>
+
+      {/* SCALING panel — top-right, where FitsExplorer's View panel used to sit. Drives
+          the trilogy stretch live via applyScaling (through the viewer handle). */}
+      <ScalingPanel
+        params={trilogy}
+        open={panelOpen}
+        onToggle={() => setPanelOpen(o => !o)}
+        onChange={patch => setTrilogy(p => ({ ...p, ...patch }))}
+        onReset={() => setTrilogy(CAMPFIRE_TRILOGY)}
+      />
+    </div>
+  );
+}
+
+// ---- SCALING control panel -------------------------------------------------
+// Compact, collapsible color-scaling panel pinned to the map's top-right. Each knob is a
+// range slider (log-spaced for satpercent) with its live numeric value; changes stream
+// straight to setTrilogy, which re-derives the stretch on the next paint. A "Reset to
+// default" button restores the CAMPFIRE values. This replaces the built-in control panel
+// FitsExplorer rendered on the right (which exposed the same trilogy knobs as rotary
+// Knobs plus the RGB weight matrix / colormap / band rail — none of which the map needs,
+// since the map's bands, weights and colormap are fixed).
+function ScalingPanel({
+  params, open, onToggle, onChange, onReset,
+}: {
+  params: TrilogyParams;
+  open: boolean;
+  onToggle: () => void;
+  onChange: (patch: Partial<TrilogyParams>) => void;
+  onReset: () => void;
+}) {
+  const isDefault = SCALING_KNOBS.every(k => params[k.key] === CAMPFIRE_TRILOGY[k.key]);
+  return (
+    <div
+      style={{
+        position: "absolute", top: 12, right: 12, zIndex: 15,
+        width: open ? 224 : undefined,
+        background: "rgba(13,10,26,0.86)", backdropFilter: "blur(6px)",
+        border: "1px solid var(--border-bright)", borderRadius: 8,
+        boxShadow: "0 6px 24px rgba(0,0,0,0.4)", overflow: "hidden",
+      }}
+    >
+      <button
+        onClick={onToggle}
+        className="mono"
+        aria-expanded={open}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, width: "100%",
+          background: "none", border: "none", cursor: "pointer",
+          color: "var(--accent)", fontSize: "0.72rem", letterSpacing: "0.08em",
+          padding: "9px 11px",
+        }}
+      >
+        <span style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s", display: "inline-block", fontSize: "0.7rem" }}>▸</span>
+        SCALING
+      </button>
+
+      {open && (
+        <div style={{ padding: "2px 12px 12px" }}>
+          {SCALING_KNOBS.map(k => {
+            const val = params[k.key];
+            // For a log slider, map the value to a 0..1000 position over [log(min),log(max)].
+            const toPos = (v: number) =>
+              k.log ? ((Math.log10(v) - Math.log10(k.min)) / (Math.log10(k.max) - Math.log10(k.min))) * 1000 : v;
+            const fromPos = (p: number) =>
+              k.log ? Math.pow(10, Math.log10(k.min) + (p / 1000) * (Math.log10(k.max) - Math.log10(k.min))) : p;
+            return (
+              <div key={k.key} style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
+                  <span style={{ fontSize: "0.68rem", color: "var(--text)", fontWeight: 600 }}>{k.label}</span>
+                  <span className="mono" style={{ fontSize: "0.68rem", color: "var(--accent)" }}>
+                    {k.log ? val.toFixed(3) : val.toFixed(k.step < 0.01 ? 3 : 2)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  aria-label={k.label}
+                  min={k.log ? 0 : k.min}
+                  max={k.log ? 1000 : k.max}
+                  step={k.log ? 1 : k.step}
+                  value={toPos(val)}
+                  onChange={e => onChange({ [k.key]: fromPos(Number(e.target.value)) } as Partial<TrilogyParams>)}
+                  style={{ width: "100%", accentColor: "var(--accent)", cursor: "pointer", height: 4 }}
+                />
+                <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 1 }}>{k.hint}</div>
+              </div>
+            );
+          })}
+          <button
+            onClick={onReset}
+            disabled={isDefault}
+            className="mono"
+            style={{
+              width: "100%", marginTop: 2,
+              background: "none", border: "1px solid var(--border-bright)", borderRadius: 5,
+              color: isDefault ? "var(--text-dim)" : "var(--text-muted)",
+              cursor: isDefault ? "default" : "pointer", opacity: isDefault ? 0.55 : 1,
+              fontSize: "0.68rem", padding: "6px 10px",
+            }}
+          >
+            Reset to default
+          </button>
+        </div>
+      )}
     </div>
   );
 }
