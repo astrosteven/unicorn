@@ -168,7 +168,7 @@ export type FieldIndex = {
   m277: NumCol; m444: NumCol; m1500?: NumCol; m1300?: NumCol; mabs?: NumCol; beta?: NumCol;
   selected: NumCol; inspected: NumCol; sample: NumCol;
   zl68?: NumCol; zu68?: NumCol; z_lowz?: NumCol; chia?: NumCol; zspec?: NumCol;
-  rh_277?: NumCol; rh_444?: NumCol; kron_radius?: NumCol; a_image?: NumCol; b_image?: NumCol; theta?: NumCol;
+  rh_277?: NumCol; rh_444?: NumCol; kron_radius?: NumCol; a_image?: NumCol; b_image?: NumCol;
   x?: NumCol; y?: NumCol; depthtier?: NumCol; detectcat?: (string | null)[] | null; tile?: (string | null)[] | null;
   detflag?: NumCol; pixflag?: NumCol; zflag?: NumCol; zsubBits?: NumCol; zsubCriteria?: string[] | null;
 };
