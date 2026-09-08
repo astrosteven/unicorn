@@ -1,92 +1,143 @@
 "use client";
 // Client-only WebGL viewer wrapper around @fitsgl/core's <FitsExplorer>. Loads the
 // producer `fitsgl.json` for the CEERS tile pyramid, renders the interactive color
-// map + the source-marker overlay from catalog.csv, and reports marker clicks up to
-// the page (by catalog id) so it can open our shared ResultCard.
+// map, and overlays our OWN source markers built from the site search index
+// (public/searchindex/): every catalog source is positioned by RA/Dec, colored
+// GREEN if SELECTED and YELLOW if not. When the index carries a per-object THETA
+// (position angle), each source is drawn as a Kron ELLIPSE (a/b = A_IMAGE/B_IMAGE *
+// KRON_RADIUS, PA = THETA_IMAGE — the exact parametrization unicorn_bioplots.pro's
+// tvellipse uses) via a rotatable world-space polygon fitsgl REGION; without theta
+// it falls back to a colored circle MARKER. A sidebar filters the shown set live.
 //
 // MUST stay client-only (WebGL2 + window): the route dynamic-imports it with
-// { ssr: false }. @fitsgl/core@0.3.2 reads these v0.1.0-built tiles directly
-// (manifest v2, catalog v1, config schema v1 — all within this client's supported
-// ranges), so no bundled-reference-viewer fallback is needed.
-import { useEffect, useRef, useState } from "react";
-import { FitsExplorer, type FitsExplorerProps } from "@fitsgl/core/react";
-import { loadFitsglConfig, type FitsglConfig } from "@fitsgl/core";
+// { ssr: false }. @fitsgl/core@0.3.2 reads these v0.1.0-built tiles directly.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FitsExplorer, type FitsExplorerProps, type FitsViewerHandle } from "@fitsgl/core/react";
+import { loadFitsglConfig, type FitsglConfig, type MarkerInput, type RegionInput } from "@fitsgl/core";
+import {
+  SEARCH_FIELDS,
+  loadField,
+  loadFilters,
+  type FieldIndex,
+  type NumCol,
+} from "@/app/data/_card/objectCard";
 
 type LoadState = "loading" | "ready" | "error";
 
-// FitsExplorer ships with its "Catalog overlay" defaulting OFF (explorer-state
-// `overlay: false`), and there is no prop to seed it on — but this page's whole
-// purpose is clicking source markers, so they must be visible + hittable from the
-// start. The toggle is a `<button role="switch" aria-label="Catalog overlay">`
-// inside the collapsible "View" inspector panel, whose body is unmounted while
-// collapsed. So we (1) expand the View panel if needed, then (2) flip the switch
-// on. Idempotent — only acts when something is not already in the desired state.
-// Returns true once the overlay is on (or was already on).
-function autoEnableOverlay(root: HTMLElement | null): boolean {
-  if (!root) return false;
-  let btn = root.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="Catalog overlay"]');
-  if (!btn) {
-    // The toggle lives in the collapsed "View" panel — expand it, then retry next tick.
-    const head = [...root.querySelectorAll<HTMLButtonElement>("button.fgl-panel-head")]
-      .find(b => /view/i.test(b.textContent || ""));
-    if (head && head.getAttribute("aria-expanded") === "false") head.click();
-    btn = root.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="Catalog overlay"]');
-    if (!btn) return false;                                 // still not mounted; retry later
+const CEERS = SEARCH_FIELDS.find(f => f.field === "CEERS")!;
+
+// Marker/region colors: selected sources green, everything else yellow (the demo ask).
+const GREEN = "#43d17a";
+const YELLOW = "#f2d43a";
+
+// ---- Filter model ----------------------------------------------------------
+export type MapFilters = {
+  selectedOnly: boolean;
+  zMin: number | null;
+  zMax: number | null;
+  magMin: number | null;
+  magMax: number | null;
+  magFilter: string;   // which band's mag the mag range applies to (e.g. "F277W")
+};
+export const DEFAULT_FILTERS: MapFilters = {
+  selectedOnly: false, zMin: null, zMax: null, magMin: null, magMax: null, magFilter: "F277W",
+};
+
+// Number of polygon vertices used to approximate each Kron ellipse.
+const ELLIPSE_SEGMENTS = 24;
+
+type Overlay =
+  | { kind: "regions"; regions: RegionInput[] }
+  | { kind: "markers"; markers: MarkerInput[] };
+
+// Build the drawable overlay from the field index (+ an optional mag column),
+// applying the active filters. Returns fitsgl RegionInputs (rotatable world-sized
+// ellipse polygons) when theta is present, else MarkerInputs (colored circles).
+function buildOverlay(idx: FieldIndex, magCol: NumCol, f: MapFilters): Overlay {
+  const n = idx.n;
+  const sel = idx.selected, za = idx.za;
+  const a = idx.a_image, b = idx.b_image, kr = idx.kron_radius;
+  const x = idx.x, y = idx.y, theta = idx.theta ?? null;
+  const useEllipse = theta != null && x != null && y != null && a != null && b != null && kr != null;
+
+  const { zMin, zMax, magMin: mMin, magMax: mMax, selectedOnly } = f;
+
+  const regions: RegionInput[] = [];
+  const markers: MarkerInput[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const isSel = sel?.[i] === 1;
+    if (selectedOnly && !isSel) continue;
+    const z = za?.[i];
+    if (zMin != null && (z == null || z < zMin)) continue;
+    if (zMax != null && (z == null || z > zMax)) continue;
+    if (mMin != null || mMax != null) {
+      const m = magCol?.[i];
+      if (m == null) continue;
+      if (mMin != null && m < mMin) continue;
+      if (mMax != null && m > mMax) continue;
+    }
+
+    const color = isSel ? GREEN : YELLOW;
+    const id = String(idx.id[i]);
+
+    if (useEllipse && a![i] != null && b![i] != null && kr![i] != null && kr![i]! > 0) {
+      // Kron ellipse: semi-axes a*kron, b*kron (detection px); PA = theta deg CCW
+      // from the +x image axis. Emit as a world-space polygon so it scales with
+      // zoom and rotates with the display orientation.
+      const semiA = a![i]! * kr![i]!;
+      const semiB = b![i]! * kr![i]!;
+      const cx = x![i]!, cy = y![i]!;
+      const th = (theta![i]! * Math.PI) / 180;
+      const ct = Math.cos(th), st = Math.sin(th);
+      const verts: { x: number; y: number }[] = [];
+      for (let s = 0; s < ELLIPSE_SEGMENTS; s++) {
+        const phi = (2 * Math.PI * s) / ELLIPSE_SEGMENTS;
+        const ex = semiA * Math.cos(phi);
+        const ey = semiB * Math.sin(phi);
+        verts.push({ x: cx + ex * ct - ey * st, y: cy + ex * st + ey * ct });
+      }
+      regions.push({ id, worldVertices: verts, stroke: color, strokeWidth: 1.4, data: { id: idx.id[i] } });
+    } else {
+      markers.push({ id, ra: idx.ra[i], dec: idx.dec[i], shape: "circle", size: 9, color, edgeWidth: 1.6, data: { id: idx.id[i] } });
+    }
   }
-  if (btn.getAttribute("aria-checked") === "true") return true;  // already on
-  if (btn.disabled) return false;                           // markers not loaded yet — retry
-  btn.click();
-  return true;
+
+  return regions.length > 0 ? { kind: "regions", regions } : { kind: "markers", markers };
 }
 
 export default function MapViewer({
   configUrl,
+  filters,
   onSourceClick,
+  onCount,
 }: {
-  /** Absolute URL to the dataset's fitsgl.json (tiles + catalog resolve against it). */
   configUrl: string;
-  /** Fired with the clicked marker's catalog id (our card key). */
+  filters: MapFilters;
   onSourceClick: (id: number) => void;
+  /** Report how many sources are currently shown (for the sidebar readout). */
+  onCount?: (n: number) => void;
 }) {
   const [state, setState] = useState<LoadState>("loading");
   const [config, setConfig] = useState<FitsglConfig | null>(null);
   const [errMsg, setErrMsg] = useState<string>("");
-  // Keep the latest click handler in a ref so FitsExplorer's onMarkerClick closure
-  // always calls the current one without re-mounting the WebGL viewer. Assigned in an
-  // effect (not during render) so it doesn't tear during a concurrent render.
+  const [idx, setIdx] = useState<FieldIndex | null>(null);
+  const [magCol, setMagCol] = useState<NumCol>(null);
+
   const clickRef = useRef(onSourceClick);
   useEffect(() => { clickRef.current = onSourceClick; }, [onSourceClick]);
+  const countRef = useRef(onCount);
+  useEffect(() => { countRef.current = onCount; }, [onCount]);
+
+  const handleRef = useRef<FitsViewerHandle | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Once the viewer is up, turn the catalog overlay on. Markers load asynchronously,
-  // so the toggle starts disabled — retry briefly until it takes (or gives up). The
-  // setState here happens inside async interval callbacks, not the effect body.
-  useEffect(() => {
-    if (state !== "ready") return;
-    let tries = 0;
-    const t = setInterval(() => {
-      tries += 1;
-      if (autoEnableOverlay(rootRef.current) || tries > 40) clearInterval(t);
-    }, 150);
-    return () => clearInterval(t);
-  }, [state]);
-
+  // Load the tile config.
   useEffect(() => {
     let cancelled = false;
-    // Reset to the loading state whenever configUrl changes — done asynchronously so
-    // it's not a synchronous setState in the effect body (avoids cascading renders).
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
-      setState("loading");
-      setConfig(null);
-    });
-    // loadFitsglConfig fetches + validates + URL-resolves tiles/catalog against configUrl.
+    void Promise.resolve().then(() => { if (!cancelled) { setState("loading"); setConfig(null); } });
     loadFitsglConfig(configUrl)
-      .then(cfg => {
-        if (cancelled) return;
-        setConfig(cfg);
-        setState("ready");
-      })
+      .then(cfg => { if (!cancelled) { setConfig(cfg); setState("ready"); } })
       .catch(err => {
         if (cancelled) return;
         console.error("[map] failed to load fitsgl config:", err);
@@ -96,14 +147,64 @@ export default function MapViewer({
     return () => { cancelled = true; };
   }, [configUrl]);
 
+  // Load our search index (positions, selected, za, geometry) once.
+  useEffect(() => {
+    let cancelled = false;
+    loadField(CEERS)
+      .then(({ idx }) => { if (!cancelled) setIdx(idx); })
+      .catch(err => console.error("[map] failed to load search index:", err));
+    return () => { cancelled = true; };
+  }, []);
+
+  // Resolve the mag column for the active band when a mag range is set. m277/m444
+  // are in the base index; other bands come from the lazy filters file (flux -> mag).
+  const magBand = filters.magFilter;
+  const magRangeActive = filters.magMin != null || filters.magMax != null;
+  useEffect(() => {
+    if (!idx || !magRangeActive) { setMagCol(null); return; }
+    let cancelled = false;
+    if (magBand === "F277W" && idx.m277) { setMagCol(idx.m277); return; }
+    if (magBand === "F444W" && idx.m444) { setMagCol(idx.m444); return; }
+    (async () => {
+      const fx = await loadFilters(CEERS);
+      if (cancelled || !fx) { setMagCol(null); return; }
+      const flux = fx[`flux_${magBand.toLowerCase()}`];
+      if (!flux) { setMagCol(null); return; }
+      const col = flux.map(v => (v != null && v > 0 ? 31.4 - 2.5 * Math.log10(v) : null));
+      if (!cancelled) setMagCol(col as NumCol);
+    })();
+    return () => { cancelled = true; };
+  }, [idx, magBand, magRangeActive]);
+
+  // Build the filtered overlay set. Memoized on index + mag column + filters.
+  const overlay = useMemo<Overlay | null>(
+    () => (idx ? buildOverlay(idx, magRangeActive ? magCol : null, filters) : null),
+    [idx, magCol, filters, magRangeActive],
+  );
+
+  // Push the overlay into the viewer imperatively via the ref handle so a filter
+  // change repacks without remounting the WebGL viewer.
+  useEffect(() => {
+    const h = handleRef.current;
+    if (!h || !overlay) return;
+    if (overlay.kind === "regions") {
+      h.clearMarkers();
+      h.setRegions(overlay.regions);
+      countRef.current?.(overlay.regions.length);
+    } else {
+      h.clearRegions();
+      h.setMarkers(overlay.markers);
+      countRef.current?.(overlay.markers.length);
+    }
+  }, [overlay, state]);
+
   if (state === "error") {
     return (
       <MapMessage
         title="Could not load the color map"
         body={
           <>
-            The tile dataset (<code style={{ color: "var(--text-muted)" }}>fitsgl.json</code>) failed to
-            load from<br />
+            The tile dataset (<code style={{ color: "var(--text-muted)" }}>fitsgl.json</code>) failed to load from<br />
             <code style={{ color: "var(--text-muted)", wordBreak: "break-all" }}>{configUrl}</code>
             {errMsg && <><br /><span style={{ color: "var(--text-dim)" }}>{errMsg}</span></>}
           </>
@@ -119,13 +220,10 @@ export default function MapViewer({
   const explorerProps: FitsExplorerProps = {
     config,
     onMarkerClick: (e) => {
-      // The catalog's `id` column becomes marker.id (a string); coerce to our numeric key.
-      const raw = e.marker.id;
+      const raw = e.marker.data?.id ?? e.marker.id;
       const id = Number(raw);
       if (Number.isFinite(id)) clickRef.current(id);
     },
-    // A compact hover tooltip so a source's id is visible before clicking.
-    markerTooltip: (m) => (m.id != null ? `ID ${m.id}` : null),
     onError: (err) => {
       console.error("[map] FitsExplorer error:", err);
       setErrMsg(err instanceof Error ? err.message : String(err));
@@ -134,11 +232,25 @@ export default function MapViewer({
     style: { width: "100%", height: "100%" },
   };
 
-  // rootRef wraps the explorer so the overlay auto-enable effect can find its
-  // "Catalog overlay" toggle in the DOM.
   return (
     <div ref={rootRef} style={{ width: "100%", height: "100%" }}>
-      <FitsExplorer {...explorerProps} />
+      <FitsExplorer
+        {...explorerProps}
+        // onReady + onRegionClick are handled by the underlying <FitsViewer> and
+        // forwarded by <FitsExplorer>; typed loosely because FitsExplorerProps does
+        // not re-export them.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        {...({
+          onReady: (h: FitsViewerHandle) => { handleRef.current = h; },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onRegionClick: (e: any) => {
+            const raw = e?.region?.data?.id ?? e?.region?.id;
+            const id = Number(raw);
+            if (Number.isFinite(id)) clickRef.current(id);
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any)}
+      />
     </div>
   );
 }
