@@ -224,8 +224,9 @@ function CardPlots({ src }: { src: SourceResult }) {
   const pzLowzNorm = normalize(src.pzArrLowz, src.zgridLowz);
   return (
     <div style={{ width: 500 }}>
-      <SEDPlot src={src} />
-      <PZPlot zgrid={src.zgrid} pz={pzNorm} za={za} zgridLowz={src.zgridLowz} pzLowz={pzLowzNorm} />
+      {/* data-plot wrappers so the download grabs the MAIN plot svg, not the SED legend's glyph svgs */}
+      <div data-plot="sed"><SEDPlot src={src} /></div>
+      <div data-plot="pz"><PZPlot zgrid={src.zgrid} pz={pzNorm} za={za} zgridLowz={src.zgridLowz} pzLowz={pzLowzNorm} /></div>
     </div>
   );
 }
@@ -285,9 +286,12 @@ export default function SearchPage() {
         } catch { /* field w/o stamps: skip */ }
         try {
           flushSync(() => root.render(<CardPlots src={src} />));
-          const svgs = holder.querySelectorAll("svg");
-          if (svgs[0]) { const b = await svgToPngBlob(svgs[0] as SVGSVGElement); if (b) zip.file(`${base}_sed.png`, b); }
-          if (svgs[1]) { const b = await svgToPngBlob(svgs[1] as SVGSVGElement); if (b) zip.file(`${base}_pz.png`, b); }
+          // Select each plot's MAIN svg via its wrapper — querySelector returns the first
+          // <svg> in the wrapper (the plot itself), not the SED legend's small glyph svgs.
+          const sedSvg = holder.querySelector('[data-plot="sed"] svg') as SVGSVGElement | null;
+          const pzSvg  = holder.querySelector('[data-plot="pz"] svg')  as SVGSVGElement | null;
+          if (sedSvg) { const b = await svgToPngBlob(sedSvg); if (b) zip.file(`${base}_sed.png`, b); }
+          if (pzSvg)  { const b = await svgToPngBlob(pzSvg);  if (b) zip.file(`${base}_pz.png`, b); }
         } catch { /* rasterize failure: skip plots */ }
         ok++;
       }
