@@ -228,19 +228,33 @@ export default function MapViewer({
     const W = rect.width, H = rect.height;
     const zoom = cam.zoom;
     const list = sourcesRef.current;
-
-    // Cull to the viewport in SCREEN space (with a margin), then cap the count.
-    const margin = 40;
-    const out: Glyph[] = [];
     const asDot = zoom < DOT_ZOOM;
-    for (let k = 0; k < list.length && out.length < MAX_GLYPHS; k++) {
+
+    // Phase 1 — WORLD-space viewport cull (cheap, no imageToScreen). The viewport spans
+    // W/zoom × H/zoom world px about the camera centre; take a generous margin (×1.5 +
+    // pad) so display rotation / North-up can't clip edge sources. This yields the set
+    // actually on-screen without projecting every one of the 174k sources per frame.
+    const halfW = (W / zoom) * 0.75 + 60;
+    const halfH = (H / zoom) * 0.75 + 60;
+    const x0 = cam.centerX - halfW, x1 = cam.centerX + halfW;
+    const y0 = cam.centerY - halfH, y1 = cam.centerY + halfH;
+    const visible: Src[] = [];
+    for (let k = 0; k < list.length; k++) {
       const s = list[k];
-      // Project the centre first; cheap reject if off-screen. imageToScreen returns
-      // viewport-relative CSS px (same frame as the wrapper rect), or null before load.
+      if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) visible.push(s);
+    }
+
+    // Phase 2 — if more are visible than the cap, stride-sample the VISIBLE set uniformly
+    // so the drawn glyphs spread evenly across the on-screen field instead of clustering
+    // on the first N. Zoomed in (few visible) the stride is 1 and every visible source
+    // is drawn. Only the sampled survivors are projected to screen.
+    const stride = Math.max(1, Math.ceil(visible.length / MAX_GLYPHS));
+    const out: Glyph[] = [];
+    for (let k = 0; k < visible.length && out.length < MAX_GLYPHS; k += stride) {
+      const s = visible[k];
       const c = h.imageToScreen(s.x + 0.5, s.y + 0.5);
       if (!c) continue;
       const scx = c.x - rect.left, scy = c.y - rect.top;
-      if (scx < -margin || scx > W + margin || scy < -margin || scy > H + margin) continue;
 
       if (asDot || !(s.semiA > 0 && s.semiB > 0) || Number.isNaN(s.th)) {
         out.push({ id: s.id, sel: s.sel, cx: scx, cy: scy, r: asDot ? 1.6 : 4 });
