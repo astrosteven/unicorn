@@ -47,9 +47,11 @@ const YELLOW = "#f2d43a";
 const MAX_GLYPHS = 4000;
 // Ellipse polygon resolution (vertices). 16 is smooth on-screen and cheap.
 const ELLIPSE_SEGMENTS = 16;
-// Below this many drawing-buffer px per world px, an ellipse is too tiny to resolve —
-// draw a small dot instead of a full polygon (saves nodes when zoomed way out).
-const DOT_ZOOM = 0.15;
+// Below this many drawing-buffer px per world px, draw a small dot instead of a Kron
+// ellipse — so ellipses only appear once you're zoomed in far enough for them to read
+// as real galaxy shapes (raise to hold ellipses off until deeper zoom; lower to show
+// them sooner).
+const DOT_ZOOM = 0.5;
 
 // ---- Filter model ----------------------------------------------------------
 export type MapFilters = {
