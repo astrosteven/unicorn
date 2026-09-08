@@ -167,6 +167,9 @@ export default function MapViewer({
     if (!config) return null;
     const bands = explorerBandsFromConfig(config);
     const st = defaultExplorerState(bands, defaultViewFromConfig(config));
+    // Match campfire's trilogy scaling (same knobs as FitsglCutout's CAMPFIRE_TRILOGY),
+    // recomputed from each field's own per-band stats — so the map color matches campfire.
+    st.trilogyParams = { ...st.trilogyParams, noiselum: 0.12, satpercent: 0.01, noisesig: 2.0, noisesig0: 2.0 };
     return deriveViewerConfig(bands, st);
   }, [config]);
 

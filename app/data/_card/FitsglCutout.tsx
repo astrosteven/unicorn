@@ -36,6 +36,11 @@ import {
   deriveViewerConfig,
 } from "@fitsgl/core/react";
 
+// Trilogy scaling knobs matched to campfire (campfire.hollisakins.com / COSMOS-Web
+// defaults). Applied over each field's own per-band stats, so it recomputes the same
+// stretch campfire uses — no tile rebuild needed. Shared by the map (MapViewer) too.
+export const CAMPFIRE_TRILOGY = { noiselum: 0.12, satpercent: 0.01, noisesig: 2.0, noisesig0: 2.0 };
+
 // Per-field fitsgl base URL. Only fields present here render an on-the-fly cutout;
 // others render nothing (the card simply omits the color panel). Extend as each
 // field's tiles come online on Corral. Keys match SEARCH_FIELDS[].field.
@@ -88,8 +93,9 @@ async function prepare(base: string): Promise<Prepared> {
     const eb = explorerBandsFromConfig(fitsgl);
     const state = defaultExplorerState(eb, defaultViewFromConfig(fitsgl));
     const viewer = deriveViewerConfig(eb, state);
-    // The producer's trilogy knobs (seeded into the explorer state from defaultView).
-    const params: TrilogyParams = { ...DEFAULT_TRILOGY_PARAMS, ...state.trilogyParams };
+    // Trilogy knobs: producer's defaultView, overridden to CAMPFIRE's scaling
+    // (noiselum 0.12 / satpercent 0.01 / noisesig 2) so our color matches campfire.
+    const params: TrilogyParams = { ...DEFAULT_TRILOGY_PARAMS, ...state.trilogyParams, ...CAMPFIRE_TRILOGY };
     // Active band names, in render-source order, straight from the derived view.
     const v = viewer.view;
     const names =
