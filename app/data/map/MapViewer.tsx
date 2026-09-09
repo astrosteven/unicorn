@@ -148,52 +148,65 @@ const IFU_SIDE = 3.0;            // arcsec, NIRSpec IFU field of view (3"×3")
 // carrying the arcsec→px scale, the PA rotation, and the WCS orientation (North-up/flip).
 type ApFrame = { cx: number; cy: number; disp: { x: number; y: number }; spat: { x: number; y: number } };
 
-// Build the aperture screen frame. PA is east-of-north, and orients the SPATIAL (long)
-// axis of the aperture — i.e. the slitlet's long axis / the IFU's +y side points along PA.
-// The dispersion axis is 90° clockwise-on-sky from spatial. The North (n̂) and East (ê)
-// screen unit-vectors are derived empirically from the WCS via pixToSky/skyToPix so the
-// overlay tracks the real sky orientation under North-up and any parity flip; if no WCS is
-// available we fall back to screen-up=North, screen-right=East (PA still applies).
+// Build the aperture screen frame anchored EXACTLY on the aperture's world pixel. PA is
+// east-of-north and orients the SPATIAL (long) axis of the aperture — the slitlet's long
+// axis / the IFU's +y side points along PA; the dispersion axis is PA+90°.
+//
+// Everything is measured empirically from the WCS at the APERTURE position (not the view
+// centre): we project the centre pixel and two points exactly 1″ north/east through the
+// SAME `imageToScreen` the Kron-ellipse overlay uses, so the per-arcsec screen VECTORS
+// (magnitude = local px/arcsec, direction = local N/E under North-up + any parity flip)
+// are correct right at the aperture and stay locked as the camera zooms/pans.
+//
+// Two conventions must match the ellipse path so the aperture doesn't drift on zoom:
+//  1. FITS pixel-centre: `skyToPix`/camera pixels are corner-origin (world (0,0) = top-left
+//     pixel corner), so `imageToScreen` needs +0.5 on both axes — the ellipse code uses
+//     `imageToScreen(s.x+0.5, s.y+0.5)`. Omitting it leaves a half-native-pixel error that
+//     scales with zoom (0.5·zoom screen px) — the exact "drifts off on zoom-in" bug.
+//  2. `imageToScreen` returns viewport-relative CLIENT px; the overlay SVG is inset:0 in
+//     the wrapper, so subtract the wrapper rect's left/top to get overlay-local px.
+//
+// `fallbackScale` (view-centre arcsec/CSS-px) is used only when there is no WCS.
 function apertureFrame(
   h: FitsViewerHandle,
   centerWorld: { x: number; y: number },
-  centerScreen: { x: number; y: number },
-  arcsecPerCssPx: number,
+  rect: { left: number; top: number },
+  fallbackScale: number,
   paDeg: number,
 ): ApFrame | null {
-  if (!(arcsecPerCssPx > 0)) return null;
+  const P = (wx: number, wy: number) => {
+    const p = h.imageToScreen(wx + 0.5, wy + 0.5);   // +0.5: FITS pixel-centre (match ellipses)
+    return p ? { x: p.x - rect.left, y: p.y - rect.top } : null;
+  };
+  const c = P(centerWorld.x, centerWorld.y);
+  if (!c) return null;
+
   const wcs = h.getViewer()?.getWcs();
-  // Screen unit vectors for North (+Dec) and East (+RA).
-  let nHat = { x: 0, y: -1 };  // default: north = screen up
-  let eHat = { x: -1, y: 0 };  // default: east = screen left (E-left, standard)
+  // Per-arcsec screen VECTORS for North (+Dec) and East (+RA) — magnitude carries the
+  // local px/arcsec, direction the local orientation. Fall back to axis-aligned N/E at the
+  // view-centre scale when no WCS is available (PA still applies).
+  let nVec = { x: 0, y: -1 / fallbackScale };  // north = screen up
+  let eVec = { x: -1 / fallbackScale, y: 0 };  // east  = screen left (E-left, standard)
   if (wcs) {
     const sky = pixToSky(wcs, centerWorld.x, centerWorld.y);
     const dDeg = 1 / 3600; // 1" step
     const north = skyToPix(wcs, sky.ra, sky.dec + dDeg);
     const east = skyToPix(wcs, sky.ra + dDeg / Math.cos((sky.dec * Math.PI) / 180), sky.dec);
-    const pN = h.imageToScreen(north.x, north.y);
-    const pE = h.imageToScreen(east.x, east.y);
+    const pN = P(north.x, north.y);
+    const pE = P(east.x, east.y);
     if (pN && pE) {
-      const nv = { x: pN.x - centerScreen.x, y: pN.y - centerScreen.y };
-      const ev = { x: pE.x - centerScreen.x, y: pE.y - centerScreen.y };
-      const nMag = Math.hypot(nv.x, nv.y), eMag = Math.hypot(ev.x, ev.y);
-      if (nMag > 0 && eMag > 0) {
-        nHat = { x: nv.x / nMag, y: nv.y / nMag };
-        eHat = { x: ev.x / eMag, y: ev.y / eMag };
-      }
+      const nv = { x: pN.x - c.x, y: pN.y - c.y };   // 1″ north, in screen px at the aperture
+      const ev = { x: pE.x - c.x, y: pE.y - c.y };   // 1″ east
+      if (Math.hypot(nv.x, nv.y) > 0 && Math.hypot(ev.x, ev.y) > 0) { nVec = nv; eVec = ev; }
     }
   }
-  // Spatial axis points along PA (east-of-north): cos·N + sin·E.
+  // Spatial axis points along PA (east-of-north): cos·N + sin·E. Dispersion is PA+90°.
   const pa = (paDeg * Math.PI) / 180;
   const cs = Math.cos(pa), sn = Math.sin(pa);
-  const spatHat = { x: cs * nHat.x + sn * eHat.x, y: cs * nHat.y + sn * eHat.y };
-  // Dispersion axis: PA+90° east-of-north (rotate the spatial dir 90° toward east).
-  const dispHat = { x: -sn * nHat.x + cs * eHat.x, y: -sn * nHat.y + cs * eHat.y };
-  const perArcsecPx = 1 / arcsecPerCssPx;
   return {
-    cx: centerScreen.x, cy: centerScreen.y,
-    spat: { x: spatHat.x * perArcsecPx, y: spatHat.y * perArcsecPx },
-    disp: { x: dispHat.x * perArcsecPx, y: dispHat.y * perArcsecPx },
+    cx: c.x, cy: c.y,
+    spat: { x: cs * nVec.x + sn * eVec.x, y: cs * nVec.y + sn * eVec.y },
+    disp: { x: -sn * nVec.x + cs * eVec.x, y: -sn * nVec.y + cs * eVec.y },
   };
 }
 
@@ -515,6 +528,10 @@ export default function MapViewer({
       // and/or the 3"×3" IFU square. All in arcsec, so they scale with zoom.
       const ap = apRef.current;
       if ((ap.msaOn || ap.ifuOn) && arcsecPerCssPx > 0) {
+        // Aperture centre world pixel: the pinned sky position (locked under pan/zoom) if
+        // set, else the live view centre. apertureFrame anchors on this exact pixel via the
+        // same +0.5 / rect-relative imageToScreen the ellipses use, so a pinned aperture
+        // stays welded to its sky pixel at every zoom.
         let cw = { x: cam.centerX, y: cam.centerY };
         if (ap.apertureSky) {
           const wcs = h.getViewer()?.getWcs();
@@ -523,8 +540,7 @@ export default function MapViewer({
             if (Number.isFinite(p.x) && Number.isFinite(p.y)) cw = { x: p.x, y: p.y };
           }
         }
-        const cs = h.imageToScreen(cw.x, cw.y);
-        const frame = cs ? apertureFrame(h, cw, cs, arcsecPerCssPx, ap.paDeg) : null;
+        const frame = apertureFrame(h, cw, rect, arcsecPerCssPx, ap.paDeg);
         if (frame) {
           const hd = MSA_SHUTTER_DISP / 2, hs = MSA_SHUTTER_SPAT / 2;
           const pitch = MSA_SHUTTER_SPAT + MSA_BAR;   // shutter-to-shutter spacing
