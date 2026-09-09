@@ -329,25 +329,35 @@ function blobToImage(blob: Blob): Promise<HTMLImageElement> {
 // cutout) side-by-side, and the stamp montage below — so the card download is one
 // self-describing file per source.
 async function composeCardImage(src: SourceResult, sed: HTMLImageElement | null, pz: HTMLImageElement | null, stamp: HTMLImageElement | null, color: HTMLImageElement | null): Promise<Blob | null> {
-  const pad = 16, gap = 14, headerH = 34;
-  // The color cutout renders alongside the plots in the top row. Match its drawn
-  // height to the taller of the two plots so the row lines up; keep it square.
-  const plotsH = Math.max(sed?.height ?? 0, pz?.height ?? 0);
+  const pad = 18, gap = 16, headerH = 36;
+  // Top row = SED + P(z) + square color cutout, all scaled to a common height so the SED
+  // (natively the tallest) doesn't dominate. Then the stamp filmstrip is scaled to the
+  // full row width below, so the per-band grid is large and legible instead of a thumbnail.
+  const TOP_H = 290;                       // target height of the plots/color row
   const colLabelH = color ? 16 : 0;
-  const colSide = color ? (plotsH > 0 ? plotsH - colLabelH : color.height) : 0;
-  const topH = Math.max(plotsH, colLabelH + colSide);
-  const topW = (sed?.width ?? 0)
-    + (pz ? (sed ? gap : 0) + pz.width : 0)
+  const scaleW = (img: HTMLImageElement | null, h: number) =>
+    img && img.height > 0 ? img.width * (h / img.height) : 0;
+  const sedW = scaleW(sed, TOP_H);
+  const pzW = scaleW(pz, TOP_H);
+  const colSide = color ? TOP_H - colLabelH : 0;   // square, same height as the plots
+  const topH = TOP_H;
+  const topW = sedW
+    + (pz ? (sed ? gap : 0) + pzW : 0)
     + (color ? ((sed || pz) ? gap : 0) + colSide : 0);
-  const stampW = stamp?.width ?? 0, stampH = stamp?.height ?? 0;
-  const contentW = Math.max(topW, stampW);
+  // Stamp filmstrip: scale to span the whole top-row width (upscaled — the stamps are low
+  // signal-to-noise cutouts, so a soft enlargement reads fine and beats a tiny grid).
+  const stampDrawW = stamp ? topW : 0;
+  const stampDrawH = stamp && stamp.width > 0 ? stamp.height * (topW / stamp.width) : 0;
+  const contentW = Math.max(topW, stampDrawW);
   const W = contentW + pad * 2;
-  const H = pad + headerH + topH + (stamp ? gap + stampH : 0) + pad;
+  const H = pad + headerH + topH + (stamp ? gap + stampDrawH : 0) + pad;
   if (contentW < 10 || H < 60) return null;
   const cv = document.createElement("canvas");
   cv.width = W; cv.height = H;
   const ctx = cv.getContext("2d");
   if (!ctx) return null;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   const cs = getComputedStyle(document.body);
   ctx.fillStyle = cs.backgroundColor || "#0b0817";
   ctx.fillRect(0, 0, W, H);
@@ -361,20 +371,20 @@ async function composeCardImage(src: SourceResult, sed: HTMLImageElement | null,
   ctx.font = "bold 15px 'Space Mono', monospace";
   ctx.textBaseline = "top";
   ctx.fillText(hdr, pad, pad);
-  // Plots row
+  // Plots row (all scaled to TOP_H)
   const topY = pad + headerH;
-  if (sed) ctx.drawImage(sed, pad, topY);
-  if (pz) ctx.drawImage(pz, pad + (sed ? sed.width + gap : 0), topY);
-  // Color cutout, drawn square to the right of the plots with a small label.
+  let x = pad;
+  if (sed) { ctx.drawImage(sed, x, topY, sedW, TOP_H); x += sedW + gap; }
+  if (pz)  { ctx.drawImage(pz, x, topY, pzW, TOP_H); x += pzW + gap; }
+  // Color cutout, square, same height as the plots, with a small label.
   if (color && colSide > 0) {
-    const colX = pad + (sed?.width ?? 0) + (pz ? (sed ? gap : 0) + pz.width : 0) + ((sed || pz) ? gap : 0);
     ctx.fillStyle = cs.color || "#e8e2f2";
     ctx.font = "11px 'Space Mono', monospace";
-    ctx.fillText("COLOR", colX, topY);
-    ctx.drawImage(color, colX, topY + colLabelH, colSide, colSide);
+    ctx.fillText("COLOR", x, topY);
+    ctx.drawImage(color, x, topY + colLabelH, colSide, colSide);
   }
-  // Stamp montage
-  if (stamp) ctx.drawImage(stamp, pad, topY + topH + gap);
+  // Stamp filmstrip, full width below.
+  if (stamp) ctx.drawImage(stamp, pad, topY + topH + gap, stampDrawW, stampDrawH);
   return await new Promise<Blob | null>(res => cv.toBlob(b => res(b), "image/png"));
 }
 
@@ -478,11 +488,16 @@ function ColorCapture({ mod, prep, ra, dec, onDone }: {
   const doneRef = useRef(false);
   const placedRef = useRef(false);
   const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finish = (url: string | null) => {
     if (settleRef.current) { clearTimeout(settleRef.current); settleRef.current = null; }
+    if (hardRef.current) { clearTimeout(hardRef.current); hardRef.current = null; }
     if (!doneRef.current) { doneRef.current = true; onDone(url); }
   };
-  useEffect(() => () => { if (settleRef.current) clearTimeout(settleRef.current); }, []);
+  useEffect(() => () => {
+    if (settleRef.current) clearTimeout(settleRef.current);
+    if (hardRef.current) clearTimeout(hardRef.current);
+  }, []);
 
   // Center on the target and zoom to COLOR_FOV_ARCSEC across COLOR_CAPTURE_PX. Same math
   // as FitsglCutout.placeCamera. Returns false until wcs is available.
@@ -521,6 +536,15 @@ function ColorCapture({ mod, prep, ra, dec, onDone }: {
   // On the first correctly-placed frame, arm a short settle so the newly-centered tiles
   // have time to stream in before we read the buffer, then capture. (Well within the
   // per-object timeout enforced by the caller.)
+  // Tiled fields (EGS/COSMOS) stream tiles in over several frames after the camera is
+  // placed; grabbing on a fixed short delay caught a half-loaded pyramid (a diagonal
+  // olive/black split). Instead, once placed, (re)arm a short quiescence timer on EVERY
+  // frame — each newly-arrived tile fires another frame and pushes the grab back — so we
+  // only capture once the tiles have stopped arriving. A hard cap guarantees completion.
+  const armQuiesce = () => {
+    if (settleRef.current) clearTimeout(settleRef.current);
+    settleRef.current = setTimeout(grab, 550);   // grab ~0.55s after the last frame
+  };
   const onFrame = () => {
     if (doneRef.current) return;
     if (!placedRef.current) {
@@ -528,8 +552,13 @@ function ColorCapture({ mod, prep, ra, dec, onDone }: {
       if (viewer) applyColorTrilogy(viewer, prep);
       if (place()) {
         placedRef.current = true;
-        settleRef.current = setTimeout(grab, 700);
+        armQuiesce();
+        // Hard cap: if frames never quiet down (continuous redraw), grab anyway — by now
+        // the tiles are certainly resident.
+        hardRef.current = setTimeout(grab, 3200);
       }
+    } else {
+      armQuiesce();   // reset the quiescence window while tiles are still streaming
     }
   };
 
@@ -616,7 +645,9 @@ export default function SearchPage() {
     holder.style.cssText = "position:fixed;left:-99999px;top:0;width:520px;pointer-events:none;";
     document.body.appendChild(holder);
     const root = createRoot(holder);
-    const COLOR_TIMEOUT_MS = 2500;   // per-object cap so one slow cutout can't stall the zip
+    const COLOR_TIMEOUT_MS = 4500;   // per-object cap (> ColorCapture's 3.2s hard grab) so
+                                     // one slow cutout can't stall the zip, yet the internal
+                                     // quiescence/hard-grab returns a full frame first
 
     // Capture the color for one object into `imgOut`, rendered in the shared root. Resolves
     // to an <img> (or null) within COLOR_TIMEOUT_MS. Fast-path: a pre-baked static RGB PNG
