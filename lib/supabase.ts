@@ -24,3 +24,21 @@ export type Flag = {
   created_at: string;
   reviewed_at: string | null;
 };
+
+// Visual-inspection queue (public.inspections): the /data/inspect tool persists a
+// keep/undecided/remove decision (+ optional notes) per (field, obj_id) here. RLS is
+// authenticated-only for select/insert/update, so only signed-in inspectors touch it.
+export type InspectDecision = "not_inspected" | "keep" | "undecided" | "remove";
+export type Inspection = {
+  id?: string;
+  field: string;
+  obj_id: number;
+  ra: number | null;
+  dec: number | null;
+  version: string | null;
+  z: number | null;
+  decision: InspectDecision;
+  notes: string | null;
+  inspector: string | null;
+  updated_at?: string;
+};

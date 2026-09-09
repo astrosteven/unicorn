@@ -12,6 +12,7 @@ const NAV_LINKS = [
   { href: "/data/map",      label: "Explore" },
   { href: "/data/search",   label: "Search" },
   { href: "/data/review",   label: "Review (admin only)" },
+  { href: "/data/inspect",  label: "Inspect (admin only)" },
 ];
 
 export default function DataLayout({ children }: { children: React.ReactNode }) {
