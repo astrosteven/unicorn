@@ -12,6 +12,7 @@ import {
   loadField,
   loadFilters,
   loadSpecz,
+  loadLabels,
   fetchObject,
   corralBase,
   angSep,
@@ -26,7 +27,7 @@ import {
   type ZGrid,
 } from "@/app/data/_card/objectCard";
 
-type SearchMode = "id" | "radec" | "upload" | "query";
+type SearchMode = "id" | "name" | "radec" | "upload" | "query";
 type ResultState = "idle" | "searching" | "found" | "notfound" | "multi" | "table";
 type QueryRow = { fc: typeof SEARCH_FIELDS[0]; id: number; za: number | null; m444: number | null; zspec: number | null; selected: number | null; cz: SpeczRec | null; extra: (number | string | null)[] };
 
@@ -106,6 +107,7 @@ function neededIndexCols(query: string): string[] {
 
 // Columns the results table always shows; other queried columns are added dynamically.
 const TABLE_FIXED_COLS = new Set(["id", "za", "m444", "zspec", "selected"]);
+const TABLE_CAP = 500;   // rows rendered in the results table (full set is retained separately)
 // Which queryable columns a query references (as whole words), minus the fixed ones —
 // these get added to the results table so you see what you filtered on. Includes the
 // per-filter mag/snr/flux columns and color terms.
@@ -124,6 +126,42 @@ function fmtCell(v: number | string | null): string {
   if (v == null) return "—";
   if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(+v.toFixed(3));
   return String(v);
+}
+
+// ---- Sortable results table -------------------------------------------------
+// One entry of the FULL retained match set (queryAllRef): field cfg + index row + campfire.
+type MatchEntry = { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null };
+type SortState = { col: string | null; dir: "asc" | "desc" };
+// Value-extractor for a sortable column, keyed by the header label / dynamic queryCol name.
+// Fixed columns read the fixed fields; dynamic queryCols use colGetter on the index row.
+function sortValueGetter(col: string): (m: MatchEntry) => number | string | null {
+  switch (col) {
+    case "ID":       return m => m.id;
+    case "field":    return m => m.fc.field;
+    case "z_a":      return m => (typeof m.r.za === "number" ? m.r.za : null);
+    case "m₄₄₄":     return m => (typeof m.r.m444 === "number" ? m.r.m444 : null);
+    case "zspec":    return m => (typeof m.r.zspec === "number" && m.r.zspec > 0 ? m.r.zspec : null);
+    case "campfire": return m => (m.cz && typeof m.cz.z === "number" ? m.cz.z : null);
+    case "selected": return m => (typeof m.r.selected === "number" ? m.r.selected : null);
+    default: { const g = colGetter(col); return m => g(m.r); }   // dynamic queryCol
+  }
+}
+// Non-sortable header labels (links / expand arrow — no meaningful order).
+const UNSORTABLE_COLS = new Set(["", "map"]);
+// Sort a copy of the full match set by `col`/`dir`; nulls always sort to the END.
+function sortMatches(all: MatchEntry[], col: string, dir: "asc" | "desc"): MatchEntry[] {
+  const get = sortValueGetter(col);
+  const sign = dir === "asc" ? 1 : -1;
+  const keyed = all.map(m => ({ m, v: get(m) }));
+  keyed.sort((a, b) => {
+    const av = a.v, bv = b.v;
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;    // nulls last, both directions
+    if (bv == null) return -1;
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * sign;
+    return String(av).localeCompare(String(bv)) * sign;
+  });
+  return keyed.map(k => k.m);
 }
 
 // Parse a WHERE-style expression into a predicate + the raw index columns it needs attached.
@@ -242,6 +280,7 @@ function CardPlots({ src }: { src: SourceResult }) {
 export default function SearchPage() {
   const [mode, setMode] = useState<SearchMode>("id");
   const [idInput, setIdInput] = useState("");
+  const [nameInput, setNameInput] = useState("");
   const [raInput, setRaInput] = useState("");
   const [decInput, setDecInput] = useState("");
   const [radiusInput, setRadiusInput] = useState("0.2");
@@ -250,6 +289,7 @@ export default function SearchPage() {
   const [viewColsInput, setViewColsInput] = useState("");   // extra columns to SHOW (not filter on)
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryCols, setQueryCols] = useState<string[]>([]);
+  const [sort, setSort] = useState<SortState>({ col: null, dir: "asc" });
   const [defsOpen, setDefsOpen] = useState(false);
   const [zipping, setZipping] = useState<string | null>(null);
 
@@ -330,7 +370,35 @@ export default function SearchPage() {
   const cardRef = useRef<HTMLTableRowElement>(null);
   // Every matched object (index row + campfire match), retained for the FULL-list
   // download — not just the ≤500 rendered in the table.
-  const queryAllRef = useRef<{ fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null }[]>([]);
+  const queryAllRef = useRef<MatchEntry[]>([]);
+
+  // Build one displayed table row from a full-match entry — same shape the query loop produces.
+  function displayRow(m: MatchEntry, cols: string[]): QueryRow {
+    return {
+      fc: m.fc, id: m.id,
+      za: (typeof m.r.za === "number" ? m.r.za : null),
+      m444: (typeof m.r.m444 === "number" ? m.r.m444 : null),
+      zspec: (typeof m.r.zspec === "number" ? m.r.zspec : null),
+      selected: (typeof m.r.selected === "number" ? m.r.selected : null),
+      cz: m.cz,
+      extra: cols.map(c => colGetter(c)(m.r)),
+    };
+  }
+
+  // Toggle sort on a header click and rebuild the displayed rows from the FULL match set:
+  // sort queryAllRef (all matches, not just the visible 500) → take the top CAP. A third
+  // click on the active column clears the sort back to match order.
+  function onSortClick(col: string) {
+    if (UNSORTABLE_COLS.has(col)) return;
+    let next: SortState;
+    if (sort.col !== col) next = { col, dir: "asc" };
+    else if (sort.dir === "asc") next = { col, dir: "desc" };
+    else next = { col: null, dir: "asc" };   // third click → clear
+    setSort(next);
+    const all = queryAllRef.current;
+    const ordered = next.col ? sortMatches(all, next.col, next.dir) : all;
+    setQueryRows(ordered.slice(0, TABLE_CAP).map(m => displayRow(m, queryCols)));
+  }
 
   async function viewQueryRow(fc: typeof SEARCH_FIELDS[0], id: number) {
     if (queryCardId === id) { setQueryCard(null); setQueryCardId(null); return; }  // toggle off
@@ -410,7 +478,7 @@ export default function SearchPage() {
         const cols = [...new Set([...queriedColumns(queryInput), ...viewCols])];
         const need = [...new Set([...pred.need, ...neededIndexCols(viewCols.join(" "))])];  // flux cols to attach
         const getters = cols.map(c => colGetter(c));   // value-extractors for the dynamic table cols
-        const CAP = 500;              // rows rendered in the table
+        const CAP = TABLE_CAP;        // rows rendered in the table
         const DL_CAP = 100000;        // rows retained for the full-list download
         const rows: QueryRow[] = [];
         const all: { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null }[] = [];
@@ -448,12 +516,35 @@ export default function SearchPage() {
           }
         }
         queryAllRef.current = all;
+        setSort({ col: null, dir: "asc" });   // fresh search starts in match order
         setResults([]); setQueryCard(null); setQueryRows(rows); setQueryCols(cols); setQueryTotal(total);
         if (total === 0) { setStatus("notfound"); setMatchSummary("No sources match that query."); }
         else {
           setStatus("table");
           setMatchSummary(`${total.toLocaleString()} source${total === 1 ? "" : "s"} match${total > CAP ? ` — showing first ${CAP}` : ""}.`);
         }
+        return;
+      }
+
+      // Name mode: match the typed text against the curated famous-object labels.
+      if (mode === "name") {
+        const q = nameInput.trim().toLowerCase();
+        if (!q) { setStatus("notfound"); setMatchSummary("Type a name, e.g. Maisie or GN-z11."); return; }
+        const labels = await loadLabels();
+        const hits = labels.filter(l =>
+          l.name.toLowerCase().includes(q) || (l.aka ?? []).some(a => a.toLowerCase().includes(q)));
+        const named: SourceResult[] = [];
+        for (const l of hits) {
+          const fc = avail.find(f => f.field === l.field);
+          if (!fc) continue;
+          const { zg } = await loadField(fc);
+          const src = await fetchObject(fc, l.id, zg);
+          if (src) named.push(src);
+        }
+        if (named.length === 0) { setStatus("notfound"); setMatchSummary(`No named object matches "${nameInput.trim()}".`); return; }
+        setResults(named);
+        if (named.length === 1) setStatus("found");
+        else { setStatus("multi"); setMatchSummary(`${named.length} named matches.`); }
         return;
       }
 
@@ -591,6 +682,7 @@ export default function SearchPage() {
         <div style={{ display: "flex", gap: "4px", marginBottom: "1.5rem" }}>
           {([
             { key: "id",     label: "By ID" },
+            { key: "name",   label: "By Name" },
             { key: "radec",  label: "By RA/Dec" },
             { key: "upload", label: "Upload List" },
             { key: "query",  label: "Query" },
@@ -632,6 +724,35 @@ export default function SearchPage() {
               />
             </div>
             <SearchButton onClick={doSearch} loading={status === "searching"} />
+          </div>
+        )}
+
+        {/* Name input — famous named objects (Maisie's Galaxy, GN-z11, …) */}
+        {mode === "name" && (
+          <div>
+            <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: "220px" }}>
+                <label style={{ display: "block", fontSize: "0.72rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", letterSpacing: "0.1em", marginBottom: "6px" }}>
+                  OBJECT NAME
+                </label>
+                <input
+                  type="text"
+                  value={nameInput}
+                  onChange={e => setNameInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && doSearch()}
+                  placeholder="e.g. Maisie, GN-z11, MoM-z14"
+                  style={{
+                    width: "100%", background: "var(--bg)", border: "1px solid var(--border-bright)",
+                    borderRadius: "4px", padding: "9px 12px", color: "var(--text)",
+                    fontSize: "0.95rem", fontFamily: "'Space Mono', monospace", outline: "none",
+                  }}
+                />
+              </div>
+              <SearchButton onClick={doSearch} loading={status === "searching"} />
+            </div>
+            <p style={{ marginTop: "10px", fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace" }}>
+              Searches a curated list of famous objects across the fields by nickname / alias.
+            </p>
           </div>
         )}
 
@@ -870,7 +991,12 @@ export default function SearchPage() {
         <div>
           <div className="card" style={{ padding: "1rem 1.25rem", marginBottom: "1rem", borderLeft: "3px solid var(--green)", background: "rgba(126,207,176,0.05)" }}>
             <span className="mono" style={{ color: "var(--green)", fontSize: "0.75rem", marginRight: "10px" }}>QUERY</span>
-            <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>{matchSummary} Click a row to view its bio plot.</span>
+            <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+              {sort.col
+                ? `${queryTotal.toLocaleString()} source${queryTotal === 1 ? "" : "s"} match — sorted by ${sort.col} ${sort.dir === "asc" ? "▲" : "▼"}${queryTotal > queryRows.length ? ` — showing top ${queryRows.length}` : ""}. `
+                : `${matchSummary} `}
+              Click a column header to sort; click a row to view its bio plot.
+            </span>
           </div>
 
           <DownloadControls
@@ -891,9 +1017,20 @@ export default function SearchPage() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>
               <thead>
                 <tr style={{ background: "rgba(176,124,198,0.08)" }}>
-                  {["ID", "field", "z_a", "m₄₄₄", "zspec", "campfire", ...queryCols, "selected", "", "map"].map((h, i) => (
-                    <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 400, fontSize: "0.72rem", letterSpacing: "0.06em" }}>{h}</th>
-                  ))}
+                  {["ID", "field", "z_a", "m₄₄₄", "zspec", "campfire", ...queryCols, "selected", "", "map"].map((h, i) => {
+                    const sortable = !UNSORTABLE_COLS.has(h);
+                    const active = sort.col === h && sortable;
+                    return (
+                    <th key={i} onClick={sortable ? () => onSortClick(h) : undefined}
+                      title={sortable ? "Sort by this column (sorts all matches)" : undefined}
+                      style={{ textAlign: i === 0 ? "left" : "right", padding: "8px 14px",
+                        color: active ? "var(--accent)" : "var(--text-dim)", fontWeight: 400, fontSize: "0.72rem",
+                        letterSpacing: "0.06em", cursor: sortable ? "pointer" : "default",
+                        userSelect: "none", whiteSpace: "nowrap" }}>
+                      {h}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+                    </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
