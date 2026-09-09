@@ -127,11 +127,14 @@ async function prepare(base: string): Promise<Prepared> {
 // preserving trilogy from the producer's precomputed global per-band stats (no tile
 // rescan), so the color matches the /data/map viewer exactly and is stable on the
 // first paint. Returns false if the viewer mode hasn't settled or a band lacks stats.
-function applyTrilogy(viewer: any, prep: Prepared): boolean {
+function applyTrilogy(viewer: any, prep: Prepared, override?: Partial<TrilogyParams>): boolean {
   if (prep.stats === null) return false;
   const expectedMode = prep.single ? "single" : "multiband";
   if (viewer.sourceMode !== expectedMode) return false;
-  viewer.applyTrilogy(prep.single ? prep.stats[0] : prep.stats, prep.params);
+  // Per-instance stretch override (e.g. a harder stretch for the inspection view) —
+  // merged at render time so the shared per-field prep cache is untouched.
+  const params = override && Object.keys(override).length ? { ...prep.params, ...override } : prep.params;
+  viewer.applyTrilogy(prep.single ? prep.stats[0] : prep.stats, params);
   viewer.setStretchMode("trilogy");
   return true;
 }
@@ -143,11 +146,15 @@ export function FitsglCutout({
   ra,
   dec,
   fovArcsec = DEFAULT_FOV_ARCSEC,
+  trilogy,
+  showLabel = true,
 }: {
   field: string;
   ra: number;
   dec: number;
   fovArcsec?: number;
+  trilogy?: Partial<TrilogyParams>;  // per-instance stretch override
+  showLabel?: boolean;
 }) {
   const base = useMemo(() => resolveBase(field), [field]);
   const [status, setStatus] = useState<Status>(base ? "loading" : "empty");
@@ -156,6 +163,8 @@ export function FitsglCutout({
   // Latest target, read by the (construction-fixed) onFrame trampoline.
   const targetRef = useRef({ ra, dec, fovArcsec });
   targetRef.current = { ra, dec, fovArcsec };
+  const trilogyRef = useRef(trilogy);
+  trilogyRef.current = trilogy;
   const placedRef = useRef(false);
 
   // Fetch + derive the field's config (cached). Nothing renders if the field has no
@@ -217,7 +226,7 @@ export function FitsglCutout({
     (h: FitsViewerHandle) => {
       handleRef.current = h;
       const viewer = h.getViewer();
-      if (viewer && prep) applyTrilogy(viewer, prep);
+      if (viewer && prep) applyTrilogy(viewer, prep, trilogyRef.current);
       placeCamera();
     },
     [prep, placeCamera]
@@ -228,7 +237,7 @@ export function FitsglCutout({
   const onFrame = useCallback(() => {
     if (!placedRef.current) {
       const viewer = handleRef.current?.getViewer();
-      if (viewer && prep) applyTrilogy(viewer, prep);
+      if (viewer && prep) applyTrilogy(viewer, prep, trilogyRef.current);
       const ok = placeCamera();
       if (ok) {
         placedRef.current = true;
@@ -240,10 +249,12 @@ export function FitsglCutout({
   if (!base || status === "empty") return null;
 
   return (
-    <div style={{ marginTop: "1rem" }}>
-      <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "4px" }}>
-        COLOR <span style={{ color: "var(--text-dim)" }}>(fitsgl · ~{fovArcsec.toFixed(1)}″)</span>
-      </div>
+    <div style={{ marginTop: showLabel ? "1rem" : 0 }}>
+      {showLabel && (
+        <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "4px" }}>
+          COLOR <span style={{ color: "var(--text-dim)" }}>(fitsgl · ~{fovArcsec.toFixed(1)}″)</span>
+        </div>
+      )}
       <div
         style={{
           position: "relative",

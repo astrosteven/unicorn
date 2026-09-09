@@ -8,12 +8,20 @@
 // background; decisions update the left dot optimistically and sync to Supabase off the
 // render path. Replaces the old desktop "inspector" app.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import type { Session } from "@supabase/supabase-js";
 import { supabase, type Inspection, type InspectDecision } from "@/lib/supabase";
 import {
-  SEARCH_FIELDS, loadField, fetchObject, ResultCard,
+  SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot, StampMontage,
   type SourceResult, type FieldConfig, type FieldIndex, type ZGrid,
 } from "@/app/data/_card/objectCard";
+
+// On-the-fly WebGL color cutout (client-only), same as the card uses.
+const FitsglCutout = dynamic(() => import("@/app/data/_card/FitsglCutout").then(m => m.FitsglCutout), { ssr: false });
+// Inspection color cutout: 1.5" on a side, stretched hard (bring up faint flux) so it
+// works as a quick "is this real?" check. Tunable.
+const INSPECT_FOV = 1.5;
+const INSPECT_TRILOGY = { noiselum: 0.32, noisesig: 1.0, noisesig0: 1.0 };
 
 // ---------------------------------------------------------------------------
 export default function InspectPage() {
@@ -469,10 +477,61 @@ function Inspector({ email }: { email: string }) {
           {card === "loading" && <div className="card" style={{ padding: "1.5rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>loading card…</div>}
           {card === "notfound" && <div className="card" style={{ padding: "1.5rem", color: "var(--text-muted)", fontSize: "0.82rem" }}>No card available for this source (field/ID not found on Corral).</div>}
           {card == null && !sel && <div className="card" style={{ padding: "1.5rem", color: "var(--text-muted)", fontSize: "0.82rem" }}>Select a row to inspect.</div>}
-          {card && card !== "loading" && card !== "notfound" && <ResultCard src={card} />}
+          {card && card !== "loading" && card !== "notfound" && <InspectCard src={card} />}
         </div>
       </div>
     </main>
+  );
+}
+
+// Compact object view for inspection: everything on one screen — a one-line header,
+// the "why not selected" reasons, then SED + P(z) + the hard-stretched 1.5" color in a
+// single row, with the filter-stamp montage below. No properties grid / flag button.
+function InspectCard({ src }: { src: SourceResult }) {
+  const za = src.pz["ZA"] ?? 0;
+  const normalize = (arr: number[] | undefined, grid: number[] | undefined) => {
+    if (!arr || !grid || arr.length !== grid.length) return undefined;
+    const nrm = arr.reduce((s, v, i) => s + v * (grid[i + 1] - grid[i] || 0.02), 0) || 1;
+    return arr.map(v => v / nrm);
+  };
+  const pzNorm = normalize(src.pzArr, src.zgrid) ?? src.pzArr;
+  const pzLowzNorm = normalize(src.pzArrLowz, src.zgridLowz);
+  const ra = src.row["RA"], dec = src.row["DEC"];
+  const fails = src.selected === 0 && src.selFail
+    ? [src.selFail.det ? "detection" : null, src.selFail.pix ? "image" : null,
+       src.selFail.z ? (src.selFail.zsub.length ? `photo-z (${src.selFail.zsub.join(", ")})` : "photo-z") : null].filter(Boolean)
+    : [];
+  return (
+    <div className="card" style={{ padding: "0.8rem 1rem" }}>
+      <div className="mono" style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "6px 12px", fontSize: "0.76rem", marginBottom: fails.length ? "4px" : "8px" }}>
+        <span>
+          <b style={{ color: "var(--accent)" }}>ID {src.row["ID"]}</b>
+          <span style={{ color: "var(--text-muted)" }}> · {src.field} · tier{src.row["DEPTHTIER"] ?? "—"}</span>
+          <span style={{ color: "var(--text)" }}> · z_a={za.toFixed(2)}</span>
+          {src.mabs != null && <span style={{ color: "var(--text-muted)" }}> · M_UV={src.mabs.toFixed(2)}</span>}
+          {src.beta != null && <span style={{ color: "var(--text-muted)" }}> · β={src.beta.toFixed(2)}</span>}
+          {src.selected === 1 && <span style={{ color: "var(--amber)" }}> · ★selected</span>}
+        </span>
+        <span style={{ color: "var(--text-muted)" }}>{ra != null ? Number(ra).toFixed(5) : "—"}, {dec != null ? Number(dec).toFixed(5) : "—"}</span>
+      </div>
+      {fails.length > 0 && (
+        <div className="mono" style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginBottom: "8px" }}>
+          <span style={{ color: "var(--red)" }}>Fails:</span> {fails.join(" · ")}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: "0.9rem", flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ flex: "2 1 320px", minWidth: 0 }}><SEDPlot src={src} /></div>
+        <div style={{ flex: "1 1 190px", minWidth: 0 }}>
+          <PZPlot zgrid={src.zgrid} pz={pzNorm} za={za} zgridLowz={src.zgridLowz} pzLowz={pzLowzNorm} />
+        </div>
+        {ra != null && dec != null && (
+          <div style={{ flexShrink: 0 }}>
+            <FitsglCutout field={(src.field ?? "").toUpperCase()} ra={Number(ra)} dec={Number(dec)} fovArcsec={INSPECT_FOV} trilogy={INSPECT_TRILOGY} />
+          </div>
+        )}
+      </div>
+      {src.stampUrl && <StampMontage url={src.stampUrl} />}
+    </div>
   );
 }
 
