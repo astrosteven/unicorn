@@ -469,6 +469,39 @@ export default function SearchPage() {
     return out;
   }
 
+  // Assemble one index row (the shape MatchEntry.r / the query loop's `r`) from a
+  // loaded field index at position `i`, plus this object's campfire spec-z. Same
+  // columns the query loop fills — shared by query mode and the upload → table path.
+  // (Per-filter flux_<f>/fluxerr_<f> are attached separately, only when a query needs them.)
+  function indexRowAt(idx: Awaited<ReturnType<typeof loadField>>["idx"], i: number, cz: SpeczRec | null): IdxRow {
+    return {
+      field: idx.field, za: idx.za[i], ra: idx.ra[i], dec: idx.dec[i],
+      m277: idx.m277?.[i] ?? null, m444: idx.m444?.[i] ?? null,
+      m1500: idx.m1500?.[i] ?? null, m1300: idx.m1300?.[i] ?? null, mabs: idx.mabs?.[i] ?? null, beta: idx.beta?.[i] ?? null,
+      zl68: idx.zl68?.[i] ?? null, zu68: idx.zu68?.[i] ?? null, z_lowz: idx.z_lowz?.[i] ?? null,
+      chia: idx.chia?.[i] ?? null, zspec: idx.zspec?.[i] ?? null,
+      czspec: cz?.z ?? null, czqual: cz?.q ?? null,
+      rh_277: idx.rh_277?.[i] ?? null, rh_444: idx.rh_444?.[i] ?? null,
+      kron_radius: idx.kron_radius?.[i] ?? null, a_image: idx.a_image?.[i] ?? null, b_image: idx.b_image?.[i] ?? null,
+      x: idx.x?.[i] ?? null, y: idx.y?.[i] ?? null, depthtier: idx.depthtier?.[i] ?? null,
+      detectcat: idx.detectcat?.[i] ?? null, tile: idx.tile?.[i] ?? null,
+      selected: idx.selected?.[i] ?? null, inspected: idx.inspected?.[i] ?? null,
+      sample: idx.sample?.[i] ?? null,
+    };
+  }
+  // Build a displayed table row from an index row `r`, evaluating the dynamic columns
+  // via their getters. Same fixed fields the query loop / displayRow produce.
+  function toQueryRow(fc: typeof SEARCH_FIELDS[0], id: number, r: IdxRow, cz: SpeczRec | null, getters: ((r: IdxRow) => number | string | null)[]): QueryRow {
+    return {
+      fc, id,
+      za: (typeof r.za === "number" ? r.za : null),
+      m444: (typeof r.m444 === "number" ? r.m444 : null),
+      zspec: (typeof r.zspec === "number" ? r.zspec : null),
+      selected: (typeof r.selected === "number" ? r.selected : null),
+      cz, extra: getters.map(g => g(r)),
+    };
+  }
+
   // Fetches the per-field search index (once, cached) from Corral, matches the
   // query, then pulls per-object detail JSON for each hit to build a SourceResult.
   async function doSearch() {
@@ -509,25 +542,12 @@ export default function SearchPage() {
           const sz = await loadSpecz(fc);
           for (let i = 0; i < idx.n; i++) {
             const cz = sz[String(idx.id[i])] ?? null;
-            const r: IdxRow = {
-              field: idx.field, za: idx.za[i], ra: idx.ra[i], dec: idx.dec[i],
-              m277: idx.m277?.[i] ?? null, m444: idx.m444?.[i] ?? null,
-              m1500: idx.m1500?.[i] ?? null, m1300: idx.m1300?.[i] ?? null, mabs: idx.mabs?.[i] ?? null, beta: idx.beta?.[i] ?? null,
-              zl68: idx.zl68?.[i] ?? null, zu68: idx.zu68?.[i] ?? null, z_lowz: idx.z_lowz?.[i] ?? null,
-              chia: idx.chia?.[i] ?? null, zspec: idx.zspec?.[i] ?? null,
-              czspec: cz?.z ?? null, czqual: cz?.q ?? null,
-              rh_277: idx.rh_277?.[i] ?? null, rh_444: idx.rh_444?.[i] ?? null,
-              kron_radius: idx.kron_radius?.[i] ?? null, a_image: idx.a_image?.[i] ?? null, b_image: idx.b_image?.[i] ?? null,
-              x: idx.x?.[i] ?? null, y: idx.y?.[i] ?? null, depthtier: idx.depthtier?.[i] ?? null,
-              detectcat: idx.detectcat?.[i] ?? null, tile: idx.tile?.[i] ?? null,
-              selected: idx.selected?.[i] ?? null, inspected: idx.inspected?.[i] ?? null,
-              sample: idx.sample?.[i] ?? null,
-            };
+            const r = indexRowAt(idx, i, cz);
             if (fx) for (const c of need) r[c] = fx[c]?.[i] ?? null;   // native flux/fluxerr for this query
             if (pred.test(r)) {
               total++;
               const id = idx.id[i];
-              if (rows.length < CAP) rows.push({ fc, id, za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, cz, extra: getters.map(g => g(r)) });
+              if (rows.length < CAP) rows.push(toQueryRow(fc, id, r, cz, getters));
               if (all.length < DL_CAP) all.push({ fc, id, r, cz });
             }
           }
@@ -605,40 +625,65 @@ export default function SearchPage() {
           if (src) found.push(src);
         }
       } else {
-        // upload: one entry per line, either "ID" or "RA Dec"
+        // upload: one entry per line, either "ID" or "RA Dec". Resolve each entry to a
+        // matched (field, index-position) pair, then render the SAME sortable results
+        // table Query mode uses (map↗ links, sorting, click-a-row card, downloads,
+        // "inspect these"). Upload order is preserved — the user can sort in the table.
         const lines = uploadText.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
         requested = lines.length;
         const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadField(fc)) })));
+        const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
+        for (const L of loaded) speczByField.set(L.fc.field, await loadSpecz(L.fc));
+
+        const CAP = TABLE_CAP;
+        const rows: QueryRow[] = [];
+        const all: MatchEntry[] = [];
+        let total = 0;
+        // Resolve one matched (field index L, position i) → a table row + full match entry.
+        const pushMatch = (L: typeof loaded[0], i: number) => {
+          const id = L.idx.id[i];
+          const cz = speczByField.get(L.fc.field)?.[String(id)] ?? null;
+          const r = indexRowAt(L.idx, i, cz);
+          total++;
+          if (rows.length < CAP) rows.push(toQueryRow(L.fc, id, r, cz, []));
+          all.push({ fc: L.fc, id, r, cz });
+        };
         for (const line of lines) {
           const parts = line.split(/[\s,]+/);
           if (parts.length === 1) {
             const id = parseInt(parts[0], 10);
             if (!Number.isFinite(id)) continue;
             for (const L of loaded) {
-              if (L.idx.id.includes(id)) {
-                const src = await fetchObject(L.fc, id, L.zg);
-                if (src) { found.push(src); break; }
-              }
+              const i = L.idx.id.indexOf(id);
+              if (i >= 0) { pushMatch(L, i); break; }
             }
           } else {
             const ra = parseFloat(parts[0]);
             const dec = parseFloat(parts[1]);
             if (!Number.isFinite(ra) || !Number.isFinite(dec)) continue;
-            let best: { fc: typeof fields[0]; id: number; sep: number; zg: ZGrid } | null = null;
+            let best: { L: typeof loaded[0]; i: number; sep: number } | null = null;
             for (const L of loaded) {
               for (let i = 0; i < L.idx.n; i++) {
                 const sep = angSep(ra, dec, L.idx.ra[i], L.idx.dec[i]);
-                if (sep <= 0.5 && (!best || sep < best.sep)) {
-                  best = { fc: L.fc, id: L.idx.id[i], sep, zg: L.zg };
-                }
+                if (sep <= 0.5 && (!best || sep < best.sep)) best = { L, i, sep };
               }
             }
-            if (best) {
-              const src = await fetchObject(best.fc, best.id, best.zg);
-              if (src) found.push(src);
-            }
+            if (best) pushMatch(best.L, best.i);
           }
         }
+
+        if (total === 0) {
+          setStatus("notfound");
+          setMatchSummary(`No matches among ${requested} entries.`);
+          return;
+        }
+        queryAllRef.current = all;
+        setSort({ col: null, dir: "asc" });   // fresh search starts in upload order
+        setResults([]); setQueryCard(null); setQueryCardId(null);
+        setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
+        setStatus("table");
+        setMatchSummary(`${total.toLocaleString()} match${total === 1 ? "" : "es"} from ${requested} entr${requested === 1 ? "y" : "ies"}${total > CAP ? ` — showing first ${CAP}` : ""}.`);
+        return;
       }
 
       const matched = found.length;
