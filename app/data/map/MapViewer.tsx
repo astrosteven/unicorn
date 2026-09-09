@@ -110,6 +110,28 @@ const ELLIPSE_SEGMENTS = 16;
 // them sooner).
 const DOT_ZOOM = 0.5;
 
+// Adaptive scale-bar target: aim for a bar ~this many CSS px wide, then snap its ANGULAR
+// length to the nearest nice round value (…1,2,5,10,20,30,60″ → 1,2,5′…). Returns the
+// snapped screen length in px + a label in arcsec (or arcmin when ≥60″).
+const SCALEBAR_TARGET_PX = 90;
+// Nice round angular lengths in ARCSEC, ascending. Covers deep zoom (0.2″) out to ~30′.
+const NICE_ARCSEC = [
+  0.2, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200, 1800,
+];
+function niceScaleBar(arcsecPerCssPx: number): { px: number; label: string } | null {
+  if (!(arcsecPerCssPx > 0) || !Number.isFinite(arcsecPerCssPx)) return null;
+  const targetArcsec = SCALEBAR_TARGET_PX * arcsecPerCssPx;
+  // Pick the largest nice length not exceeding the target (fall back to the smallest).
+  let chosen = NICE_ARCSEC[0];
+  for (const a of NICE_ARCSEC) { if (a <= targetArcsec) chosen = a; else break; }
+  const px = chosen / arcsecPerCssPx;
+  const label =
+    chosen >= 60
+      ? `${(chosen / 60) % 1 === 0 ? (chosen / 60).toFixed(0) : (chosen / 60).toFixed(1)}′`
+      : `${chosen % 1 === 0 ? chosen.toFixed(0) : chosen.toFixed(1)}″`;
+  return { px, label };
+}
+
 // ---- Filter model ----------------------------------------------------------
 export type MapFilters = {
   selectedOnly: boolean;
@@ -205,6 +227,9 @@ export default function MapViewer({
   const [idx, setIdx] = useState<FieldIndex | null>(null);
   const [magCol, setMagCol] = useState<NumCol>(null);
   const [glyphs, setGlyphs] = useState<Glyph[]>([]);
+  // Adaptive scale bar (bottom-left): pixel length on screen + its human label. Recomputed
+  // every frame from the live zoom; null until the first projection has a camera.
+  const [scaleBar, setScaleBar] = useState<{ px: number; label: string } | null>(null);
   // Live trilogy scaling params driven by the SCALING panel. Starts at CAMPFIRE; the
   // panel mutates these and each change re-derives the stretch on the existing viewer
   // via applyTrilogy — no camera move, no overlay rebuild.
@@ -274,6 +299,16 @@ export default function MapViewer({
   useEffect(() => {
     statsRef.current = { stats: prep?.stats ?? null, single: prep?.single ?? false };
   }, [prep]);
+
+  // Native pixel scale (arcsec/px) from the first band's grid; 0.03 for the 30 mas
+  // mosaics. Drives the scale-bar overlay (arcsec across a screen span).
+  const pixelScale = useMemo(() => {
+    const g = config?.dataset.bands[0]?.grid?.pixelScaleArcsec;
+    return g && g > 0 ? g : 0.03;
+  }, [config]);
+  // In a ref too, so the stable per-frame `project` reads it without re-subscribing.
+  const pixelScaleRef = useRef(pixelScale);
+  pixelScaleRef.current = pixelScale;
 
   // Re-derive + apply the trilogy stretch on the LIVE viewer from the given params. This
   // is the exact FitsExplorer path (applyTrilogy + setStretchMode("trilogy")): it only
@@ -364,6 +399,21 @@ export default function MapViewer({
     const zoom = cam.zoom;
     const list = sourcesRef.current;
     const asDot = zoom < DOT_ZOOM;
+
+    // Adaptive scale bar: measure CSS px per native px empirically from imageToScreen over
+    // a 100-native-px span at the view centre (robust to DPR + North-up rotation), then
+    // arcsec/CSS-px = pixelScale / (cssPxPerNativePx). Snap to a nice round angular length.
+    {
+      const a = h.imageToScreen(cam.centerX, cam.centerY);
+      const b = h.imageToScreen(cam.centerX + 100, cam.centerY);
+      if (a && b) {
+        const cssPxPer100 = Math.hypot(b.x - a.x, b.y - a.y);
+        if (cssPxPer100 > 0) {
+          const arcsecPerCssPx = (pixelScaleRef.current * 100) / cssPxPer100;
+          setScaleBar(niceScaleBar(arcsecPerCssPx));
+        }
+      }
+    }
 
     // Tiled fields: the catalog x,y are per-tile and don't line up with the fitsgl virtual
     // grid, so resolve each source's world px from its ra/dec via the viewer WCS (once per
@@ -550,6 +600,37 @@ export default function MapViewer({
           );
         })}
       </svg>
+
+      {/* Adaptive scale bar — bottom-left. Length + label recomputed every frame from the
+          live zoom, snapped to a nice round arcsec/arcmin value. */}
+      {scaleBar && (
+        <div
+          data-overlay="scalebar"
+          style={{
+            position: "absolute", left: 14, bottom: 14, zIndex: 15,
+            pointerEvents: "none", display: "flex", flexDirection: "column",
+            alignItems: "center", gap: 3,
+          }}
+        >
+          <span
+            className="mono"
+            style={{
+              fontSize: "0.68rem", color: "#fff", letterSpacing: "0.03em",
+              textShadow: "0 1px 3px rgba(0,0,0,0.9)",
+            }}
+          >
+            {scaleBar.label}
+          </span>
+          <div
+            style={{
+              width: scaleBar.px, height: 7,
+              borderLeft: "2px solid #fff", borderRight: "2px solid #fff",
+              borderBottom: "3px solid #fff",
+              filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.9))",
+            }}
+          />
+        </div>
+      )}
 
       {/* SCALING panel — top-right, where FitsExplorer's View panel used to sit. Drives
           the trilogy stretch live via applyScaling (through the viewer handle). */}
