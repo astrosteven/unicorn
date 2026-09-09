@@ -281,7 +281,7 @@ type Glyph = { id: number; sel: boolean; poly?: string; cx?: number; cy?: number
 // MapViewer re-asserts it on EVERY drawn frame until the camera actually holds it, which
 // defeats the viewer's construction/tile-load auto-fit that would otherwise clobber a
 // setCenter/setZoom issued too early. Cleared once held so the user can pan/zoom freely.
-export type CameraTarget = { cx: number; cy: number; zoom: number };
+export type CameraTarget = { cx: number; cy: number; zoom: number; until: number };
 
 export default function MapViewer({
   field,
@@ -621,15 +621,17 @@ export default function MapViewer({
     if (!t) return;
     const h = handleRef.current;
     if (!h) return;
+    // Keep re-asserting through the viewer's tile-load auto-fits for a fixed window,
+    // THEN release so the user can pan. (Clearing on the first "held" let a later
+    // auto-fit win with no target left to restore — that was the "doesn't zoom" bug.)
+    if (Date.now() >= t.until) { ref!.current = null; return; }
     const cam = h.getCameraState();
     if (!cam) return;
     const held =
       Math.abs(cam.centerX - t.cx) < 0.5 &&
       Math.abs(cam.centerY - t.cy) < 0.5 &&
       Math.abs(cam.zoom - t.zoom) <= t.zoom * 0.005;
-    if (held) { ref!.current = null; return; }
-    h.setCenter(t.cx, t.cy);
-    h.setZoom(t.zoom);
+    if (!held) { h.setCenter(t.cx, t.cy); h.setZoom(t.zoom); }
   }, [cameraTargetRef]);
 
   // Kick a few projection attempts spaced out in time. fitsgl fires onFrame only when
@@ -644,7 +646,7 @@ export default function MapViewer({
       applyScaling(scalingRef.current.trilogy, scalingRef.current.stretchMode);
       project();
       tries += 1;
-      if (tries < 12) setTimeout(tick, 250);
+      if (tries < 20) setTimeout(tick, 250);   // ~5s: cover the camera re-assert window
     };
     requestAnimationFrame(tick);
   }, [project, enforceCamera, applyScaling]);

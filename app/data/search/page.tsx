@@ -1132,7 +1132,8 @@ export default function SearchPage() {
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--accent2)", fontSize: "0.72rem" }}>{open ? "▾ close" : "view →"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", fontSize: "0.72rem" }} onClick={e => e.stopPropagation()}>
                       {FITSGL_BASE[r.fc.field]
-                        ? <Link href={{ pathname: "/data/map", query: { field: r.fc.field, id: r.id } }} title="Open in the color map"
+                        ? <Link href={{ pathname: "/data/map", query: { field: r.fc.field, id: r.id } }} title="Open in the color map (new tab)"
+                            target="_blank" rel="noopener"
                             style={{ color: "var(--accent)", textDecoration: "none" }}>map ↗</Link>
                         : <span style={{ color: "var(--text-dim)" }}>—</span>}
                     </td>

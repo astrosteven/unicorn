@@ -162,7 +162,8 @@ export default function MapPage() {
     const zoom = (cssW * dpr) / fovNativePx;
     // Hand the target to MapViewer's frame loop rather than setting the camera directly,
     // so it is re-asserted until held and can't be clobbered by the viewer's auto-fit.
-    cameraTargetRef.current = { cx: px.x, cy: px.y, zoom };
+    // Re-assert for a fixed window so tile-load auto-fits can't clobber it (see MapViewer).
+    cameraTargetRef.current = { cx: px.x, cy: px.y, zoom, until: Date.now() + 4000 };
     h.setCenter(px.x, px.y);
     h.setZoom(zoom);
     setGotoMsg(`→ ${ra.toFixed(5)}, ${dec.toFixed(5)}`);
