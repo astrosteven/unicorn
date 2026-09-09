@@ -311,6 +311,54 @@ async function svgToPngBlob(svg: SVGSVGElement, scale = 2): Promise<Blob | null>
   return await new Promise<Blob | null>(res => cv.toBlob(b => res(b), "image/png"));
 }
 
+// Load a Blob into an <img> (for canvas compositing).
+function blobToImage(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); res(img); };
+    img.onerror = e => { URL.revokeObjectURL(url); rej(e); };
+    img.src = url;
+  });
+}
+
+// Compose ONE image per object: a header line, SED + P(z) side-by-side, and the stamp
+// montage below — so the card download is one self-describing file per source.
+async function composeCardImage(src: SourceResult, sed: HTMLImageElement | null, pz: HTMLImageElement | null, stamp: HTMLImageElement | null): Promise<Blob | null> {
+  const pad = 16, gap = 14, headerH = 34;
+  const topH = Math.max(sed?.height ?? 0, pz?.height ?? 0);
+  const topW = (sed?.width ?? 0) + (pz ? (sed ? gap : 0) + pz.width : 0);
+  const stampW = stamp?.width ?? 0, stampH = stamp?.height ?? 0;
+  const contentW = Math.max(topW, stampW);
+  const W = contentW + pad * 2;
+  const H = pad + headerH + topH + (stamp ? gap + stampH : 0) + pad;
+  if (contentW < 10 || H < 60) return null;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return null;
+  const cs = getComputedStyle(document.body);
+  ctx.fillStyle = cs.backgroundColor || "#0b0817";
+  ctx.fillRect(0, 0, W, H);
+  // Header
+  const za = src.pz?.["ZA"], ra = src.row?.["RA"], dec = src.row?.["DEC"];
+  const hdr = `ID ${src.row?.["ID"]} · ${src.field}`
+    + (za != null ? ` · z_a=${Number(za).toFixed(2)}` : "")
+    + (src.mabs != null ? ` · M_UV=${Number(src.mabs).toFixed(2)}` : "")
+    + (ra != null && dec != null ? `   ${Number(ra).toFixed(5)}, ${Number(dec).toFixed(5)}` : "");
+  ctx.fillStyle = cs.color || "#e8e2f2";
+  ctx.font = "bold 15px 'Space Mono', monospace";
+  ctx.textBaseline = "top";
+  ctx.fillText(hdr, pad, pad);
+  // Plots row
+  const topY = pad + headerH;
+  if (sed) ctx.drawImage(sed, pad, topY);
+  if (pz) ctx.drawImage(pz, pad + (sed ? sed.width + gap : 0), topY);
+  // Stamp montage
+  if (stamp) ctx.drawImage(stamp, pad, topY + topH + gap);
+  return await new Promise<Blob | null>(res => cv.toBlob(b => res(b), "image/png"));
+}
+
 // The SED + P(z) plots for one object, rendered off-screen so the download can rasterize
 // them. Mirrors ResultCard's P(z) normalization.
 function CardPlots({ src }: { src: SourceResult }) {
@@ -373,7 +421,7 @@ export default function SearchPage() {
     }
     await Promise.all(Array.from({ length: 6 }, fetchWorker));
 
-    // 2) Add stamp + rasterized SED/P(z) per object (plot render is serial).
+    // 2) Compose ONE image per object: header + SED + P(z) + stamp montage (render serial).
     const holder = document.createElement("div");
     holder.style.cssText = "position:fixed;left:-99999px;top:0;width:520px;pointer-events:none;";
     document.body.appendChild(holder);
@@ -383,20 +431,22 @@ export default function SearchPage() {
       const src = srcs[i]; const r = rows[i];
       if (src) {
         const base = `${r.fc.field}_${r.id}`;
+        let stampImg: HTMLImageElement | null = null;
         try {
           const resp = await fetch(src.stampUrl ?? `${corralBase()}/${r.fc.dir}/web/stamps/${r.fc.prefix}_${r.id}.png`);
-          if (resp.ok) zip.file(`${base}_stamp.png`, await resp.blob());
+          if (resp.ok) stampImg = await blobToImage(await resp.blob());
         } catch { /* field w/o stamps: skip */ }
+        let sedImg: HTMLImageElement | null = null, pzImg: HTMLImageElement | null = null;
         try {
           flushSync(() => root.render(<CardPlots src={src} />));
-          // Select each plot's MAIN svg via its wrapper — querySelector returns the first
-          // <svg> in the wrapper (the plot itself), not the SED legend's small glyph svgs.
+          // The MAIN svg per wrapper (not the SED legend's small glyph svgs).
           const sedSvg = holder.querySelector('[data-plot="sed"] svg') as SVGSVGElement | null;
           const pzSvg  = holder.querySelector('[data-plot="pz"] svg')  as SVGSVGElement | null;
-          if (sedSvg) { const b = await svgToPngBlob(sedSvg); if (b) zip.file(`${base}_sed.png`, b); }
-          if (pzSvg)  { const b = await svgToPngBlob(pzSvg);  if (b) zip.file(`${base}_pz.png`, b); }
+          if (sedSvg) { const b = await svgToPngBlob(sedSvg); if (b) sedImg = await blobToImage(b); }
+          if (pzSvg)  { const b = await svgToPngBlob(pzSvg);  if (b) pzImg = await blobToImage(b); }
         } catch { /* rasterize failure: skip plots */ }
-        ok++;
+        const png = await composeCardImage(src, sedImg, pzImg, stampImg);
+        if (png) { zip.file(`${base}.png`, png); ok++; }
       }
       if (i % 3 === 0 || i === total - 1) setZipping(`render ${i + 1}/${total}`);
     }
@@ -440,6 +490,26 @@ export default function SearchPage() {
     if (!objs.length) return;
     try { sessionStorage.setItem("inspectQueue", JSON.stringify({ label: queryInput, objects: objs })); } catch { /* quota */ }
     router.push("/data/inspect");
+  }
+
+  // Download a DS9 region file for the matched objects: a 0.5" green circle per source
+  // in fk5 (ra,dec), width 2, labelled with the object ID.
+  function downloadRegion() {
+    const lines = [
+      "# Region file format: DS9 version 4.1",
+      'global color=green dashlist=8 3 width=2 font="helvetica 10 normal roman" select=1 highlite=1 dash=0 fixed=0 edit=1 move=1 delete=1 include=1 source=1',
+      "fk5",
+    ];
+    let n = 0;
+    for (const m of queryAllRef.current) {
+      const ra = m.r.ra, dec = m.r.dec;
+      if (typeof ra === "number" && typeof dec === "number") {
+        lines.push(`circle(${ra},${dec},0.5") # text={${m.fc.field} ${m.id}}`);
+        n++;
+      }
+    }
+    if (!n) return;
+    downloadText(lines.join("\n") + "\n", `unicorn_regions_${n}.reg`);
   }
 
   // Build one displayed table row from a full-match entry — same shape the query loop produces.
@@ -1123,14 +1193,19 @@ export default function SearchPage() {
 
           <div style={{ margin: "-0.25rem 0 1rem" }}>
             <button onClick={downloadResultStamps} disabled={!!zipping} className="mono"
-              title="Download a zip of result cards for these sources — cutout montage + SED + P(z) per object"
+              title="Download a zip of result cards — ONE combined image per object (stamp montage + SED + P(z))"
               style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: zipping ? "wait" : "pointer" }}>
-              {zipping ? `${zipping}…` : `↓ download result cards — stamp + SED + P(z) (${queryRows.length})`}
+              {zipping ? `${zipping}…` : `↓ download result cards — 1 image / object (${queryRows.length})`}
             </button>
             <button onClick={sendToInspector} className="mono"
               title="Open these matched objects in the visual inspector"
               style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--accent2)", border: "1px solid rgba(239,159,205,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer" }}>
               ⇢ inspect these ({Math.min(queryTotal, INSPECT_HANDOFF_CAP).toLocaleString()})
+            </button>
+            <button onClick={downloadRegion} className="mono"
+              title="Download a DS9 region file (.reg) — 0.5″ fk5 circles for the full matched list"
+              style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--green)", border: "1px solid rgba(126,207,176,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer" }}>
+              ⬡ region file (.reg) ({Math.min(queryTotal, 100000).toLocaleString()})
             </button>
           </div>
 
