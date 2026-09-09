@@ -247,6 +247,7 @@ export default function SearchPage() {
   const [radiusInput, setRadiusInput] = useState("0.2");
   const [uploadText, setUploadText] = useState("");
   const [queryInput, setQueryInput] = useState("za > 9 and m444 < 28 and selected = 1");
+  const [viewColsInput, setViewColsInput] = useState("");   // extra columns to SHOW (not filter on)
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryCols, setQueryCols] = useState<string[]>([]);
   const [defsOpen, setDefsOpen] = useState(false);
@@ -402,8 +403,12 @@ export default function SearchPage() {
       if (mode === "query") {
         const pred = makePredicate(queryInput);
         if ("error" in pred) { setStatus("notfound"); setMatchSummary(pred.error); return; }
-        const cols = queriedColumns(queryInput);
-        const need = pred.need;                        // native flux_<f>/fluxerr_<f> cols to attach
+        // Columns to SHOW without filtering on them (e.g. flux/mag values a colleague
+        // wants to eyeball). Same tokens as query fields; unioned into the table columns.
+        const viewCols = viewColsInput.split(/[,\s]+/).map(s => s.trim().toLowerCase())
+          .filter(Boolean).filter(c => isKnownField(c) && !TABLE_FIXED_COLS.has(c));
+        const cols = [...new Set([...queriedColumns(queryInput), ...viewCols])];
+        const need = [...new Set([...pred.need, ...neededIndexCols(viewCols.join(" "))])];  // flux cols to attach
         const getters = cols.map(c => colGetter(c));   // value-extractors for the dynamic table cols
         const CAP = 500;              // rows rendered in the table
         const DL_CAP = 100000;        // rows retained for the full-list download
@@ -707,6 +712,22 @@ export default function SearchPage() {
                 width: "100%", background: "var(--bg)", border: "1px solid var(--border-bright)",
                 borderRadius: "4px", padding: "10px 12px", color: "var(--text)",
                 fontSize: "0.95rem", fontFamily: "'Space Mono', monospace", outline: "none",
+              }}
+            />
+            {/* Extra columns to display in the results table (no filtering) — see the values in-browser without downloading. */}
+            <label style={{ display: "block", fontSize: "0.72rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", letterSpacing: "0.1em", margin: "12px 0 6px" }}>
+              ALSO SHOW COLUMNS <span style={{ color: "var(--text-dim)", letterSpacing: 0, textTransform: "none" }}>(optional — displayed in the table, not filtered)</span>
+            </label>
+            <input
+              type="text"
+              value={viewColsInput}
+              onChange={e => setViewColsInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && doSearch()}
+              placeholder="e.g. mag_f150w, flux_f277w, snr_f444w, f150w-f277w, beta"
+              style={{
+                width: "100%", background: "var(--bg)", border: "1px solid var(--border)",
+                borderRadius: "4px", padding: "8px 12px", color: "var(--text)",
+                fontSize: "0.85rem", fontFamily: "'Space Mono', monospace", outline: "none",
               }}
             />
             <div style={{ marginTop: "10px", fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", lineHeight: 1.9 }}>
