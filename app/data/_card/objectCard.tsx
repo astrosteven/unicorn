@@ -301,6 +301,33 @@ export async function loadFilters(fc: FieldConfig): Promise<Record<string, NumCo
   }
 }
 
+// Dense-basis physical properties (<prefix>_db_v<ver>.json[.gz]): parallel arrays aligned
+// to index order, exposed as queryable columns. Currently CEERS only; absent → null.
+export const DB_COLS = [
+  "mass", "mass_16", "mass_84", "av", "av_16", "av_84",
+  "sfr10", "sfr10_16", "sfr10_84", "sfr100", "sfr100_16", "sfr100_84",
+] as const;
+const _dbCache: Record<string, Record<string, NumCol> | null> = {};
+const _dbPromise: Record<string, Promise<Record<string, NumCol> | null>> = {};
+export async function loadDb(fc: FieldConfig): Promise<Record<string, NumCol> | null> {
+  if (fc.field in _dbCache) return _dbCache[fc.field];
+  if (fc.field in _dbPromise) return _dbPromise[fc.field];
+  _dbPromise[fc.field] = (async () => {
+    const override = dataOverride();
+    const name = `${fc.prefix}_db_v${fc.version}.json`;
+    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    try {
+      return await fetchJsonMaybeGz(`${primary}/${name}`);
+    } catch {
+      if (!override) { try { return await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fc.dir}/web/${name}`); } catch {} }
+      return null;
+    }
+  })();
+  const db = await _dbPromise[fc.field];
+  _dbCache[fc.field] = db;
+  return db;
+}
+
 // Per-field campfire spec-z sidecar (<prefix>_specz_v<ver>.json[.gz]): a map obj_id ->
 // {z,q,cid,cf,sep}, lazy + cached. Absence (field with no spectra / sidecar not yet
 // deployed) resolves to an empty map, so callers just see "no spec-z".

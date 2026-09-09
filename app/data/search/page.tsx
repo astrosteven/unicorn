@@ -12,6 +12,8 @@ import {
   loadField,
   loadFilters,
   loadSpecz,
+  loadDb,
+  DB_COLS,
   loadLabels,
   fetchObject,
   corralBase,
@@ -36,6 +38,7 @@ type IdxRow = Record<string, number | string | null>;
 // Numeric queryable columns (must exist in the index).
 const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m1500", "m1300", "mabs", "beta", "zspec",
   "czspec", "czqual",
+  ...DB_COLS,   // dense-basis physical properties (CEERS): mass/av/sfr10/sfr100 + _16/_84
   "rh_277", "rh_444", "kron_radius", "a_image", "b_image", "x", "y", "depthtier",
   "ra", "dec", "selected", "inspected", "sample"];
 const QUERY_STR = ["field", "detectcat", "tile"];
@@ -876,6 +879,7 @@ export default function SearchPage() {
           .filter(Boolean).filter(c => isKnownField(c) && !TABLE_FIXED_COLS.has(c));
         const cols = [...new Set([...queriedColumns(queryInput), ...viewCols])];
         const need = [...new Set([...pred.need, ...neededIndexCols(viewCols.join(" "))])];  // flux cols to attach
+        const needDb = DB_COLS.some(c => cols.includes(c));   // physical-properties sidecar (CEERS)
         const getters = cols.map(c => colGetter(c));   // value-extractors for the dynamic table cols
         const CAP = TABLE_CAP;        // rows rendered in the table
         const DL_CAP = 100000;        // rows retained for the full-list download
@@ -889,10 +893,13 @@ export default function SearchPage() {
           // campfire spec-z sidecar (small, cached) — so czspec/czqual are queryable and
           // each row carries its campfire match for the results table.
           const sz = await loadSpecz(fc);
+          // dense-basis physical properties (parallel arrays aligned to index order), on demand.
+          const db = needDb ? await loadDb(fc) : null;
           for (let i = 0; i < idx.n; i++) {
             const cz = sz[String(idx.id[i])] ?? null;
             const r = indexRowAt(idx, i, cz);
             if (fx) for (const c of need) r[c] = fx[c]?.[i] ?? null;   // native flux/fluxerr for this query
+            if (db) for (const c of DB_COLS) r[c] = db[c]?.[i] ?? null;  // mass/av/sfr...
             if (pred.test(r)) {
               total++;
               const id = idx.id[i];
@@ -1284,6 +1291,9 @@ export default function SearchPage() {
                   ["zspec", "spectroscopic redshift (>0 if known)"],
                   ["czspec", "campfire spec-z (has a campfire spectrum)"],
                   ["czqual", "campfire z quality 0–4 (4=Secure, 3=Probable)"],
+                  ["mass", "log₁₀ stellar mass (dense-basis, CEERS); mass_16/mass_84 = 16/84th %ile"],
+                  ["av", "dust attenuation A_V (mag); av_16/av_84 too"],
+                  ["sfr10 / sfr100", "log SFR over 10/100 Myr; each has _16/_84"],
                   ["rh_277 / rh_444", "half-light radius (pixels)"],
                   ["kron_radius", "Kron radius (pixels)"],
                   ["a_image / b_image", "major / minor axis (pixels)"],
@@ -1343,6 +1353,7 @@ export default function SearchPage() {
                   "detectcat = cold and zspec > 0",
                   "czqual >= 3 and za > 5",
                   "czspec = none and za > 9",
+                  "mass > 10 and za > 6",
                   "mag_f277w < 28 and snr_f277w > 5",
                   "f150w-f277w < 0.5 and za > 6",
                 ].map(ex => (

@@ -252,6 +252,7 @@ function Inspector({ email }: { email: string }) {
   // -- select a row: show its card (from cache if warm), then prefetch ahead --
   const selectRow = useCallback((row: QueueRow) => {
     const key = rowKey(row);
+    selKeyRef.current = key;   // sync the ref NOW so a rapid next keypress doesn't read the stale selection
     setSelKey(key);
     if (cardCache.current.has(key)) {
       setCard(cardCache.current.get(key) ?? "notfound");
