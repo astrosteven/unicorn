@@ -553,7 +553,8 @@ export default function SearchPage() {
   const [decInput, setDecInput] = useState("");
   const [radiusInput, setRadiusInput] = useState("0.2");
   const [uploadText, setUploadText] = useState("");
-  const [queryInput, setQueryInput] = useState("za > 9 and m444 < 28 and selected = 1");
+  const [queryInput, setQueryInput] = useState(() =>
+    (typeof window !== "undefined" && localStorage.getItem("unicorn_lastQuery")) || "za > 9 and m444 < 28 and selected = 1");
   const [viewColsInput, setViewColsInput] = useState("");   // extra columns to SHOW (not filter on)
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryCols, setQueryCols] = useState<string[]>([]);
@@ -897,6 +898,8 @@ export default function SearchPage() {
       if (mode === "query") {
         const pred = makePredicate(queryInput);
         if ("error" in pred) { setStatus("notfound"); setMatchSummary(pred.error); return; }
+        // Persist the query so the box comes back pre-filled next visit (user request).
+        try { localStorage.setItem("unicorn_lastQuery", queryInput); } catch {}
         // Columns to SHOW without filtering on them (e.g. flux/mag values a colleague
         // wants to eyeball). Same tokens as query fields; unioned into the table columns.
         const viewCols = viewColsInput.split(/[,\s]+/).map(s => s.trim().toLowerCase())
