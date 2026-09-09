@@ -1,0 +1,56 @@
+name: Refresh campfire spec-z
+
+# Daily pull of campfire's spec-z catalog -> positional cross-match against each field's
+# published search index -> per-field gz sidecars in public/searchindex. Commits only when
+# something changed, then dispatches the deploy (a GITHUB_TOKEN push does NOT auto-trigger
+# deploy.yml, but workflow_dispatch is exempt from that rule, so we trigger it explicitly).
+
+on:
+  schedule:
+    - cron: "0 9 * * *"     # daily 09:00 UTC (04:00 CT)
+  workflow_dispatch: {}       # manual "Run workflow" button
+
+permissions:
+  contents: write             # push the sidecar commit
+  actions: write              # dispatch deploy.yml
+
+concurrency:
+  group: campfire-specz
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install --quiet numpy scipy
+
+      - name: Pull campfire + rebuild sidecars
+        run: python scripts/refresh_campfire_specz.py --indexdir public/searchindex
+
+      - name: Commit if changed
+        id: commit
+        run: |
+          git config user.name  "unicorn-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add public/searchindex/*_specz_v*.json.gz
+          if git diff --cached --quiet; then
+            echo "No spec-z changes."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "campfire spec-z: daily refresh"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger deploy
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy.yml
