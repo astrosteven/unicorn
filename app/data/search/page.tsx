@@ -197,6 +197,11 @@ function makePredicate(query: string): { test: (r: IdxRow) => boolean; need: str
       if (QUERY_STR.includes(f)) {
         if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != on "${f}"` };
         conds.push(r => { const v = r[f]; if (v == null) return false; const eq = String(v).toLowerCase() === valraw; return op === "!=" ? !eq : eq; });
+      } else if (valraw === "none" || valraw === "null") {
+        // Missing-value test, e.g. `czspec = none` (no campfire spec-z / not spectroscopically observed).
+        if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != with "none"` };
+        const get = colGetter(f);
+        conds.push(r => { const v = get(r); const missing = v == null || (typeof v === "number" && !Number.isFinite(v)); return op === "!=" ? !missing : missing; });
       } else {
         const x = parseFloat(valraw);
         if (!Number.isFinite(x)) return { error: `"${valraw}" is not a number` };
@@ -914,7 +919,7 @@ export default function SearchPage() {
             />
             <div style={{ marginTop: "10px", fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", lineHeight: 1.9 }}>
               <div style={{ marginBottom: "6px" }}>
-                ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span> · combine conditions with <span style={{ color: "var(--text-muted)" }}>and</span> / <span style={{ color: "var(--text-muted)" }}>or</span>
+                ops: <span style={{ color: "var(--text-muted)" }}>&gt; &lt; &gt;= &lt;= = != between…and</span> · combine with <span style={{ color: "var(--text-muted)" }}>and</span> / <span style={{ color: "var(--text-muted)" }}>or</span> · <span style={{ color: "var(--text-muted)" }}>= none</span> tests a missing value (e.g. <span style={{ color: "var(--text-muted)" }}>czspec = none</span>)
               </div>
               <div style={{ background: "rgba(176,124,198,0.07)", border: "1px solid var(--border)", borderRadius: "6px", padding: "7px 12px" }}>
               <button onClick={() => setDefsOpen(o => !o)} style={{ background: "none", border: "none", padding: "2px 0", color: "var(--accent2)", fontFamily: "'Space Mono', monospace", fontSize: "0.82rem", fontWeight: 700, cursor: "pointer", letterSpacing: "0.04em", display: "flex", alignItems: "center", gap: "8px", width: "100%", textAlign: "left" }}>
@@ -992,6 +997,7 @@ export default function SearchPage() {
                   "selected = 1 and za > 8",
                   "detectcat = cold and zspec > 0",
                   "czqual >= 3 and za > 5",
+                  "czspec = none and za > 9",
                   "mag_f277w < 28 and snr_f277w > 5",
                   "f150w-f277w < 0.5 and za > 6",
                 ].map(ex => (
