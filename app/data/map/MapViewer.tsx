@@ -300,6 +300,7 @@ export default function MapViewer({
   field,
   configUrl,
   filters,
+  queuedIds,
   onSourceClick,
   onCount,
   onReadyHandle,
@@ -309,6 +310,9 @@ export default function MapViewer({
   field: FieldConfig;
   configUrl: string;
   filters: MapFilters;
+  /** Search → map handoff: when non-null, draw ONLY sources whose id ∈ this set (the
+   *  queried objects for the active field). When null, draw every source (default). */
+  queuedIds?: Set<number> | null;
   onSourceClick: (id: number) => void;
   /** Report how many sources pass the active filters (total, not just on-screen). */
   onCount?: (n: number) => void;
@@ -355,6 +359,10 @@ export default function MapViewer({
   // The current filtered source list, held in a ref so the per-frame projector reads
   // the latest without being a hook dependency (projection must not re-subscribe onFrame).
   const sourcesRef = useRef<Src[]>([]);
+  // Search → map handoff id set (queried objects for this field), in a ref so the stable
+  // per-frame project() reads the latest without re-subscribing. null = draw all sources.
+  const queuedIdsRef = useRef<Set<number> | null>(queuedIds ?? null);
+  queuedIdsRef.current = queuedIds ?? null;
   // Tiled fields (COSMOS/EGS) have per-tile catalog x,y that don't map to the fitsgl
   // virtual grid — resolve each source's world px from ra/dec via the viewer WCS instead.
   const tiledRef = useRef(false);
@@ -479,10 +487,16 @@ export default function MapViewer({
     () => (idx ? filterSources(idx, magRangeActive ? magCol : null, filters) : []),
     [idx, magCol, filters, magRangeActive],
   );
+  // Count reported to the sidebar: the queued subset when a handoff is active, else all.
+  const countShown = useCallback((list: Src[]) => {
+    const qids = queuedIdsRef.current;
+    countRef.current?.(qids ? list.reduce((n, s) => n + (qids.has(s.id) ? 1 : 0), 0) : list.length);
+  }, []);
+
   useEffect(() => {
     sourcesRef.current = sources;
     resolvedRef.current = false;   // new list → re-resolve tiled world px on next project
-    countRef.current?.(sources.length);
+    countShown(sources);
     // Reproject against the current camera (filters changed between frames). A couple
     // of delayed retries cover the case where the viewer handle / first frame isn't
     // ready yet at the instant the source list first resolves.
@@ -492,6 +506,15 @@ export default function MapViewer({
     return () => { clearTimeout(t1); clearTimeout(t2); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources]);
+
+  // The queued id set changed (search → map handoff toggled, or the field switched to one
+  // with a different queued subset): re-count + re-project immediately. No source-list
+  // rebuild — project() reads queuedIdsRef live and filters there.
+  useEffect(() => {
+    countShown(sourcesRef.current);
+    project();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queuedIds]);
 
   // Project the (culled) filtered sources to screen glyphs for the current frame. Reads
   // sourcesRef + the live viewer handle; called from onFrame and on filter change.
@@ -504,7 +527,11 @@ export default function MapViewer({
     const rect = wrap.getBoundingClientRect();
     const W = rect.width, H = rect.height;
     const zoom = cam.zoom;
-    const list = sourcesRef.current;
+    // Search → map handoff: draw ONLY the queried objects when a queued id set is present;
+    // otherwise the full filtered list. Filtered here (not in filterSources) so toggling
+    // the queue on/off — or switching fields — needs no source-list rebuild.
+    const qids = queuedIdsRef.current;
+    const list = qids ? sourcesRef.current.filter(s => qids.has(s.id)) : sourcesRef.current;
     const asDot = zoom < DOT_ZOOM;
 
     // Adaptive scale bar + NIRSpec apertures both need CSS px per native px: measure it

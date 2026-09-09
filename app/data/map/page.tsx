@@ -75,6 +75,59 @@ function initialGotoId(): string | null {
   return typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") : null;
 }
 
+// ---- Search → map handoff ("view N on map") --------------------------------
+// The Search page stashes the matched objects in localStorage["mapQueue"] (localStorage,
+// not sessionStorage — it must survive the new tab). One queued object: which field it's
+// on + its id + sky position (for the auto-fit bounding box). Read ONCE on load.
+type QueuedObj = { field: string; id: number; ra: number | null; dec: number | null };
+type MapQueue = { label: string; ts: number; objects: QueuedObj[] };
+const MAP_QUEUE_MAX_AGE_MS = 60 * 60 * 1000;   // 1 h — stale handoffs are ignored
+
+// Read + clear the queue. Only honoured when the URL carries ?queued=1 (so a plain
+// /data/map visit never picks up a stale queue) and it isn't older than the max age.
+function readMapQueue(): MapQueue | null {
+  if (typeof window === "undefined") return null;
+  const sp = new URLSearchParams(window.location.search);
+  if (sp.get("queued") !== "1") return null;
+  let raw: string | null = null;
+  try { raw = localStorage.getItem("mapQueue"); localStorage.removeItem("mapQueue"); } catch { return null; }
+  if (!raw) return null;
+  try {
+    const q = JSON.parse(raw) as MapQueue;
+    if (!q || !Array.isArray(q.objects) || !q.objects.length) return null;
+    if (typeof q.ts === "number" && Date.now() - q.ts > MAP_QUEUE_MAX_AGE_MS) return null;
+    return q;
+  } catch { return null; }
+}
+
+// The queued field to open: honour ?field= if it has any queued objects, else the field
+// with the most queued objects. Returns null if none of the fitsgl fields are represented.
+function queueTopField(q: MapQueue): FieldConfig | null {
+  const counts = new Map<string, number>();
+  for (const o of q.objects) if (o.field) counts.set(o.field, (counts.get(o.field) ?? 0) + 1);
+  if (typeof window !== "undefined") {
+    const want = new URLSearchParams(window.location.search).get("field");
+    if (want) {
+      const fc = FITSGL_FIELDS.find(x => x.field === want || x.prefix === want.toLowerCase());
+      if (fc && counts.has(fc.field)) return fc;
+    }
+  }
+  let best: FieldConfig | null = null, bestN = 0;
+  for (const fc of FITSGL_FIELDS) {
+    const n = counts.get(fc.field) ?? 0;
+    if (n > bestN) { best = fc; bestN = n; }
+  }
+  return best;
+}
+
+// The queued id set for a given field (what MapViewer filters its overlay to).
+function queueIdsForField(q: MapQueue | null, field: string): Set<number> | null {
+  if (!q) return null;
+  const ids = new Set<number>();
+  for (const o of q.objects) if (o.field === field && Number.isFinite(o.id)) ids.add(o.id);
+  return ids.size ? ids : null;
+}
+
 type PanelState =
   | { kind: "hidden" }
   | { kind: "loading"; id: number }
@@ -82,7 +135,28 @@ type PanelState =
   | { kind: "notfound"; id: number };
 
 export default function MapPage() {
-  const [activeField, setActiveField] = useState<FieldConfig>(initialField);
+  // Search → map handoff: read (and clear) the queued matched objects once, before first
+  // render, so the initial field + overlay filter come up already narrowed to the query.
+  const mapQueueRef = useRef<MapQueue | null>(null);
+  if (mapQueueRef.current === null && typeof window !== "undefined" && !("__mapQueueRead" in mapQueueRef)) {
+    (mapQueueRef as { __mapQueueRead?: boolean }).__mapQueueRead = true;
+    mapQueueRef.current = readMapQueue();
+  }
+  const initialActive = (): FieldConfig => queueTopField(mapQueueRef.current ?? { label: "", ts: 0, objects: [] }) ?? initialField();
+
+  const [activeField, setActiveField] = useState<FieldConfig>(initialActive);
+  // Only honour the queue while the user hasn't cleared it via "show all".
+  const [queueOn, setQueueOn] = useState<boolean>(() => mapQueueRef.current != null);
+  // The queued id set for the ACTIVE field — MapViewer filters its overlay to just these.
+  // Re-derived whenever the active field or the on/off toggle changes.
+  const queuedIds = useMemo<Set<number> | null>(
+    () => (queueOn ? queueIdsForField(mapQueueRef.current, activeField.field) : null),
+    [queueOn, activeField],
+  );
+  // Whether the CURRENT field has any queued objects (drives the banner + auto-fit).
+  const queuedHereRef = useRef<Set<number> | null>(null);
+  queuedHereRef.current = queueIdsForField(mapQueueRef.current, activeField.field);
+
   const configUrl = useMemo(() => `${tileBase(activeField)}/fitsgl.json`, [activeField]);
   const pendingGotoRef = useRef<string | null>(initialGotoId());
   const [ready, setReady] = useState(false);
@@ -187,7 +261,70 @@ export default function MapPage() {
     return () => clearTimeout(timer);
   }, [ready, handleGoto]);
 
+  // Auto-fit the view to the bounding box of the ACTIVE field's queued objects (the
+  // search → map handoff). Runs once the viewer/WCS are up; re-runs when the active field
+  // changes (each field fits to its own queued subset). Projects every queued object's
+  // ra/dec → world px via the viewer WCS, takes the bbox, and hands a centre+zoom to the
+  // same cameraTargetRef the "go to"/deep-link use (so it survives the tile-load auto-fit).
+  // Skipped while a ?id= deep-link is pending (that takes precedence) or after "show all".
+  const fitToQueued = useCallback((): boolean => {
+    if (!queueOn) return true;                       // cleared via "show all" — nothing to fit
+    const ids = queuedHereRef.current;
+    if (!ids || !ids.size) return true;              // no queued objects on this field
+    const q = mapQueueRef.current;
+    if (!q) return true;
+    const h = handleRef.current;
+    if (!h) return false;                            // viewer not ready — retry
+    const wcs = h.getViewer()?.getWcs();
+    if (!wcs) return false;                          // WCS not up yet — retry
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
+    for (const o of q.objects) {
+      if (o.field !== activeField.field) continue;
+      if (o.ra == null || o.dec == null || !Number.isFinite(o.ra) || !Number.isFinite(o.dec)) continue;
+      const p = skyToPix(wcs, o.ra, o.dec);
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      n++;
+    }
+    if (!n) return true;                             // no positions to fit
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    // Span the bbox with ~12% padding; ensure a sensible floor (~a few arcsec) for a
+    // single object or a tight clump so we don't zoom absurdly deep.
+    const spanX = Math.max(maxX - minX, 0), spanY = Math.max(maxY - minY, 0);
+    const minNativePx = 5 / PIXSCALE_ARCSEC;         // ≥ ~5" field for a lone/tight set
+    const fitX = Math.max(spanX * 1.24, minNativePx);
+    const fitY = Math.max(spanY * 1.24, minNativePx);
+    const box = viewerBoxRef.current;
+    const cssW = box?.clientWidth ?? (typeof window !== "undefined" ? window.innerWidth : 1000);
+    const cssH = box?.clientHeight ?? (typeof window !== "undefined" ? window.innerHeight : 700);
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    // zoom = drawing-buffer px per native px; fit BOTH axes (take the tighter).
+    const zoom = Math.min((cssW * dpr) / fitX, (cssH * dpr) / fitY);
+    if (!Number.isFinite(zoom) || zoom <= 0) return true;
+    cameraTargetRef.current = { cx, cy, zoom, until: Date.now() + 4000 };
+    h.setCenter(cx, cy);
+    h.setZoom(zoom);
+    return true;
+  }, [queueOn, activeField]);
+
+  // Drive the auto-fit once ready, retrying until the WCS lands (mirrors the deep-link).
+  // A pending ?id= deep-link wins, so don't fit while one is queued.
+  useEffect(() => {
+    if (!ready || !queueOn || pendingGotoRef.current) return;
+    if (!queuedHereRef.current?.size) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      if (fitToQueued()) return;
+      if (++tries < 30) timer = setTimeout(tick, 200);
+    };
+    timer = setTimeout(tick, 150);
+    return () => clearTimeout(timer);
+  }, [ready, queueOn, activeField, fitToQueued]);
+
   const panelOpen = panel.kind !== "hidden";
+  const queuedShownHere = queueOn ? (queuedHereRef.current?.size ?? 0) : 0;
 
   return (
     <main style={{ height: "calc(100vh - 64px)", display: "flex", flexDirection: "column" }}>
@@ -222,6 +359,39 @@ export default function MapPage() {
           </div>
           <GotoBox onGo={handleGoto} msg={gotoMsg} />
         </div>
+
+        {/* Search → map handoff banner: only the queried objects' Kron ellipses are drawn
+            on the active field. "Show all" drops the filter (no reload) and reveals every
+            source. Shown while the queue is active and this field has queued objects. */}
+        {queueOn && queuedShownHere > 0 && (
+          <div style={{
+            marginTop: "0.7rem", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+            background: "rgba(196,144,216,0.10)", border: "1px solid var(--border-bright)",
+            borderRadius: "6px", padding: "7px 12px",
+          }}>
+            <span className="mono" style={{ fontSize: "0.76rem", color: "var(--accent)", letterSpacing: "0.03em" }}>
+              ▸ showing {queuedShownHere.toLocaleString()} queried object{queuedShownHere === 1 ? "" : "s"} on {activeField.field}
+            </span>
+            {mapQueueRef.current?.label && (
+              <span className="mono" title="the search query these came from"
+                style={{ fontSize: "0.68rem", color: "var(--text-dim)", maxWidth: "42ch", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {mapQueueRef.current.label}
+              </span>
+            )}
+            <button
+              onClick={() => setQueueOn(false)}
+              className="mono"
+              title="Drop the query filter and show every source in this field (no reload)"
+              style={{
+                marginLeft: "auto", background: "none", border: "1px solid var(--border-bright)",
+                borderRadius: "5px", color: "var(--text-muted)", cursor: "pointer",
+                fontSize: "0.7rem", padding: "5px 11px",
+              }}
+            >
+              show all
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Sidebar + viewer + card panel */}
@@ -234,6 +404,7 @@ export default function MapPage() {
             field={activeField}
             configUrl={configUrl}
             filters={filters}
+            queuedIds={queuedIds}
             onSourceClick={openSource}
             onCount={setShown}
             onReadyHandle={onReadyHandle}
