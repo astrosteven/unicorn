@@ -11,24 +11,30 @@ import {
   SEARCH_FIELDS,
   loadField,
   loadFilters,
+  loadSpecz,
   fetchObject,
   corralBase,
   angSep,
+  campfireUrl,
+  qualityColor,
+  QUALITY,
   SEDPlot,
   PZPlot,
   ResultCard,
   type SourceResult,
+  type SpeczRec,
   type ZGrid,
 } from "@/app/data/_card/objectCard";
 
 type SearchMode = "id" | "radec" | "upload" | "query";
 type ResultState = "idle" | "searching" | "found" | "notfound" | "multi" | "table";
-type QueryRow = { fc: typeof SEARCH_FIELDS[0]; id: number; za: number | null; m444: number | null; zspec: number | null; selected: number | null; extra: (number | string | null)[] };
+type QueryRow = { fc: typeof SEARCH_FIELDS[0]; id: number; za: number | null; m444: number | null; zspec: number | null; selected: number | null; cz: SpeczRec | null; extra: (number | string | null)[] };
 
 // ---- SQL-style query over the search index ---------------------------------
 type IdxRow = Record<string, number | string | null>;
 // Numeric queryable columns (must exist in the index).
 const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m1500", "m1300", "mabs", "beta", "zspec",
+  "czspec", "czqual",
   "rh_277", "rh_444", "kron_radius", "a_image", "b_image", "x", "y", "depthtier",
   "ra", "dec", "selected", "inspected", "sample"];
 const QUERY_STR = ["field", "detectcat", "tile"];
@@ -374,13 +380,18 @@ export default function SearchPage() {
           const { idx } = await loadField(fc);
           // Only fetch the (larger) per-filter flux table when the query needs it.
           const fx = need.length ? await loadFilters(fc) : null;
+          // campfire spec-z sidecar (small, cached) — so czspec/czqual are queryable and
+          // each row carries its campfire match for the results table.
+          const sz = await loadSpecz(fc);
           for (let i = 0; i < idx.n; i++) {
+            const cz = sz[String(idx.id[i])] ?? null;
             const r: IdxRow = {
               field: idx.field, za: idx.za[i], ra: idx.ra[i], dec: idx.dec[i],
               m277: idx.m277?.[i] ?? null, m444: idx.m444?.[i] ?? null,
               m1500: idx.m1500?.[i] ?? null, m1300: idx.m1300?.[i] ?? null, mabs: idx.mabs?.[i] ?? null, beta: idx.beta?.[i] ?? null,
               zl68: idx.zl68?.[i] ?? null, zu68: idx.zu68?.[i] ?? null, z_lowz: idx.z_lowz?.[i] ?? null,
               chia: idx.chia?.[i] ?? null, zspec: idx.zspec?.[i] ?? null,
+              czspec: cz?.z ?? null, czqual: cz?.q ?? null,
               rh_277: idx.rh_277?.[i] ?? null, rh_444: idx.rh_444?.[i] ?? null,
               kron_radius: idx.kron_radius?.[i] ?? null, a_image: idx.a_image?.[i] ?? null, b_image: idx.b_image?.[i] ?? null,
               x: idx.x?.[i] ?? null, y: idx.y?.[i] ?? null, depthtier: idx.depthtier?.[i] ?? null,
@@ -391,7 +402,7 @@ export default function SearchPage() {
             if (fx) for (const c of need) r[c] = fx[c]?.[i] ?? null;   // native flux/fluxerr for this query
             if (pred.test(r)) {
               total++;
-              if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, extra: getters.map(g => g(r)) });
+              if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, cz, extra: getters.map(g => g(r)) });
             }
           }
         }
@@ -681,6 +692,8 @@ export default function SearchPage() {
                   ["m1500 / m1300", "apparent AB mag at rest 1500 / 1300 Å"],
                   ["beta", "rest-UV continuum slope β"],
                   ["zspec", "spectroscopic redshift (>0 if known)"],
+                  ["czspec", "campfire spec-z (has a campfire spectrum)"],
+                  ["czqual", "campfire z quality 0–4 (4=Secure, 3=Probable)"],
                   ["rh_277 / rh_444", "half-light radius (pixels)"],
                   ["kron_radius", "Kron radius (pixels)"],
                   ["a_image / b_image", "major / minor axis (pixels)"],
@@ -738,6 +751,7 @@ export default function SearchPage() {
                   "m444 < 27 and za > 6",
                   "selected = 1 and za > 8",
                   "detectcat = cold and zspec > 0",
+                  "czqual >= 3 and za > 5",
                   "mag_f277w < 28 and snr_f277w > 5",
                   "f150w-f277w < 0.5 and za > 6",
                 ].map(ex => (
@@ -819,7 +833,7 @@ export default function SearchPage() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>
               <thead>
                 <tr style={{ background: "rgba(176,124,198,0.08)" }}>
-                  {["ID", "field", "z_a", "m₄₄₄", "zspec", ...queryCols, "selected", "", "map"].map((h, i) => (
+                  {["ID", "field", "z_a", "m₄₄₄", "zspec", "campfire", ...queryCols, "selected", "", "map"].map((h, i) => (
                     <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 400, fontSize: "0.72rem", letterSpacing: "0.06em" }}>{h}</th>
                   ))}
                 </tr>
@@ -840,6 +854,15 @@ export default function SearchPage() {
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text)" }}>{r.za != null ? r.za.toFixed(3) : "—"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text-muted)" }}>{r.m444 != null ? r.m444.toFixed(2) : "—"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--text-muted)" }}>{r.zspec != null && r.zspec > 0 ? r.zspec.toFixed(3) : "—"}</td>
+                    <td style={{ padding: "7px 14px", textAlign: "right", fontSize: "0.72rem" }} onClick={e => e.stopPropagation()}>
+                      {r.cz && r.cz.z != null
+                        ? <a href={campfireUrl(r.cz.cf, r.cz.cid)} target="_blank" rel="noopener noreferrer"
+                            title={`campfire spec-z ${r.cz.z} — ${QUALITY[r.cz.q ?? -1] ?? "?"} (q${r.cz.q ?? "?"}) · opens the spectrum on campfire`}
+                            style={{ color: qualityColor(r.cz.q), textDecoration: "none", whiteSpace: "nowrap" }}>
+                            {r.cz.z.toFixed(3)} ↗
+                          </a>
+                        : <span style={{ color: "var(--text-dim)" }}>—</span>}
+                    </td>
                     {r.extra.map((v, j) => (
                       <td key={j} style={{ padding: "7px 14px", textAlign: "right", color: "var(--text-muted)" }}>{fmtCell(v)}</td>
                     ))}
@@ -854,7 +877,7 @@ export default function SearchPage() {
                   </tr>
                   {open && (
                     <tr ref={cardRef}>
-                      <td colSpan={8 + queryCols.length} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
+                      <td colSpan={9 + queryCols.length} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
                         {queryCard && queryCard.row["ID"] === r.id
                           ? <ResultCard src={queryCard} />
                           : <div style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>Loading…</div>}
@@ -905,6 +928,8 @@ const DL_COLS: { key: string; label: string; get: (s: SourceResult) => unknown }
   { key: "selected",  label: "selected", get: s => s.selected },
   { key: "sample",    label: "sample",   get: s => s.sample },
   { key: "zspec",     label: "zspec",    get: s => s.zspec },
+  { key: "czspec",    label: "campfire_zspec", get: s => s.czspec },
+  { key: "czqual",    label: "campfire_zqual", get: s => s.czqual },
   { key: "KRON_RADIUS", label: "kron_radius", get: s => s.row["KRON_RADIUS"] },
   { key: "A_IMAGE",     label: "a_image",     get: s => s.row["A_IMAGE"] },
   { key: "B_IMAGE",     label: "b_image",     get: s => s.row["B_IMAGE"] },

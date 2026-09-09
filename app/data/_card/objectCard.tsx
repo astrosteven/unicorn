@@ -62,6 +62,10 @@ export interface SourceResult {
   stampUrl?: string;
   rgbUrl?: string;
   selFail?: { det: boolean; pix: boolean; z: boolean; zsub: string[] };  // which selection groups/criteria fail
+  czspec?: number;    // campfire spectroscopic redshift (if this object has a campfire spectrum)
+  czqual?: number;    // campfire redshift quality flag 0-4 (see QUALITY)
+  cfield?: string;    // campfire field slug, for the spectrum deep-link
+  cid?: string;       // campfire object_id, for the spectrum deep-link
 }
 
 // Build the "why not selected" breakdown for object at index position `pos`.
@@ -128,6 +132,28 @@ export const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalo
 // CDN) — fast + edge-cached for everyone — while the 174k per-object files stay on
 // Corral. Index files live in public/searchindex/ (see scripts/make_web_index.py).
 export const INDEX_BASE = "/unicorn/searchindex";
+
+// ---- campfire spec-z sidecar ----------------------------------------------
+// A daily job (scripts/refresh_campfire_specz.py) cross-matches campfire's public
+// spec-z catalog to each field and writes <prefix>_specz_v<ver>.json.gz sidecars
+// alongside the index. Each matched object carries its spec-z, a quality flag, and
+// the ids needed to deep-link to its spectrum page on campfire.
+export const QUALITY: Record<number, string> = {
+  0: "Not Inspected", 1: "Impossible", 2: "Tentative", 3: "Probable", 4: "Secure",
+};
+export function qualityColor(q: number | null | undefined): string {
+  if (q == null) return "var(--text-muted)";
+  if (q >= 4) return "var(--green)";      // Secure
+  if (q === 3) return "var(--accent2)";   // Probable
+  if (q === 2) return "var(--amber)";     // Tentative
+  return "var(--text-dim)";               // Impossible / Not Inspected
+}
+// Deep-link to an object's spectrum page on campfire. We don't show the spectrum —
+// the user clicks through and logs in on campfire if needed.
+export function campfireUrl(cf: string, cid: string): string {
+  return `https://campfire.hollisakins.com/nircam/${encodeURIComponent(cf)}?search=${encodeURIComponent(cid)}`;
+}
+export type SpeczRec = { z: number | null; q: number | null; cid: string; cf: string; sep: number };
 
 // Raw `?data=<url>` override (local preview of a full web/ mirror), or null.
 export function dataOverride(): string | null {
@@ -262,6 +288,36 @@ export async function loadFilters(fc: FieldConfig): Promise<Record<string, NumCo
   }
 }
 
+// Per-field campfire spec-z sidecar (<prefix>_specz_v<ver>.json[.gz]): a map obj_id ->
+// {z,q,cid,cf,sep}, lazy + cached. Absence (field with no spectra / sidecar not yet
+// deployed) resolves to an empty map, so callers just see "no spec-z".
+const _speczCache: Record<string, Record<string, SpeczRec>> = {};
+const _speczPromise: Record<string, Promise<Record<string, SpeczRec>>> = {};
+export async function loadSpecz(fc: FieldConfig): Promise<Record<string, SpeczRec>> {
+  if (fc.field in _speczCache) return _speczCache[fc.field];
+  if (fc.field in _speczPromise) return _speczPromise[fc.field];
+  _speczPromise[fc.field] = (async () => {
+    const override = dataOverride();
+    const name = `${fc.prefix}_specz_v${fc.version}.json`;
+    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    try {
+      const data = await fetchJsonMaybeGz(`${primary}/${name}`);
+      return (data && data.objects) || {};
+    } catch {
+      if (!override) {
+        try {
+          const d = await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fc.dir}/web/${name}`);
+          return (d && d.objects) || {};
+        } catch { /* fall through */ }
+      }
+      return {};
+    }
+  })();
+  const m = await _speczPromise[fc.field];
+  _speczCache[fc.field] = m;
+  return m;
+}
+
 // The loaded index for a field, if it has been fetched this session (used to attach
 // the selection-failure breakdown to a freshly-fetched object).
 export function cachedIndex(field: string): FieldIndex | undefined {
@@ -281,6 +337,7 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
     let selFail: SourceResult["selFail"] | undefined;
     const cIdx = cachedIndex(fc.field);
     if (cIdx) selFail = selFailFromIndex(cIdx, cIdx.id.indexOf(id));
+    const cf = (await loadSpecz(fc))[String(id)];   // campfire spec-z match, if any
     return {
       field: o.field, row: o.row, pz: o.pz, modelFluxes: o.modelFluxes,
       zgrid: zg.zgrid, pzArr: o.pzArr,
@@ -293,6 +350,7 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
       stampUrl: `${corralBase()}/${fc.dir}/web/stamps/${fc.prefix}_${id}.png`,
       rgbUrl: `${corralBase()}/${fc.dir}/web/rgb/${fc.prefix}_${id}.png`,
       selFail,
+      czspec: cf?.z ?? undefined, czqual: cf?.q ?? undefined, cfield: cf?.cf, cid: cf?.cid,
     };
   } catch {
     return null;
@@ -594,7 +652,7 @@ export function ResultCard({ src }: { src: SourceResult }) {
       </div>
 
       {/* Status badges */}
-      {(src.selected != null || (src.inspected != null && src.inspected > 0) || (src.sample != null && src.sample >= 0) || src.zspec != null || (src.aperflags != null && src.aperflags > 0)) && (
+      {(src.selected != null || (src.inspected != null && src.inspected > 0) || (src.sample != null && src.sample >= 0) || src.zspec != null || src.czspec != null || (src.aperflags != null && src.aperflags > 0)) && (
         <div className="mono" style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "1rem", marginTop: "-4px" }}>
           {src.selected != null && (
             <span style={chip(src.selected ? "var(--amber)" : "var(--text-dim)")}>
@@ -609,6 +667,15 @@ export function ResultCard({ src }: { src: SourceResult }) {
           )}
           {src.zspec != null && (
             <span style={chip("var(--pink)")}>z-spec {src.zspec.toFixed(3)}</span>
+          )}
+          {/* campfire spec-z — a clickable chip that opens the spectrum on campfire (log in there). */}
+          {src.czspec != null && src.cid && src.cfield && (
+            <a href={campfireUrl(src.cfield, src.cid)} target="_blank" rel="noopener noreferrer"
+              title="Open this object's spectrum on campfire (log in on campfire if needed)"
+              style={{ ...chip(qualityColor(src.czqual)), textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              🔥 campfire z-spec {src.czspec.toFixed(3)}
+              {src.czqual != null && <span style={{ opacity: 0.8 }}>· {QUALITY[src.czqual] ?? `q${src.czqual}`}</span>} ↗
+            </a>
           )}
           {src.aperflags != null && src.aperflags > 0 && (
             <span style={chip("var(--red)")}>aper-flag {src.aperflags}</span>
