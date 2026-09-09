@@ -79,31 +79,30 @@ def main():
             unresolved.append((obj.get("name"), "no coords"))
             continue
         v = _unit([ra], [dec])
-        best = None  # (sep, prefix, id)
-        hint = (obj.get("field") or "").upper()
+        # Emit a label for EVERY field that detects the object within tol — overlapping
+        # fields (COSMOS/PRIMER-COSMOS, CEERS/EGS) both cover the same sky, so a famous
+        # object should flag in each catalog it appears in, not just the nearest.
+        matches = []  # (sep, prefix, id)
         for prefix, (idx, tree) in trees.items():
             d, j = tree.query(v, k=1, distance_upper_bound=chord)
             d, j = float(d[0]), int(j[0])
             if not np.isfinite(d) or j >= len(idx["id"]):
                 continue
             sep = 2.0 * np.degrees(np.arcsin(min(d / 2.0, 1.0))) * 3600.0
-            # Prefer a match in the field the object is attributed to; else nearest.
-            hinted = PREFIX_FIELD[prefix].upper() in hint or hint in PREFIX_FIELD[prefix].upper()
-            score = sep - (0.5 if hinted else 0.0)   # small bonus for the hinted field
-            if best is None or score < best[0]:
-                best = (score, sep, prefix, idx["id"][j])
-        if best is None:
+            matches.append((sep, prefix, int(idx["id"][j])))
+        if not matches:
             unresolved.append((obj.get("name"), f"no object within {args.tol}\""))
             continue
-        _, sep, prefix, oid = best
-        rec = {"name": obj["name"], "field": PREFIX_FIELD[prefix], "id": int(oid),
-               "ra": ra, "dec": dec, "sep": round(sep, 3)}
-        for k in ("aka", "z", "z_type", "ref", "note"):
-            if obj.get(k) not in (None, "", []):
-                rec[k] = obj[k]
-        out.append(rec)
-        print(f"  {obj['name']:26s} -> {PREFIX_FIELD[prefix]:14s} id {oid:>8}   sep {sep:.3f}\""
-              + ("" if PREFIX_FIELD[prefix].upper() in hint or not hint else f"  (hint was {hint})"))
+        matches.sort()
+        for sep, prefix, oid in matches:
+            rec = {"name": obj["name"], "field": PREFIX_FIELD[prefix], "id": oid,
+                   "ra": ra, "dec": dec, "sep": round(sep, 3)}
+            for k in ("aka", "z", "z_type", "ref", "note"):
+                if obj.get(k) not in (None, "", []):
+                    rec[k] = obj[k]
+            out.append(rec)
+        print(f"  {obj['name']:26s} -> " +
+              ", ".join(f"{PREFIX_FIELD[p]}:{oid}({s:.2f}\")" for s, p, oid in matches))
 
     print(f"\nresolved {len(out)}/{len(named)} named objects")
     for name, why in unresolved:
