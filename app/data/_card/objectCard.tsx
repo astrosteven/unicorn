@@ -69,7 +69,16 @@ export interface SourceResult {
   czqual?: number;    // campfire redshift quality flag 0-4 (see QUALITY)
   cfield?: string;    // campfire field slug, for the spectrum deep-link
   cid?: string;       // campfire object_id, for the spectrum deep-link
+  nickname?: LabelRec;  // famous-object label (e.g. "Maisie's Galaxy"), if this is a named source
 }
+
+// ---- named-object labels ---------------------------------------------------
+// A small curated list of famous objects (Maisie's Galaxy, GN-z11, …), resolved to
+// each field's current id by position (scripts/make_labels.py -> searchindex/labels.json).
+export type LabelRec = {
+  name: string; aka?: string[]; field: string; id: number;
+  ra?: number; dec?: number; z?: number; z_type?: string; ref?: string; note?: string;
+};
 
 // Build the "why not selected" breakdown for object at index position `pos`.
 export function selFailFromIndex(idx: FieldIndex, pos: number): SourceResult["selFail"] | undefined {
@@ -322,6 +331,28 @@ export async function loadSpecz(fc: FieldConfig): Promise<Record<string, SpeczRe
   return m;
 }
 
+// Named-object labels (searchindex/labels.json): loaded once, cached. Empty if absent.
+let _labelsCache: LabelRec[] | null = null;
+let _labelsPromise: Promise<LabelRec[]> | null = null;
+export async function loadLabels(): Promise<LabelRec[]> {
+  if (_labelsCache) return _labelsCache;
+  if (_labelsPromise) return _labelsPromise;
+  _labelsPromise = (async () => {
+    try {
+      const data = await fetchJsonMaybeGz(`${INDEX_BASE}/labels.json`);
+      return (Array.isArray(data) ? data : data?.labels ?? []) as LabelRec[];
+    } catch {
+      return [];
+    }
+  })();
+  _labelsCache = await _labelsPromise;
+  return _labelsCache;
+}
+// Synchronous lookup once labels are loaded (used to tag a freshly-fetched object).
+export function labelFor(field: string, id: number): LabelRec | undefined {
+  return _labelsCache?.find(l => l.field === field && l.id === id);
+}
+
 // The loaded index for a field, if it has been fetched this session (used to attach
 // the selection-failure breakdown to a freshly-fetched object).
 export function cachedIndex(field: string): FieldIndex | undefined {
@@ -342,6 +373,8 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
     const cIdx = cachedIndex(fc.field);
     if (cIdx) selFail = selFailFromIndex(cIdx, cIdx.id.indexOf(id));
     const cf = (await loadSpecz(fc))[String(id)];   // campfire spec-z match, if any
+    await loadLabels();                             // ensure labels are cached for labelFor()
+    const nickname = labelFor(o.field, id);         // famous-object label, if any
     return {
       field: o.field, row: o.row, pz: o.pz, modelFluxes: o.modelFluxes,
       zgrid: zg.zgrid, pzArr: o.pzArr,
@@ -355,6 +388,7 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
       rgbUrl: `${corralBase()}/${fc.dir}/web/rgb/${fc.prefix}_${id}.png`,
       selFail,
       czspec: cf?.z ?? undefined, czqual: cf?.q ?? undefined, cfield: cf?.cf, cid: cf?.cid,
+      nickname,
     };
   } catch {
     return null;
@@ -625,6 +659,19 @@ export function ResultCard({ src }: { src: SourceResult }) {
       {/* Header row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: "8px" }}>
         <div>
+          {/* Famous-object label (e.g. "Maisie's Galaxy") */}
+          {src.nickname && (
+            <div className="mono" style={{ marginBottom: "6px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span title={[src.nickname.ref, src.nickname.z != null ? `z=${src.nickname.z}` : "", src.nickname.note].filter(Boolean).join(" · ")}
+                style={{
+                  fontSize: "0.9rem", fontWeight: 700, padding: "3px 11px", borderRadius: "999px",
+                  background: "linear-gradient(135deg, var(--lavender), var(--pink))", color: "#1a0f2e", letterSpacing: "0.02em",
+                }}>
+                ★ {src.nickname.name}
+              </span>
+              {src.nickname.ref && <span style={{ fontSize: "0.68rem", color: "var(--text-dim)" }}>{src.nickname.ref}</span>}
+            </div>
+          )}
           {src.interestLabel && (
             <span className="mono" style={{ fontSize: "1rem", fontWeight: 700, color: "var(--accent-bright)", marginRight: "10px" }}>
               {src.interestLabel}
