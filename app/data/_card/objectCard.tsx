@@ -148,10 +148,11 @@ export function qualityColor(q: number | null | undefined): string {
   if (q === 2) return "var(--amber)";     // Tentative
   return "var(--text-dim)";               // Impossible / Not Inspected
 }
-// Deep-link to an object's spectrum page on campfire. We don't show the spectrum —
-// the user clicks through and logs in on campfire if needed.
-export function campfireUrl(cf: string, cid: string): string {
-  return `https://campfire.hollisakins.com/nircam/${encodeURIComponent(cf)}?search=${encodeURIComponent(cid)}`;
+// Deep-link straight to an object's spectrum page on campfire (per-object route,
+// keyed by campfire object_id). We don't render the spectrum — the user clicks
+// through and logs in on campfire if needed.
+export function campfireUrl(cid: string): string {
+  return `https://campfire.hollisakins.com/nirspec/objects/${encodeURIComponent(cid)}`;
 }
 export type SpeczRec = { z: number | null; q: number | null; cid: string; cf: string; sep: number };
 
@@ -668,11 +669,10 @@ export function ResultCard({ src }: { src: SourceResult }) {
           {src.zspec != null && (
             <span style={chip("var(--pink)")}>z-spec {src.zspec.toFixed(3)}</span>
           )}
-          {/* campfire spec-z — clickable chip. campfire has no per-spectrum URL, so this
-              opens the field page filtered to this one object; click it there for the spectrum. */}
-          {src.czspec != null && src.cid && src.cfield && (
-            <a href={campfireUrl(src.cfield, src.cid)} target="_blank" rel="noopener noreferrer"
-              title="Find this object on campfire (opens its filtered page — click the object there to view its spectrum; log in if needed)"
+          {/* campfire spec-z — clickable chip linking straight to the object's spectrum page. */}
+          {src.czspec != null && src.cid && (
+            <a href={campfireUrl(src.cid)} target="_blank" rel="noopener noreferrer"
+              title="Open this object's spectrum on campfire (log in on campfire if needed)"
               style={{ ...chip(qualityColor(src.czqual)), textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "5px" }}>
               🔥 campfire z-spec {src.czspec.toFixed(3)}
               {src.czqual != null && <span style={{ opacity: 0.8 }}>· {QUALITY[src.czqual] ?? `q${src.czqual}`}</span>} ↗
