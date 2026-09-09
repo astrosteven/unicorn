@@ -2,7 +2,6 @@
 import { useState, useRef, Fragment } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import JSZip from "jszip";
 import { FITSGL_BASE } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map
@@ -1132,9 +1131,9 @@ export default function SearchPage() {
                     <td style={{ padding: "7px 14px", textAlign: "right", color: "var(--accent2)", fontSize: "0.72rem" }}>{open ? "▾ close" : "view →"}</td>
                     <td style={{ padding: "7px 14px", textAlign: "right", fontSize: "0.72rem" }} onClick={e => e.stopPropagation()}>
                       {FITSGL_BASE[r.fc.field]
-                        ? <Link href={{ pathname: "/data/map", query: { field: r.fc.field, id: r.id } }} title="Open in the color map (new tab)"
+                        ? <a href={`/unicorn/data/map?field=${encodeURIComponent(r.fc.field)}&id=${r.id}`} title="Open in the color map (new tab)"
                             target="_blank" rel="noopener"
-                            style={{ color: "var(--accent)", textDecoration: "none" }}>map ↗</Link>
+                            style={{ color: "var(--accent)", textDecoration: "none" }}>map ↗</a>
                         : <span style={{ color: "var(--text-dim)" }}>—</span>}
                     </td>
                   </tr>
