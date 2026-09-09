@@ -399,9 +399,10 @@ export default function SearchPage() {
   // plus the SED and P(z) plots rasterized to PNG. Per-object detail is fetched concurrently;
   // the plots are rendered off-screen and rasterized serially (shared React root). <=500 rows.
   async function downloadResultStamps() {
-    if (!queryRows.length || zipping) return;
+    if (!queryAllRef.current.length || zipping) return;
     const zip = new JSZip();
-    const rows = [...queryRows];
+    // FULL matched set (every object, not just the ≤500 rendered in the table).
+    const rows = queryAllRef.current.map(m => ({ fc: m.fc, id: m.id }));
     const total = rows.length;
     setZipping(`0/${total}`);
 
@@ -1195,7 +1196,7 @@ export default function SearchPage() {
             <button onClick={downloadResultStamps} disabled={!!zipping} className="mono"
               title="Download a zip of result cards — ONE combined image per object (stamp montage + SED + P(z))"
               style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: zipping ? "wait" : "pointer" }}>
-              {zipping ? `${zipping}…` : `↓ download result cards — 1 image / object (${queryRows.length})`}
+              {zipping ? `${zipping}…` : `↓ download result cards — 1 image / object (${queryTotal.toLocaleString()})`}
             </button>
             <button onClick={sendToInspector} className="mono"
               title="Open these matched objects in the visual inspector"
