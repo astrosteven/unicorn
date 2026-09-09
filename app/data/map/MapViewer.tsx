@@ -153,6 +153,13 @@ function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters): Src[] {
 // viewer's imageToScreen for the current frame.
 type Glyph = { id: number; sel: boolean; poly?: string; cx?: number; cy?: number; r?: number };
 
+// A camera target the viewer must ADOPT AND HOLD: world-pixel centre + zoom (drawing-
+// buffer px per native px). The page writes this ref (deep-link goto or the "go to" box);
+// MapViewer re-asserts it on EVERY drawn frame until the camera actually holds it, which
+// defeats the viewer's construction/tile-load auto-fit that would otherwise clobber a
+// setCenter/setZoom issued too early. Cleared once held so the user can pan/zoom freely.
+export type CameraTarget = { cx: number; cy: number; zoom: number };
+
 export default function MapViewer({
   field,
   configUrl,
@@ -160,6 +167,7 @@ export default function MapViewer({
   onSourceClick,
   onCount,
   onReadyHandle,
+  cameraTargetRef,
 }: {
   /** The active field's config — drives which search index the overlay loads. */
   field: FieldConfig;
@@ -170,6 +178,8 @@ export default function MapViewer({
   onCount?: (n: number) => void;
   /** Hand the viewer handle + index up to the page (for the "go to" control). */
   onReadyHandle?: (h: FitsViewerHandle, idx: FieldIndex) => void;
+  /** A pending camera target to adopt-and-hold across auto-fit; null once satisfied. */
+  cameraTargetRef?: React.MutableRefObject<CameraTarget | null>;
 }) {
   const [state, setState] = useState<LoadState>("loading");
   const [config, setConfig] = useState<FitsglConfig | null>(null);
@@ -388,6 +398,30 @@ export default function MapViewer({
     setGlyphs(out);
   }, []);
 
+  // Re-assert a pending camera target (set by the page's deep-link / "go to") until the
+  // viewer actually holds it. The viewer auto-fits the whole mosaic at construction and
+  // AGAIN as tiles land, which silently overrides a setCenter/setZoom issued right after
+  // ready — so a single goto doesn't stick. Called on EVERY frame: if the live camera is
+  // off-target (centre by >0.5 native px, or zoom by >0.5%), re-apply and keep the target
+  // pending; once it matches, clear the target so subsequent user pan/zoom is left alone.
+  // Mirrors FitsglCutout's onFrame "re-assert camera until placed" pattern.
+  const enforceCamera = useCallback(() => {
+    const ref = cameraTargetRef;
+    const t = ref?.current;
+    if (!t) return;
+    const h = handleRef.current;
+    if (!h) return;
+    const cam = h.getCameraState();
+    if (!cam) return;
+    const held =
+      Math.abs(cam.centerX - t.cx) < 0.5 &&
+      Math.abs(cam.centerY - t.cy) < 0.5 &&
+      Math.abs(cam.zoom - t.zoom) <= t.zoom * 0.005;
+    if (held) { ref!.current = null; return; }
+    h.setCenter(t.cx, t.cy);
+    h.setZoom(t.zoom);
+  }, [cameraTargetRef]);
+
   // Kick a few projection attempts spaced out in time. fitsgl fires onFrame only when
   // the view actually changes (no idle loop), so on first load — or when the source
   // list changes while the camera sits still — we must project proactively rather than
@@ -396,12 +430,13 @@ export default function MapViewer({
   const pokeProject = useCallback(() => {
     let tries = 0;
     const tick = () => {
+      enforceCamera();
       project();
       tries += 1;
       if (tries < 12) setTimeout(tick, 250);
     };
     requestAnimationFrame(tick);
-  }, [project]);
+  }, [project, enforceCamera]);
 
   const onReady = useCallback((h: FitsViewerHandle) => {
     handleRef.current = h;
@@ -442,7 +477,7 @@ export default function MapViewer({
       <FitsViewer
         config={viewerConfig}
         onReady={onReady}
-        onFrame={() => project()}
+        onFrame={() => { enforceCamera(); project(); }}
         onError={(err) => {
           console.error("[map] FitsViewer error:", err);
           setErrMsg(err instanceof Error ? err.message : String(err));

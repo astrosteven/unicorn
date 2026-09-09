@@ -20,7 +20,7 @@ import {
 } from "@/app/data/_card/objectCard";
 import type { FitsViewerHandle } from "@fitsgl/core/react";
 import { skyToPix } from "@fitsgl/core";
-import { type MapFilters, DEFAULT_FILTERS } from "./MapViewer";
+import { type MapFilters, DEFAULT_FILTERS, type CameraTarget } from "./MapViewer";
 
 // The viewer touches WebGL/window on import — must never render on the server.
 const MapViewer = dynamic(() => import("./MapViewer"), {
@@ -95,6 +95,10 @@ export default function MapPage() {
   const handleRef = useRef<FitsViewerHandle | null>(null);
   const idxRef = useRef<FieldIndex | null>(null);
   const viewerBoxRef = useRef<HTMLDivElement | null>(null);  // measured for the go-to FOV
+  // Camera target the viewer must adopt AND HOLD (world px + zoom). handleGoto writes it;
+  // MapViewer re-asserts it every frame until held, so a deep-link goto survives the
+  // viewer's tile-load auto-fit (the bug where a single setCenter/setZoom didn't stick).
+  const cameraTargetRef = useRef<CameraTarget | null>(null);
   const onReadyHandle = useCallback((h: FitsViewerHandle, idx: FieldIndex) => {
     handleRef.current = h;
     idxRef.current = idx;
@@ -151,12 +155,16 @@ export default function MapPage() {
     if (!wcs) { setGotoMsg("viewer not ready"); return false; }   // retry — WCS not up yet
     const px = skyToPix(wcs, ra, dec);
     if (!Number.isFinite(px.x) || !Number.isFinite(px.y)) { setGotoMsg("target off the projection"); return true; }
-    h.setCenter(px.x, px.y);
     // Zoom so the target spans ~fovArcsec across the viewer (buffer px per native px).
     const cssW = viewerBoxRef.current?.clientWidth ?? (typeof window !== "undefined" ? window.innerWidth : 1000);
     const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
     const fovNativePx = fovArcsec / PIXSCALE_ARCSEC;   // ~333 px for 10"
-    h.setZoom((cssW * dpr) / fovNativePx);
+    const zoom = (cssW * dpr) / fovNativePx;
+    // Hand the target to MapViewer's frame loop rather than setting the camera directly,
+    // so it is re-asserted until held and can't be clobbered by the viewer's auto-fit.
+    cameraTargetRef.current = { cx: px.x, cy: px.y, zoom };
+    h.setCenter(px.x, px.y);
+    h.setZoom(zoom);
     setGotoMsg(`→ ${ra.toFixed(5)}, ${dec.toFixed(5)}`);
     return true;
   }, []);
@@ -195,7 +203,7 @@ export default function MapPage() {
                 value={activeField.field}
                 onChange={e => {
                   const f = FITSGL_FIELDS.find(x => x.field === e.target.value);
-                  if (f) { setActiveField(f); setPanel({ kind: "hidden" }); setGotoMsg(""); }
+                  if (f) { setActiveField(f); setPanel({ kind: "hidden" }); setGotoMsg(""); cameraTargetRef.current = null; }
                 }}
                 style={{
                   background: "var(--bg)", border: "1px solid var(--border-bright)", borderRadius: "5px",
@@ -228,6 +236,7 @@ export default function MapPage() {
             onSourceClick={openSource}
             onCount={setShown}
             onReadyHandle={onReadyHandle}
+            cameraTargetRef={cameraTargetRef}
           />
         </div>
 
