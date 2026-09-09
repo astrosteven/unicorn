@@ -668,10 +668,11 @@ export function ResultCard({ src }: { src: SourceResult }) {
           {src.zspec != null && (
             <span style={chip("var(--pink)")}>z-spec {src.zspec.toFixed(3)}</span>
           )}
-          {/* campfire spec-z — a clickable chip that opens the spectrum on campfire (log in there). */}
+          {/* campfire spec-z — clickable chip. campfire has no per-spectrum URL, so this
+              opens the field page filtered to this one object; click it there for the spectrum. */}
           {src.czspec != null && src.cid && src.cfield && (
             <a href={campfireUrl(src.cfield, src.cid)} target="_blank" rel="noopener noreferrer"
-              title="Open this object's spectrum on campfire (log in on campfire if needed)"
+              title="Find this object on campfire (opens its filtered page — click the object there to view its spectrum; log in if needed)"
               style={{ ...chip(qualityColor(src.czqual)), textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "5px" }}>
               🔥 campfire z-spec {src.czspec.toFixed(3)}
               {src.czqual != null && <span style={{ opacity: 0.8 }}>· {QUALITY[src.czqual] ?? `q${src.czqual}`}</span>} ↗

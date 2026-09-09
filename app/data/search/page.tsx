@@ -857,7 +857,7 @@ export default function SearchPage() {
                     <td style={{ padding: "7px 14px", textAlign: "right", fontSize: "0.72rem" }} onClick={e => e.stopPropagation()}>
                       {r.cz && r.cz.z != null
                         ? <a href={campfireUrl(r.cz.cf, r.cz.cid)} target="_blank" rel="noopener noreferrer"
-                            title={`campfire spec-z ${r.cz.z} — ${QUALITY[r.cz.q ?? -1] ?? "?"} (q${r.cz.q ?? "?"}) · opens the spectrum on campfire`}
+                            title={`campfire spec-z ${r.cz.z} — ${QUALITY[r.cz.q ?? -1] ?? "?"} (q${r.cz.q ?? "?"}) · opens this object on campfire (click it there for the spectrum)`}
                             style={{ color: qualityColor(r.cz.q), textDecoration: "none", whiteSpace: "nowrap" }}>
                             {r.cz.z.toFixed(3)} ↗
                           </a>
