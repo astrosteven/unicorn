@@ -3,6 +3,7 @@ import { useState, useRef, Fragment } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import JSZip from "jszip";
 import { FITSGL_BASE } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
@@ -371,6 +372,22 @@ export default function SearchPage() {
   // Every matched object (index row + campfire match), retained for the FULL-list
   // download — not just the ≤500 rendered in the table.
   const queryAllRef = useRef<MatchEntry[]>([]);
+  const router = useRouter();
+
+  // Hand the current query's matched objects to the visual inspector (via sessionStorage).
+  const INSPECT_HANDOFF_CAP = 10000;
+  function sendToInspector() {
+    const objs = queryAllRef.current.slice(0, INSPECT_HANDOFF_CAP).map(m => ({
+      field: m.fc.field, id: m.id,
+      ra: typeof m.r.ra === "number" ? m.r.ra : null,
+      dec: typeof m.r.dec === "number" ? m.r.dec : null,
+      za: typeof m.r.za === "number" ? m.r.za : null,
+      mabs: typeof m.r.mabs === "number" ? m.r.mabs : null,
+    }));
+    if (!objs.length) return;
+    try { sessionStorage.setItem("inspectQueue", JSON.stringify({ label: queryInput, objects: objs })); } catch { /* quota */ }
+    router.push("/data/inspect");
+  }
 
   // Build one displayed table row from a full-match entry — same shape the query loop produces.
   function displayRow(m: MatchEntry, cols: string[]): QueryRow {
@@ -1010,6 +1027,11 @@ export default function SearchPage() {
               title="Download a zip of result cards for these sources — cutout montage + SED + P(z) per object"
               style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: zipping ? "wait" : "pointer" }}>
               {zipping ? `${zipping}…` : `↓ download result cards — stamp + SED + P(z) (${queryRows.length})`}
+            </button>
+            <button onClick={sendToInspector} className="mono"
+              title="Open these matched objects in the visual inspector"
+              style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--accent2)", border: "1px solid rgba(239,159,205,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer" }}>
+              ⇢ inspect these ({Math.min(queryTotal, INSPECT_HANDOFF_CAP).toLocaleString()})
             </button>
           </div>
 

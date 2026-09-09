@@ -114,7 +114,10 @@ const FIELDS = SEARCH_FIELDS.filter(f => f.available);
 
 // ---- The inspector (two panes) ---------------------------------------------
 function Inspector({ email }: { email: string }) {
-  const [fc, setFc] = useState<FieldConfig>(() => FIELDS.find(f => f.field === "CEERS") ?? FIELDS[0]);
+  // A one-time "send to inspector" handoff from the search page (else null → normal mode).
+  const [external] = useState<ExternalQueue | null>(() => readHandoff());
+  const fields = useMemo(() => (external ? externalFields(external) : FIELDS), [external]);
+  const [fc, setFc] = useState<FieldConfig>(() => fields.find(f => f.field === "CEERS") ?? fields[0]);
   const [rows, setRows] = useState<QueueRow[] | null>(null);
   const [loadErr, setLoadErr] = useState("");
   const [minZa, setMinZa] = useState(7);
@@ -144,7 +147,11 @@ function Inspector({ email }: { email: string }) {
     try {
       const { idx, zg } = await loadField(field);
       zgRef.current = zg;
-      const built = buildQueue(idx, minz, selOnly);
+      // External handoff (from a search query): queue is exactly those objects in this
+      // field; otherwise build from the index with the min-za / selected filters.
+      const built = external
+        ? external.objects.filter(o => o.field === field.field).map(extToRow)
+        : buildQueue(idx, minz, selOnly);
       // Merge in any existing inspections for this field (best-effort — table may be
       // empty or absent; we degrade to all-not_inspected rather than fail the page).
       let byId: Record<number, Inspection> = {};
@@ -162,12 +169,13 @@ function Inspector({ email }: { email: string }) {
       setLoadErr(`Could not load ${field.field}: ${e?.message ?? e}`);
       setRows([]);
     }
-  }, []);
+  }, [external]);
 
   useEffect(() => { load(fc, minZa, selectedOnly); }, [fc]);   // reload on field change
   // Rebuild the queue when the min-za threshold or the selected-only toggle changes.
+  // (No-op in external-handoff mode — that queue is fixed to the query's objects.)
   useEffect(() => {
-    if (!rows) return;
+    if (!rows || external) return;
     (async () => {
       const { idx } = await loadField(fc);
       const built = buildQueue(idx, minZa, selectedOnly);
@@ -350,6 +358,7 @@ function Inspector({ email }: { email: string }) {
             <span style={{ color: "var(--red)" }}>{counts.remove} remove</span>{" · "}
             <span style={{ color: "var(--text-dim)" }}>{counts.not_inspected} untouched</span>
             {rows && <> · {rows.length} in queue</>}
+            {external && <span style={{ color: "var(--accent2)" }}>{" · "}from query{external.label ? `: ${external.label}` : ""}</span>}
           </p>
         </div>
         <div className="mono" style={{ fontSize: "0.7rem", color: "var(--text-dim)", display: "flex", alignItems: "center", gap: "10px" }}>
@@ -362,8 +371,8 @@ function Inspector({ email }: { email: string }) {
       {/* Filters */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 12px", alignItems: "center", marginBottom: "0.9rem" }}>
         <label className="mono" style={lbl}>Field
-          <select value={fc.field} onChange={e => setFc(FIELDS.find(f => f.field === e.target.value) ?? fc)} style={ctrl}>
-            {FIELDS.map(f => <option key={f.field} value={f.field}>{f.field}</option>)}
+          <select value={fc.field} onChange={e => setFc(fields.find(f => f.field === e.target.value) ?? fc)} style={ctrl}>
+            {fields.map(f => <option key={f.field} value={f.field}>{f.field}</option>)}
           </select>
         </label>
         <label className="mono" style={lbl}>Decision
@@ -375,14 +384,18 @@ function Inspector({ email }: { email: string }) {
             <option value="remove">remove</option>
           </select>
         </label>
-        <label className="mono" style={lbl}>min z<sub>a</sub>
-          <input type="number" step={0.5} value={minZa}
-            onChange={e => setMinZa(Number(e.target.value) || 0)} style={{ ...ctrl, width: "72px" }} />
-        </label>
-        <label className="mono" style={{ ...lbl, cursor: "pointer" }} title="Only show objects with selected=1 (doselect sample)">
-          <input type="checkbox" checked={selectedOnly} onChange={e => setSelectedOnly(e.target.checked)} />
-          selected only
-        </label>
+        {!external && (
+          <>
+            <label className="mono" style={lbl}>min z<sub>a</sub>
+              <input type="number" step={0.5} value={minZa}
+                onChange={e => setMinZa(Number(e.target.value) || 0)} style={{ ...ctrl, width: "72px" }} />
+            </label>
+            <label className="mono" style={{ ...lbl, cursor: "pointer" }} title="Only show objects with selected=1 (doselect sample)">
+              <input type="checkbox" checked={selectedOnly} onChange={e => setSelectedOnly(e.target.checked)} />
+              selected only
+            </label>
+          </>
+        )}
         <label className="mono" style={lbl}>ID
           <input type="text" placeholder="search id" value={search}
             onChange={e => setSearch(e.target.value)} style={{ ...ctrl, width: "110px" }} />
@@ -536,6 +549,28 @@ function InspectCard({ src }: { src: SourceResult }) {
 }
 
 // ---- helpers ---------------------------------------------------------------
+// A "send to inspector" handoff from the search page (via sessionStorage).
+type ExtObj = { field: string; id: number; ra: number | null; dec: number | null; za: number | null; mabs: number | null };
+type ExternalQueue = { label: string; objects: ExtObj[] };
+function readHandoff(): ExternalQueue | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem("inspectQueue");
+    if (!raw) return null;
+    sessionStorage.removeItem("inspectQueue");   // consume once
+    const q = JSON.parse(raw) as ExternalQueue;
+    return q && Array.isArray(q.objects) && q.objects.length ? q : null;
+  } catch { return null; }
+}
+// The distinct fields present in a handoff, as FieldConfigs.
+function externalFields(q: ExternalQueue): FieldConfig[] {
+  const names = new Set(q.objects.map(o => o.field));
+  return SEARCH_FIELDS.filter(f => names.has(f.field));
+}
+function extToRow(o: ExtObj): QueueRow {
+  return { id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, decision: "not_inspected", notes: "" };
+}
+
 function buildQueue(idx: FieldIndex, minZa: number, selectedOnly: boolean): QueueRow[] {
   const out: QueueRow[] = [];
   for (let i = 0; i < idx.n; i++) {
