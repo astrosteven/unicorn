@@ -1,0 +1,380 @@
+[
+ {
+  "name": "Maisie's Galaxy",
+  "aka": [
+   "Maisie",
+   "CEERS J141946.36+525632.8",
+   "CR2-z12-1"
+  ],
+  "field": "CEERS/EGS",
+  "ra": 214.94317,
+  "dec": 52.94245,
+  "z": 11.44,
+  "z_type": "spec",
+  "ref": "Finkelstein+2023; Arrabal Haro+2023",
+  "note": "One of the first z>11 galaxies spectroscopically confirmed by JWST; named after Finkelstein's daughter. Coords from name CEERS J141946.36+525632.8 (14:19:46.36, +52:56:32.8) - VERIFY against CEERS catalog."
+ },
+ {
+  "name": "GN-z11",
+  "aka": [
+   "GNz11",
+   "JADES-GN-z11"
+  ],
+  "field": "GOODS-N",
+  "ra": 189.10604,
+  "dec": 62.24206,
+  "z": 10.6034,
+  "z_type": "spec",
+  "ref": "Oesch+2016; Bunker+2023 (JADES NIRSpec)",
+  "note": "Luminous z=10.6 galaxy, longtime distance record-holder pre-JWST; N-rich UV spectrum. Coords from 12:36:25.46 +62:14:31.4."
+ },
+ {
+  "name": "CEERS-93316",
+  "aka": [
+   "CEERS 93316"
+  ],
+  "field": "CEERS/EGS",
+  "ra": 214.9145,
+  "dec": 52.94303,
+  "z": 4.912,
+  "z_type": "spec",
+  "ref": "Donnan+2023 (phot z~16.4); Arrabal Haro+2023 (spec z=4.91)",
+  "note": "Famous z_phot~16.4 candidate later revised to a z=4.91 dusty galaxy - cautionary tale. Coords 14:19:39.48 +52:56:34.92."
+ },
+ {
+  "name": "JADES-GS-z14-0",
+  "aka": [
+   "GS-z14-0",
+   "JADES-GS-53.08294-27.85563"
+  ],
+  "field": "GOODS-S",
+  "ra": 53.08294,
+  "dec": -27.85563,
+  "z": 14.1793,
+  "z_type": "spec",
+  "ref": "Carniani+2024; z spec refined by ALMA [OIII]88um (Carniani+2025, Schouws+2025)",
+  "note": "Current most-distant spectroscopically confirmed galaxy (z=14.18). Coords 03:32:19.905 -27:51:20.27."
+ },
+ {
+  "name": "JADES-GS-z14-1",
+  "aka": [
+   "GS-z14-1",
+   "JADES-GS-53.07427-27.88592"
+  ],
+  "field": "GOODS-S",
+  "ra": 53.07427,
+  "dec": -27.88592,
+  "z": 13.86,
+  "z_type": "spec",
+  "ref": "Carniani+2024; z_spec=13.86 (Helton+2025)",
+  "note": "Faintest spectroscopically confirmed galaxy at z~14. Coords 03:32:17.825 -27:53:09.34 (from designation). z 13.86-13.90 across papers."
+ },
+ {
+  "name": "JADES-GS-z13-0",
+  "aka": [
+   "GS-z13-0",
+   "JADES-GS+53.14988-27.7765"
+  ],
+  "field": "GOODS-S",
+  "ra": 53.14988,
+  "dec": -27.7765,
+  "z": 13.2,
+  "z_type": "spec",
+  "ref": "Curtis-Lake+2023; Robertson+2023",
+  "note": "One of first four z>10 galaxies spectroscopically confirmed by JWST; was distance record-holder 2022-2024. Coords 03:32:35.97 -27:46:35.4."
+ },
+ {
+  "name": "JADES-GS-z12-0",
+  "aka": [
+   "GS-z12-0"
+  ],
+  "field": "GOODS-S",
+  "ra": null,
+  "dec": null,
+  "z": 12.63,
+  "z_type": "spec",
+  "ref": "Curtis-Lake+2023; Robertson+2023",
+  "note": "One of the original four Curtis-Lake z>10 confirmations. NEEDS COORDS - in JADES Origins Field near z11-0/z13-0 (RA~53.15, Dec~-27.77); could not extract exact position from a primary source."
+ },
+ {
+  "name": "JADES-GS-z11-0",
+  "aka": [
+   "GS-z11-0",
+   "JADES-GS-53.16476-27.77463"
+  ],
+  "field": "GOODS-S",
+  "ra": 53.16476,
+  "dec": -27.77463,
+  "z": 11.58,
+  "z_type": "spec",
+  "ref": "Curtis-Lake+2023; Robertson+2023",
+  "note": "One of the original four Curtis-Lake z>10 confirmations. Coords from designation."
+ },
+ {
+  "name": "JADES-GS-z10-0",
+  "aka": [
+   "GS-z10-0",
+   "UDFj-38116243"
+  ],
+  "field": "GOODS-S",
+  "ra": null,
+  "dec": null,
+  "z": 10.38,
+  "z_type": "spec",
+  "ref": "Curtis-Lake+2023; Robertson+2023 (orig. UDFj, Bouwens+2011)",
+  "note": "One of the original four Curtis-Lake z>10 confirmations; historically the UDFj z-drop. NEEDS COORDS - in JADES Origins Field; exact position not extracted from primary source."
+ },
+ {
+  "name": "JADES-GS-z13-1",
+  "aka": [
+   "GS-z13-1",
+   "JADES-GS+53.06475-27.89024"
+  ],
+  "field": "GOODS-S",
+  "ra": 53.06475,
+  "dec": -27.89024,
+  "z": 13.3,
+  "z_type": "spec",
+  "ref": "Witstok+2025 (Ly-alpha damping wing)",
+  "note": "z~13 galaxy with strong Lyman-alpha damping-wing / possible Lyman-alpha; probes reionization. Coords 03:32:15.57 -27:53:23.29."
+ },
+ {
+  "name": "MoM-z14",
+  "aka": [
+   "Cosmic Mom",
+   "MoM z14"
+  ],
+  "field": "COSMOS",
+  "ra": 150.093322,
+  "dec": 2.273161,
+  "z": 14.44,
+  "z_type": "spec",
+  "ref": "Naidu+2025 ('A Cosmic Miracle', Open J. Astrophys.)",
+  "note": "Most distant spectroscopically confirmed galaxy as of 2025 (z=14.44); first result from the 'Mirage or Miracle' survey in COSMOS. Coords 10:00:22.40 +02:16:23.19.",
+  "_coord_src": "campfire"
+ },
+ {
+  "name": "GHZ2",
+  "aka": [
+   "GLASS-z12",
+   "GLASS-z13 (old)",
+   "GLASS-17487"
+  ],
+  "field": "A2744",
+  "ra": 3.498983,
+  "dec": -30.324753,
+  "z": 12.34,
+  "z_type": "spec",
+  "ref": "Castellano+2022 (disc.); Castellano+2024 / Zavala+2024 (spec z=12.34)",
+  "note": "Luminous z=12.3 galaxy behind Abell 2744; one of the brightest known ultra-high-z sources. Coords 00:13:59.76 -30:19:29.1.",
+  "_coord_src": "campfire"
+ },
+ {
+  "name": "GHZ1",
+  "aka": [
+   "GLASS-z10",
+   "GLASS-z11 (old)",
+   "GHZ-1"
+  ],
+  "field": "A2744",
+  "ra": 3.511929,
+  "dec": -30.371859,
+  "z": 9.875,
+  "z_type": "spec",
+  "ref": "Castellano+2022 (disc.); Napolitano+2025 (spec)",
+  "note": "Bright z~9.9 galaxy behind Abell 2744, early GLASS-JWST z>10 candidate."
+ },
+ {
+  "name": "GHZ9",
+  "aka": [
+   "GHZ-9"
+  ],
+  "field": "A2744",
+  "ra": 3.478761,
+  "dec": -30.345516,
+  "z": 10.145,
+  "z_type": "spec",
+  "ref": "Castellano+2023; Napolitano+2024/2025; Kovacs+2024 (X-ray AGN)",
+  "note": "z=10.1 source in Abell 2744 with an X-ray-detected accreting SMBH (dual AGN + star formation).",
+  "_coord_src": "campfire"
+ },
+ {
+  "name": "UNCOVER-z13",
+  "aka": [
+   "UNCOVER z13"
+  ],
+  "field": "A2744",
+  "ra": 3.57087,
+  "dec": -30.40158,
+  "z": 13.079,
+  "z_type": "spec",
+  "ref": "Wang+2023 (UNCOVER NIRSpec)",
+  "note": "Lensed z~13 galaxy behind Abell 2744 (tentative spec confirmation via break)."
+ },
+ {
+  "name": "UNCOVER-z12",
+  "aka": [
+   "UNCOVER z12"
+  ],
+  "field": "A2744",
+  "ra": 3.513563,
+  "dec": -30.3568,
+  "z": 12.393,
+  "z_type": "spec",
+  "ref": "Wang+2023 (UNCOVER NIRSpec)",
+  "note": "Lensed z=12.4 galaxy behind Abell 2744.",
+  "_coord_src": "campfire"
+ },
+ {
+  "name": "Abell2744-QSO1",
+  "aka": [
+   "A2744-QSO1",
+   "UNCOVER-QSO1"
+  ],
+  "field": "A2744",
+  "ra": 3.5798408,
+  "dec": -30.4015681,
+  "z": 7.0451,
+  "z_type": "spec",
+  "ref": "Furtak+2023, 2024 (Nature); coords Furtak+2025",
+  "note": "Prototypical 'little red dot' - a triply-lensed, reddened z=7.04 AGN with ~50M-solar SMBH; high BH-to-host mass ratio. Coords are brightest image A (Furtak+2025 Table 1); NASA press RA/Dec 00:14:18.25 -30:22:46.04 differs slightly (different image / centroid)."
+ },
+ {
+  "name": "CEERS 1019",
+  "aka": [
+   "CEERS_1019",
+   "EGSY8p7"
+  ],
+  "field": "CEERS/EGS",
+  "ra": 215.035391,
+  "dec": 52.890668,
+  "z": 8.679,
+  "z_type": "spec",
+  "ref": "Larson+2023 (CEERS)",
+  "note": "Hosted the most distant confirmed accreting SMBH at the time (z=8.68, 570 Myr after Big Bang); originally EGSY8p7. Coords 14:20:08.494 +52:53:26.",
+  "_coord_src": "campfire"
+ },
+ {
+  "name": "CEERS-2112",
+  "aka": [
+   "Ceers-2112"
+  ],
+  "field": "CEERS/EGS",
+  "ra": 214.97993,
+  "dec": 52.991946,
+  "z": 3.03,
+  "z_type": "spec",
+  "ref": "Costantin+2023 (Nature)",
+  "note": "Most distant barred spiral galaxy found; a young Milky-Way analog / progenitor at z=3."
+ },
+ {
+  "name": "GNz7q",
+  "aka": [
+   "GN-z7q",
+   "GNz7q"
+  ],
+  "field": "GOODS-N",
+  "ra": 189.070647,
+  "dec": 62.208951,
+  "z": 7.1899,
+  "z_type": "spec",
+  "ref": "Fujimoto+2022 (Nature)",
+  "note": "Dust-reddened compact quasar precursor bridging starbursts and quasars at cosmic dawn in GOODS-N. Coords 12:36:16.85 +62:12:31.98 (ESA/Hubble).",
+  "_coord_src": "campfire"
+ },
+ {
+  "name": "Gz9p3",
+  "aka": [
+   "GZ9P3"
+  ],
+  "field": "A2744",
+  "ra": 3.617193,
+  "dec": -30.425535,
+  "z": 9.3127,
+  "z_type": "spec",
+  "ref": "Boyett+2024 (Nature Astronomy)",
+  "note": "Bright interacting/merging system at z=9.3 lensed by Abell 2744 periphery (mu~1.7). FIELD CORRECTION: it is A2744-lensed, NOT GOODS-N. One follow-up paper lists ~3.607, -30.381 (differs ~arcmin) - VERIFY exact centroid via MAST/NED."
+ },
+ {
+  "name": "The Cliff",
+  "aka": [
+   "RUBIES-UDS-154183"
+  ],
+  "field": "UDS",
+  "ra": 34.410749,
+  "dec": -5.129664,
+  "z": 3.548,
+  "z_type": "spec",
+  "ref": "de Graaff+2025 (A&A)",
+  "note": "Famous 'little red dot' in PRIMER-UDS with the strongest Balmer break yet seen plus broad H-alpha; the most notable nicknamed UDS object. Coords 02:17:38.58 -05:07:46.79.",
+  "_coord_src": "campfire"
+ },
+ {
+  "name": "COSMOS-Web ring",
+  "aka": [
+   "COSJ100024+015334",
+   "JWST-ER1",
+   "Cosmic Ring"
+  ],
+  "field": "COSMOS",
+  "ra": 150.1,
+  "dec": 1.8928,
+  "z": 5.1043,
+  "z_type": "spec",
+  "ref": "Mercier+2024 (A&A); van Dokkum+2024",
+  "note": "Serendipitous Einstein ring in COSMOS-Web; massive quiescent elliptical lens (z_lens~2.0) around a z=5.10 spec source. Coords name-derived (arcsec-level, 10:00:24 +01:53:34) - refine for sub-arcsec use. z listed is the lensed background source; lens itself z~2.0 phot."
+ },
+ {
+  "name": "Cosmic Grapes",
+  "aka": [
+   "ALCS RXCJ0600 z=6 source",
+   "RXCJ0600-z6"
+  ],
+  "field": "OTHER: RXCJ0600-2007 (MACS J0600.1-2008)",
+  "ra": null,
+  "dec": null,
+  "z": 6.0719,
+  "z_type": "spec",
+  "ref": "Fujimoto+2025 (Nature Astronomy); spec-z Fujimoto+2021",
+  "note": "Quintuply-imaged rotating disk resolved into ~15 star-forming clumps ('grapes') at z=6.07. FIELD: lensed by cluster RXCJ0600-2007, NOT COSMOS. Multiply-imaged near 06:00:09 -20:08; no single canonical source J2000 position - null flagged."
+ },
+ {
+  "name": "Firefly Sparkle",
+  "aka": [
+   "Firefly-Sparkle"
+  ],
+  "field": "OTHER: MACS J1423.8+2404 (CANUCS)",
+  "ra": null,
+  "dec": null,
+  "z": 8.296,
+  "z_type": "spec",
+  "ref": "Mowla+2024 (Nature)",
+  "note": "Lensed Milky-Way-progenitor arc resolved into individual star clusters at z=8.3. FIELD: lensed by MACS J1423.8+2404, NOT A2744. Arc position not tabulated in primary paper - null flagged (cluster ~14:23:47 +24:04)."
+ },
+ {
+  "name": "GLIMPSE-16a",
+  "aka": [
+   "GLIMPSE source 70467"
+  ],
+  "field": "OTHER: Abell S1063 (RXC J2248.7-4431)",
+  "ra": 342.2386,
+  "dec": -44.5347,
+  "z": 16.4,
+  "z_type": "phot",
+  "ref": "Kokorev+2025 (ApJL)",
+  "note": "Robust z~16.4 photometric candidate behind lensing cluster Abell S1063. FIELD: Abell S1063, NOT A2744. Unconfirmed - would break the z=14 spec record if confirmed."
+ },
+ {
+  "name": "GLIMPSE-16b",
+  "aka": [
+   "GLIMPSE source 72839"
+  ],
+  "field": "OTHER: Abell S1063 (RXC J2248.7-4431)",
+  "ra": 342.2319,
+  "dec": -44.5565,
+  "z": 15.8,
+  "z_type": "phot",
+  "ref": "Kokorev+2025 (ApJL)",
+  "note": "Robust z~15.8 photometric candidate behind Abell S1063. FIELD: Abell S1063, NOT A2744. Unconfirmed."
+ }
+]
