@@ -14,8 +14,11 @@ const FitsglCutout = dynamic(() => import("./FitsglCutout").then((m) => m.Fitsgl
   ssr: false,
 });
 // Fields that have live fitsgl tiles (drives whether the card shows the on-the-fly
-// cutout). Kept in sync with FITSGL_BASE in FitsglCutout.tsx.
-const FITSGL_FIELDS = new Set(["CEERS"]);
+// cutout). Kept in sync with FITSGL_BASE in FitsglCutout.tsx — all fields with tiles
+// on Corral render the color panel on their cards.
+const FITSGL_FIELDS = new Set([
+  "CEERS", "GOODS-S", "GOODS-N", "A2744", "NGDEEP", "PRIMER-COSMOS", "PRIMER-UDS", "EGS", "COSMOS",
+]);
 
 // Filter pivot wavelengths in microns. Covers HST/ACS + the full JWST/NIRCam
 // wide + medium band set used across UNICORN fields (incl. CEERS-SPAM medium bands).
