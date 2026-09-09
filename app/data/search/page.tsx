@@ -1,10 +1,10 @@
 "use client";
-import { useState, useRef, Fragment } from "react";
+import { useState, useRef, useEffect, Fragment, type ComponentType } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { useRouter } from "next/navigation";
 import JSZip from "jszip";
-import { FITSGL_BASE } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map
+import { FITSGL_BASE, CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map + campfire stretch
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
 import {
   FILTER_WAVES,
@@ -322,12 +322,20 @@ function blobToImage(blob: Blob): Promise<HTMLImageElement> {
   });
 }
 
-// Compose ONE image per object: a header line, SED + P(z) side-by-side, and the stamp
-// montage below — so the card download is one self-describing file per source.
-async function composeCardImage(src: SourceResult, sed: HTMLImageElement | null, pz: HTMLImageElement | null, stamp: HTMLImageElement | null): Promise<Blob | null> {
+// Compose ONE image per object: a header line, SED + P(z) (+ the on-the-fly color
+// cutout) side-by-side, and the stamp montage below — so the card download is one
+// self-describing file per source.
+async function composeCardImage(src: SourceResult, sed: HTMLImageElement | null, pz: HTMLImageElement | null, stamp: HTMLImageElement | null, color: HTMLImageElement | null): Promise<Blob | null> {
   const pad = 16, gap = 14, headerH = 34;
-  const topH = Math.max(sed?.height ?? 0, pz?.height ?? 0);
-  const topW = (sed?.width ?? 0) + (pz ? (sed ? gap : 0) + pz.width : 0);
+  // The color cutout renders alongside the plots in the top row. Match its drawn
+  // height to the taller of the two plots so the row lines up; keep it square.
+  const plotsH = Math.max(sed?.height ?? 0, pz?.height ?? 0);
+  const colLabelH = color ? 16 : 0;
+  const colSide = color ? (plotsH > 0 ? plotsH - colLabelH : color.height) : 0;
+  const topH = Math.max(plotsH, colLabelH + colSide);
+  const topW = (sed?.width ?? 0)
+    + (pz ? (sed ? gap : 0) + pz.width : 0)
+    + (color ? ((sed || pz) ? gap : 0) + colSide : 0);
   const stampW = stamp?.width ?? 0, stampH = stamp?.height ?? 0;
   const contentW = Math.max(topW, stampW);
   const W = contentW + pad * 2;
@@ -354,6 +362,14 @@ async function composeCardImage(src: SourceResult, sed: HTMLImageElement | null,
   const topY = pad + headerH;
   if (sed) ctx.drawImage(sed, pad, topY);
   if (pz) ctx.drawImage(pz, pad + (sed ? sed.width + gap : 0), topY);
+  // Color cutout, drawn square to the right of the plots with a small label.
+  if (color && colSide > 0) {
+    const colX = pad + (sed?.width ?? 0) + (pz ? (sed ? gap : 0) + pz.width : 0) + ((sed || pz) ? gap : 0);
+    ctx.fillStyle = cs.color || "#e8e2f2";
+    ctx.font = "11px 'Space Mono', monospace";
+    ctx.fillText("COLOR", colX, topY);
+    ctx.drawImage(color, colX, topY + colLabelH, colSide, colSide);
+  }
   // Stamp montage
   if (stamp) ctx.drawImage(stamp, pad, topY + topH + gap);
   return await new Promise<Blob | null>(res => cv.toBlob(b => res(b), "image/png"));
@@ -379,6 +395,153 @@ function CardPlots({ src }: { src: SourceResult }) {
   );
 }
 
+// ---- On-the-fly color cutout capture (for the download) ---------------------
+// The card's color panel is a live WebGL viewer (@fitsgl/core FitsViewer) with NO
+// pre-baked PNG for most fields. To fold that color into the composed download image
+// we render a throwaway off-screen FitsViewer at the object's sky position, apply the
+// SAME campfire trilogy the /data/map + card use, wait for the first correctly-placed
+// frame, then grab a PNG via the core viewer's exportPNG(). exportPNG() forces a
+// synchronous draw()+readPixels() in one task BEFORE the browser composites, so it
+// returns a real (non-blank) image even though the viewer's WebGL2 context is created
+// WITHOUT preserveDrawingBuffer — a naive canvas.toDataURL() here would read blank.
+//
+// Everything is loaded lazily (dynamic import inside the click handler) so the WebGL
+// bundle never touches page prerender and only loads when a download is requested.
+
+// The @fitsgl/core pieces we need, resolved once per download run via dynamic import.
+type FitsglMod = {
+  FitsViewer: ComponentType<any>;
+  loadFitsglConfig: (url: string) => Promise<any>;
+  skyToPix: (wcs: any, ra: number, dec: number) => { x: number; y: number };
+  DEFAULT_TRILOGY_PARAMS: any;
+  explorerBandsFromConfig: (c: any) => any;
+  defaultViewFromConfig: (c: any) => any;
+  defaultExplorerState: (eb: any, view: any) => any;
+  deriveViewerConfig: (eb: any, state: any) => any;
+};
+async function loadFitsgl(): Promise<FitsglMod> {
+  const [core, react] = await Promise.all([import("@fitsgl/core"), import("@fitsgl/core/react")]);
+  return {
+    FitsViewer: react.FitsViewer as unknown as ComponentType<any>,
+    loadFitsglConfig: core.loadFitsglConfig,
+    skyToPix: core.skyToPix,
+    DEFAULT_TRILOGY_PARAMS: core.DEFAULT_TRILOGY_PARAMS,
+    explorerBandsFromConfig: react.explorerBandsFromConfig,
+    defaultViewFromConfig: react.defaultViewFromConfig,
+    defaultExplorerState: react.defaultExplorerState,
+    deriveViewerConfig: react.deriveViewerConfig,
+  };
+}
+
+// A field's derived ViewerConfig + campfire trilogy params + per-band stats, cached for
+// the run (mirrors FitsglCutout.prepare, so one field is set up at most once per zip).
+type ColorPrep = { viewer: any; params: any; single: boolean; stats: any[] | null; pixelScale: number };
+async function prepareColor(mod: FitsglMod, base: string): Promise<ColorPrep> {
+  const fitsgl = await mod.loadFitsglConfig(`${base}/fitsgl.json`);
+  const eb = mod.explorerBandsFromConfig(fitsgl);
+  const state = mod.defaultExplorerState(eb, mod.defaultViewFromConfig(fitsgl));
+  const viewer = mod.deriveViewerConfig(eb, state);
+  const params = { ...mod.DEFAULT_TRILOGY_PARAMS, ...state.trilogyParams, ...CAMPFIRE_TRILOGY };
+  const v = viewer.view;
+  const names: string[] =
+    v.mode === "single" ? [v.band] : v.mode === "rgb" ? [v.r, v.g, v.b] : v.bands.map((b: any) => b.band);
+  const raw = names.map((n) => eb.find((b: any) => b.name === n)?.trilogy);
+  const stats = raw.every((s: any) => s !== undefined) ? raw : null;
+  const g = fitsgl.dataset.bands[0]?.grid?.pixelScaleArcsec;
+  return { viewer, params, single: v.mode === "single", stats, pixelScale: g && g > 0 ? g : 0.03 };
+}
+
+// Reproduce FitsExplorer's applyTrilogyFromStats on the bare core viewer.
+function applyColorTrilogy(viewer: any, prep: ColorPrep): boolean {
+  if (prep.stats === null) return false;
+  const expectedMode = prep.single ? "single" : "multiband";
+  if (viewer.sourceMode !== expectedMode) return false;
+  viewer.applyTrilogy(prep.single ? prep.stats[0] : prep.stats, prep.params);
+  viewer.setStretchMode("trilogy");
+  return true;
+}
+
+const COLOR_CAPTURE_PX = 200;      // backing size of the throwaway viewer (CSS px)
+const COLOR_FOV_ARCSEC = 2.4;      // matches the card / retired static RGB stamp
+
+// One throwaway off-screen viewer that renders the object's color, then hands its PNG
+// data URL back via onDone (exactly once — captured or, on prop-driven timeout, null).
+// Rendered into the shared holder root, one object at a time (serial), so we never
+// exceed the browser's WebGL context cap.
+function ColorCapture({ mod, prep, ra, dec, onDone }: {
+  mod: FitsglMod; prep: ColorPrep; ra: number; dec: number; onDone: (url: string | null) => void;
+}) {
+  const handleRef = useRef<any>(null);
+  const doneRef = useRef(false);
+  const placedRef = useRef(false);
+  const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finish = (url: string | null) => {
+    if (settleRef.current) { clearTimeout(settleRef.current); settleRef.current = null; }
+    if (!doneRef.current) { doneRef.current = true; onDone(url); }
+  };
+  useEffect(() => () => { if (settleRef.current) clearTimeout(settleRef.current); }, []);
+
+  // Center on the target and zoom to COLOR_FOV_ARCSEC across COLOR_CAPTURE_PX. Same math
+  // as FitsglCutout.placeCamera. Returns false until wcs is available.
+  const place = (): boolean => {
+    const h = handleRef.current;
+    if (!h) return false;
+    const viewer = h.getViewer?.();
+    if (!viewer) return false;
+    const wcs = viewer.getWcs?.();
+    if (!wcs) return false;
+    const px = mod.skyToPix(wcs, ra, dec);
+    if (!Number.isFinite(px.x) || !Number.isFinite(px.y)) return false;
+    h.setCenter(px.x, px.y);
+    const nativeAcross = COLOR_FOV_ARCSEC / prep.pixelScale;
+    if (nativeAcross > 0) h.setZoom(COLOR_CAPTURE_PX / nativeAcross);
+    return true;
+  };
+
+  const onReady = (h: any) => {
+    handleRef.current = h;
+    const viewer = h.getViewer?.();
+    if (viewer) applyColorTrilogy(viewer, prep);
+    place();
+  };
+
+  // Grab the PNG synchronously (exportPNG forces draw()+readPixels() in one task, so the
+  // drawing buffer is valid without preserveDrawingBuffer).
+  const grab = () => {
+    if (doneRef.current) return;
+    try {
+      const url = handleRef.current?.exportPNG?.() ?? null;
+      finish(url);   // even a partial paint beats no color; null is handled upstream
+    } catch { finish(null); }
+  };
+
+  // On the first correctly-placed frame, arm a short settle so the newly-centered tiles
+  // have time to stream in before we read the buffer, then capture. (Well within the
+  // per-object timeout enforced by the caller.)
+  const onFrame = () => {
+    if (doneRef.current) return;
+    if (!placedRef.current) {
+      const viewer = handleRef.current?.getViewer?.();
+      if (viewer) applyColorTrilogy(viewer, prep);
+      if (place()) {
+        placedRef.current = true;
+        settleRef.current = setTimeout(grab, 700);
+      }
+    }
+  };
+
+  const FitsViewer = mod.FitsViewer;
+  return (
+    <FitsViewer
+      config={prep.viewer}
+      onReady={onReady}
+      onFrame={onFrame}
+      onError={() => finish(null)}
+      style={{ width: COLOR_CAPTURE_PX, height: COLOR_CAPTURE_PX, pointerEvents: "none" }}
+    />
+  );
+}
+
 export default function SearchPage() {
   const [mode, setMode] = useState<SearchMode>("id");
   const [idInput, setIdInput] = useState("");
@@ -395,9 +558,11 @@ export default function SearchPage() {
   const [defsOpen, setDefsOpen] = useState(false);
   const [zipping, setZipping] = useState<string | null>(null);
 
-  // Bundle a "result card" per shown row into one zip: the cutout montage (from Corral),
-  // plus the SED and P(z) plots rasterized to PNG. Per-object detail is fetched concurrently;
-  // the plots are rendered off-screen and rasterized serially (shared React root). <=500 rows.
+  // Bundle a "result card" per shown row into one zip: the stamp montage (from Corral),
+  // the SED and P(z) plots rasterized to PNG, and the on-the-fly WebGL color cutout.
+  // Per-object detail is fetched concurrently; the plots are rendered off-screen and
+  // rasterized serially (shared React root), and the color is captured serially in the
+  // same root (one WebGL context at a time). Runs over the FULL matched set.
   async function downloadResultStamps() {
     if (!queryAllRef.current.length || zipping) return;
     const zip = new JSZip();
@@ -422,11 +587,68 @@ export default function SearchPage() {
     }
     await Promise.all(Array.from({ length: 6 }, fetchWorker));
 
-    // 2) Compose ONE image per object: header + SED + P(z) + stamp montage (render serial).
+    // 1b) Color-cutout setup. Only if some matched field has fitsgl tiles. Load the WebGL
+    // bundle once, and prepare (derive ViewerConfig + trilogy stats) each such field once.
+    // Any failure here degrades gracefully — the cards just compose without color.
+    const wantColor = rows.some(r => FITSGL_BASE[r.fc.field]);
+    let fitsglMod: FitsglMod | null = null;
+    const prepCache = new Map<string, ColorPrep | null>();   // field → prep (null = unavailable)
+    if (wantColor) {
+      try { fitsglMod = await loadFitsgl(); } catch { fitsglMod = null; }
+    }
+    async function getPrep(field: string): Promise<ColorPrep | null> {
+      if (!fitsglMod) return null;
+      const base = FITSGL_BASE[field];
+      if (!base) return null;
+      if (prepCache.has(field)) return prepCache.get(field)!;
+      let p: ColorPrep | null = null;
+      try { p = await prepareColor(fitsglMod, base); } catch { p = null; }
+      prepCache.set(field, p);
+      return p;
+    }
+
+    // 2) Compose ONE image per object: header + SED + P(z) + color + stamp montage (serial).
     const holder = document.createElement("div");
     holder.style.cssText = "position:fixed;left:-99999px;top:0;width:520px;pointer-events:none;";
     document.body.appendChild(holder);
     const root = createRoot(holder);
+    const COLOR_TIMEOUT_MS = 2500;   // per-object cap so one slow cutout can't stall the zip
+
+    // Capture the color for one object into `imgOut`, rendered in the shared root. Resolves
+    // to an <img> (or null) within COLOR_TIMEOUT_MS. Fast-path: a pre-baked static RGB PNG
+    // (CEERS only) is fetched directly; otherwise render a throwaway FitsViewer + exportPNG().
+    async function captureColor(src: SourceResult, fc: typeof rows[0]["fc"]): Promise<HTMLImageElement | null> {
+      const id = Number(src.row["ID"]);
+      const ra = Number(src.row["RA"]), dec = Number(src.row["DEC"]);
+      // Fast path: pre-baked static RGB PNG. Only CEERS has these baked (verified 200 for
+      // CEERS, 404 elsewhere), so we only probe it there — cheap fetch → image.
+      if (fc.field === "CEERS") {
+        const rgbUrl = src.rgbUrl ?? `${corralBase()}/${fc.dir}/web/rgb/${fc.prefix}_${id}.png`;
+        try {
+          const resp = await fetch(rgbUrl);
+          if (resp.ok) { const b = await resp.blob(); if (b.size > 0) return await blobToImage(b); }
+        } catch { /* fall through to WebGL */ }
+      }
+      // WebGL path.
+      if (!fitsglMod || !Number.isFinite(ra) || !Number.isFinite(dec)) return null;
+      const prep = await getPrep(fc.field);
+      if (!prep) return null;
+      const mod = fitsglMod;
+      const url = await new Promise<string | null>((resolve) => {
+        let settled = false;
+        const done = (u: string | null) => { if (!settled) { settled = true; clearTimeout(timer); resolve(u); } };
+        const timer = setTimeout(() => done(null), COLOR_TIMEOUT_MS);
+        flushSync(() => root.render(
+          <ColorCapture mod={mod} prep={prep} ra={ra} dec={dec} onDone={done} />
+        ));
+      });
+      // Unmount the viewer (render an empty slot) so its WebGL context is freed before the
+      // next object mounts a new one — browsers cap live contexts.
+      flushSync(() => root.render(<Fragment />));
+      if (!url) return null;
+      try { return await blobToImage(await (await fetch(url)).blob()); } catch { return null; }
+    }
+
     let ok = 0;
     for (let i = 0; i < total; i++) {
       const src = srcs[i]; const r = rows[i];
@@ -446,10 +668,13 @@ export default function SearchPage() {
           if (sedSvg) { const b = await svgToPngBlob(sedSvg); if (b) sedImg = await blobToImage(b); }
           if (pzSvg)  { const b = await svgToPngBlob(pzSvg);  if (b) pzImg = await blobToImage(b); }
         } catch { /* rasterize failure: skip plots */ }
-        const png = await composeCardImage(src, sedImg, pzImg, stampImg);
+        // Color cutout (fast-path RGB, else WebGL capture; capped per object).
+        let colorImg: HTMLImageElement | null = null;
+        if (wantColor) { try { colorImg = await captureColor(src, r.fc); } catch { colorImg = null; } }
+        const png = await composeCardImage(src, sedImg, pzImg, stampImg, colorImg);
         if (png) { zip.file(`${base}.png`, png); ok++; }
       }
-      if (i % 3 === 0 || i === total - 1) setZipping(`render ${i + 1}/${total}`);
+      if (i % 3 === 0 || i === total - 1) setZipping(`render${wantColor ? "+color" : ""} ${i + 1}/${total}`);
     }
     root.unmount();
     holder.remove();
