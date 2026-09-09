@@ -721,6 +721,30 @@ export default function SearchPage() {
     router.push("/data/inspect");
   }
 
+  // Hand the current query's matched objects to the color map (via localStorage — must
+  // survive a NEW TAB, so not sessionStorage). The map reads "mapQueue", picks the field
+  // with the most queued objects, filters its Kron-ellipse overlay to just those ids, and
+  // auto-fits to their bounding box. Capped so a huge query can't blow the storage quota.
+  const MAP_HANDOFF_CAP = 50000;
+  function viewOnMap() {
+    const objects = queryAllRef.current.slice(0, MAP_HANDOFF_CAP)
+      .map(m => ({
+        field: m.fc.field, id: m.id,
+        ra: typeof m.r.ra === "number" ? m.r.ra : null,
+        dec: typeof m.r.dec === "number" ? m.r.dec : null,
+      }))
+      // Only objects on a field that actually has a fitsgl map are useful on /data/map.
+      .filter(o => FITSGL_BASE[o.field]);
+    if (!objects.length) return;
+    try {
+      localStorage.setItem("mapQueue", JSON.stringify({ label: queryInput, ts: Date.now(), objects }));
+    } catch { /* quota — open the map anyway (it'll just show all sources) */ }
+    window.open("/unicorn/data/map?queued=1", "_blank");
+  }
+
+  // How many matched objects land on a fitsgl-mapped field (what "view on map" can show).
+  const mappableCount = queryAllRef.current.reduce((n, m) => n + (FITSGL_BASE[m.fc.field] ? 1 : 0), 0);
+
   // Download a DS9 region file for the matched objects: a 0.5" green circle per source
   // in fk5 (ra,dec), width 2, labelled with the object ID.
   function downloadRegion() {
@@ -1444,6 +1468,13 @@ export default function SearchPage() {
               style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--green)", border: "1px solid rgba(126,207,176,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer" }}>
               ⬡ region file (.reg) ({Math.min(queryTotal, 100000).toLocaleString()})
             </button>
+            {mappableCount > 0 && (
+              <button onClick={viewOnMap} className="mono"
+                title="Open the color map in a new tab showing ONLY these matched objects' Kron ellipses, auto-fit to them"
+                style={{ marginLeft: "8px", background: "rgba(196,144,216,0.16)", color: "var(--accent)", border: "1px solid var(--border-bright)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer", fontWeight: 700 }}>
+                ▸ view {Math.min(mappableCount, MAP_HANDOFF_CAP).toLocaleString()} on map ↗
+              </button>
+            )}
           </div>
 
           <div className="card" style={{ overflow: "hidden" }}>
