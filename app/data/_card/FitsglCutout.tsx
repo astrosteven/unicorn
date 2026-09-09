@@ -54,7 +54,7 @@ export const FITSGL_BASE: Record<string, string> = {
   "PRIMER-COSMOS": `${FITSGL_ROOT}/primercosmos`,
   "PRIMER-UDS":    `${FITSGL_ROOT}/primeruds`,
   "EGS":           `${FITSGL_ROOT}/egs`,
-  // "COSMOS" added once its tiles are uploaded.
+  "COSMOS":        `${FITSGL_ROOT}/cosmos`,
 };
 
 // The default cutout field of view, arcsec (matches the retired static RGB stamp).

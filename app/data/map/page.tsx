@@ -33,9 +33,9 @@ const MapViewer = dynamic(() => import("./MapViewer"), {
 });
 
 const FITSGL_ROOT = "https://web.corral.tacc.utexas.edu/unicorn/fitsgl";
-// Fields whose fitsgl tile pyramids are live on Corral. Add "egs"/"cosmos" once their
-// tiles are uploaded — the switcher + per-field overlay then work automatically.
-const FITSGL_PREFIXES = ["ceers", "goodss", "goodsn", "a2744", "ngdeep", "primercosmos", "primeruds", "egs"];
+// Fields whose fitsgl tile pyramids are live on Corral. Add a prefix once its tiles
+// are uploaded — the switcher + per-field overlay then work automatically.
+const FITSGL_PREFIXES = ["ceers", "goodss", "goodsn", "a2744", "ngdeep", "primercosmos", "primeruds", "egs", "cosmos"];
 const FITSGL_FIELDS: FieldConfig[] = SEARCH_FIELDS.filter(f => FITSGL_PREFIXES.includes(f.prefix));
 
 // Bands offered in the magnitude-filter dropdown. F277W/F444W come straight from the
