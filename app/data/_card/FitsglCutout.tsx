@@ -232,6 +232,16 @@ export function FitsglCutout({
     [prep, placeCamera]
   );
 
+  // Re-center when the target object changes while the viewer is already up. Flipping
+  // through the inspector queue WITHIN one field keeps `base`/`field` the same, so the
+  // config-load effect above doesn't re-run and the mounted viewer persists — nothing
+  // else moves the camera. Without this the cutout keeps showing the previous object
+  // (only cross-field / freshly-mounted flips happened to update). Idempotent: on the
+  // very first placement `placedRef` is still false, so onFrame owns the initial place.
+  useEffect(() => {
+    if (placedRef.current) placeCamera();
+  }, [ra, dec, fovArcsec, placeCamera]);
+
   // First drawn frame: re-assert the camera (survives construction fitToImage), retry
   // the trilogy if the mode wasn't settled at onReady, then reveal the canvas.
   const onFrame = useCallback(() => {
