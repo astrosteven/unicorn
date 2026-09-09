@@ -327,6 +327,9 @@ export default function SearchPage() {
   const [matchSummary, setMatchSummary] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const cardRef = useRef<HTMLTableRowElement>(null);
+  // Every matched object (index row + campfire match), retained for the FULL-list
+  // download — not just the ≤500 rendered in the table.
+  const queryAllRef = useRef<{ fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null }[]>([]);
 
   async function viewQueryRow(fc: typeof SEARCH_FIELDS[0], id: number) {
     if (queryCardId === id) { setQueryCard(null); setQueryCardId(null); return; }  // toggle off
@@ -339,13 +342,42 @@ export default function SearchPage() {
     }
   }
 
-  // Fetch full per-object detail for the listed query rows (for CSV download).
-  async function fetchQueryObjects(): Promise<SourceResult[]> {
+  // Build a SourceResult from an index row alone (no per-object fetch) so the FULL
+  // matched set is downloadable. Covers every scalar column; m277/m444 carry a flux
+  // recovered from the index mag so the existing getters work unchanged. Per-filter
+  // flux GROUPS (kron/aper/fwhm) need real detail — see resolveQueryRows(needDetail).
+  function idxToSource(m: { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null }): SourceResult {
+    const r = m.r;
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    const s = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+    const fluxOfMag = (mag: unknown) => (typeof mag === "number" && Number.isFinite(mag) ? Math.pow(10, (31.4 - mag) / 2.5) : undefined);
+    return {
+      field: (typeof r.field === "string" ? r.field : m.fc.field),
+      row: {
+        ID: m.id, RA: n(r.ra), DEC: n(r.dec), X: n(r.x), Y: n(r.y), TILE: s(r.tile),
+        FLUX_F277W: fluxOfMag(r.m277), FLUX_F444W: fluxOfMag(r.m444),
+        RH_F277W: n(r.rh_277), RH_F444W: n(r.rh_444), DEPTHTIER: n(r.depthtier),
+        KRON_RADIUS: n(r.kron_radius), A_IMAGE: n(r.a_image), B_IMAGE: n(r.b_image), DETECTCAT: s(r.detectcat),
+      },
+      pz: { ZA: n(r.za), ZL68: n(r.zl68), ZU68: n(r.zu68), Z_LOWZ: n(r.z_lowz), CHIA: n(r.chia) },
+      modelFluxes: {}, zgrid: [], pzArr: [],
+      mabs: n(r.mabs), m1500: n(r.m1500), m1300: n(r.m1300), beta: n(r.beta),
+      selected: n(r.selected) ?? null, sample: n(r.sample) ?? null, zspec: n(r.zspec),
+      czspec: n(r.czspec), czqual: n(r.czqual),
+    };
+  }
+
+  // Resolve the FULL matched set for download. Without a per-filter flux group, build
+  // straight from the retained index rows (instant, any size). With a flux group,
+  // fetch per-object detail for the whole set (slower) to get the real per-filter fluxes.
+  async function resolveQueryRows(needDetail: boolean): Promise<SourceResult[]> {
+    const all = queryAllRef.current;
+    if (!needDetail) return all.map(idxToSource);
     const out: SourceResult[] = [];
     const CH = 24;
-    for (let i = 0; i < queryRows.length; i += CH) {
-      const chunk = queryRows.slice(i, i + CH);
-      const res = await Promise.all(chunk.map(r => loadField(r.fc).then(({ zg }) => fetchObject(r.fc, r.id, zg))));
+    for (let i = 0; i < all.length; i += CH) {
+      const chunk = all.slice(i, i + CH);
+      const res = await Promise.all(chunk.map(m => loadField(m.fc).then(({ zg }) => fetchObject(m.fc, m.id, zg))));
       for (const s of res) if (s) out.push(s);
     }
     return out;
@@ -373,8 +405,10 @@ export default function SearchPage() {
         const cols = queriedColumns(queryInput);
         const need = pred.need;                        // native flux_<f>/fluxerr_<f> cols to attach
         const getters = cols.map(c => colGetter(c));   // value-extractors for the dynamic table cols
-        const CAP = 500;
+        const CAP = 500;              // rows rendered in the table
+        const DL_CAP = 100000;        // rows retained for the full-list download
         const rows: QueryRow[] = [];
+        const all: { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null }[] = [];
         let total = 0;
         for (const fc of fields) {
           const { idx } = await loadField(fc);
@@ -402,10 +436,13 @@ export default function SearchPage() {
             if (fx) for (const c of need) r[c] = fx[c]?.[i] ?? null;   // native flux/fluxerr for this query
             if (pred.test(r)) {
               total++;
-              if (rows.length < CAP) rows.push({ fc, id: idx.id[i], za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, cz, extra: getters.map(g => g(r)) });
+              const id = idx.id[i];
+              if (rows.length < CAP) rows.push({ fc, id, za: idx.za[i], m444: idx.m444?.[i] ?? null, zspec: (r.zspec as number | null) ?? null, selected: idx.selected?.[i] ?? null, cz, extra: getters.map(g => g(r)) });
+              if (all.length < DL_CAP) all.push({ fc, id, r, cz });
             }
           }
         }
+        queryAllRef.current = all;
         setResults([]); setQueryCard(null); setQueryRows(rows); setQueryCols(cols); setQueryTotal(total);
         if (total === 0) { setStatus("notfound"); setMatchSummary("No sources match that query."); }
         else {
@@ -816,9 +853,9 @@ export default function SearchPage() {
           </div>
 
           <DownloadControls
-            resolveRows={fetchQueryObjects}
-            count={queryRows.length}
-            note={queryTotal > queryRows.length ? `first ${queryRows.length} of ${queryTotal.toLocaleString()}` : undefined}
+            resolveRows={resolveQueryRows}
+            count={queryTotal}
+            note={queryTotal > queryRows.length ? `full list — all ${queryTotal.toLocaleString()} matches (table shows first ${queryRows.length})` : undefined}
           />
 
           <div style={{ margin: "-0.25rem 0 1rem" }}>
@@ -935,7 +972,8 @@ const DL_COLS: { key: string; label: string; get: (s: SourceResult) => unknown }
   { key: "B_IMAGE",     label: "b_image",     get: s => s.row["B_IMAGE"] },
   { key: "DETECTCAT",   label: "detectcat",   get: s => s.row["DETECTCAT"] },
 ];
-const DL_DEFAULT = new Set(["ID", "RA", "DEC", "ZA", "ZL68", "ZU68", "Z_LOWZ", "m444", "selected", "sample"]);
+// All scalar columns selected by default. (Per-filter flux groups below stay opt-in.)
+const DL_DEFAULT = new Set(DL_COLS.map(c => c.key));
 
 function csvCell(v: unknown): string {
   if (v == null || v === "") return "";
@@ -1062,7 +1100,7 @@ function buildFITS(rows: SourceResult[], keys: Set<string>, groups: FluxGroups):
 }
 
 function DownloadControls({ resolveRows, count, note }: {
-  resolveRows: () => Promise<SourceResult[]>; count: number; note?: string;
+  resolveRows: (needDetail: boolean) => Promise<SourceResult[]>; count: number; note?: string;
 }) {
   const [keys, setKeys] = useState<Set<string>>(new Set(DL_DEFAULT));
   const [groups, setGroups] = useState<FluxGroups>({ kron: false, aper: false, fwhm: false });
@@ -1074,7 +1112,10 @@ function DownloadControls({ resolveRows, count, note }: {
   async function onDownload() {
     setBusy(true);
     try {
-      const rows = await resolveRows();
+      // Per-filter flux columns require real per-object detail; scalar columns come
+      // straight from the retained index (so the full list downloads instantly).
+      const needDetail = groups.kron || groups.aper || groups.fwhm;
+      const rows = await resolveRows(needDetail);
       if (!rows.length) return;
       if (fmt === "fits") downloadBlob(new Blob([buildFITS(rows, keys, groups) as BlobPart], { type: "application/fits" }), `unicorn_search_${rows.length}.fits`);
       else downloadText(buildCSV(rows, keys, groups), `unicorn_search_${rows.length}.csv`);

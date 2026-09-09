@@ -45,7 +45,8 @@ const MAG_BANDS = ["F277W", "F444W", "F090W", "F115W", "F150W", "F200W", "F356W"
 // "Go to" recenter field of view: show a ~5" region around the target. The viewer's
 // zoom is drawing-buffer px per native px, so the zoom that fits GOTO_FOV_ARCSEC across
 // the viewer width W (buffer px) is  W / (fov_arcsec / pixscale).
-const GOTO_FOV_ARCSEC = 5;
+const GOTO_FOV_ARCSEC = 5;       // manual "go to" box
+const DEEPLINK_FOV_ARCSEC = 10;  // map↗ deep-link from search zooms to a ~10"×10" region
 const PIXSCALE_ARCSEC = 0.03;   // 30 mas mosaics — native pixel scale of the fitsgl tiles
 
 // Base URL for a field's fitsgl tiles: the ?data= mirror if set (…/fitsgl/<prefix>),
@@ -115,13 +116,16 @@ export default function MapPage() {
   }, [activeField]);
 
   // "Go to": recenter + zoom on an object ID, or an "ra,dec" (decimal deg) pair.
-  const handleGoto = useCallback((raw: string) => {
+  // Recenter + zoom on an ID or "ra,dec". Returns false ONLY for transient
+  // not-ready conditions (viewer/index/WCS still loading) so a deep-link can retry;
+  // returns true on success or a definitive error (bad input / not found).
+  const handleGoto = useCallback((raw: string, fovArcsec: number = GOTO_FOV_ARCSEC): boolean => {
     const h = handleRef.current;
     const idx = idxRef.current;
     setGotoMsg("");
     const s = raw.trim();
-    if (!s) return;
-    if (!h) { setGotoMsg("viewer not ready"); return; }
+    if (!s) return true;
+    if (!h) { setGotoMsg("viewer not ready"); return false; }   // retry
 
     let ra: number | null = null, dec: number | null = null;
 
@@ -129,41 +133,49 @@ export default function MapPage() {
       // ra,dec (comma or whitespace separated)
       const parts = s.split(/[ ,]+/).map(Number);
       if (parts.length >= 2 && parts.every(Number.isFinite)) { ra = parts[0]; dec = parts[1]; }
-      else { setGotoMsg("couldn't parse ra,dec"); return; }
+      else { setGotoMsg("couldn't parse ra,dec"); return true; }
     } else {
       // Bare integer → object ID; look up its ra/dec in the index.
       const id = Number(s);
-      if (!Number.isInteger(id)) { setGotoMsg("enter an ID or ra,dec"); return; }
-      if (!idx) { setGotoMsg("index not loaded yet"); return; }
+      if (!Number.isInteger(id)) { setGotoMsg("enter an ID or ra,dec"); return true; }
+      if (!idx) { setGotoMsg("index not loaded yet"); return false; }   // retry
       const pos = idx.id.indexOf(id);
-      if (pos < 0) { setGotoMsg(`ID ${id} not found`); return; }
+      if (pos < 0) { setGotoMsg(`ID ${id} not found`); return true; }
       ra = idx.ra[pos]; dec = idx.dec[pos];
     }
 
     if (ra == null || dec == null || !Number.isFinite(ra) || !Number.isFinite(dec)) {
-      setGotoMsg("no position for target"); return;
+      setGotoMsg("no position for target"); return true;
     }
     const wcs = h.getViewer()?.getWcs();
-    if (!wcs) { setGotoMsg("no WCS available"); return; }
+    if (!wcs) { setGotoMsg("viewer not ready"); return false; }   // retry — WCS not up yet
     const px = skyToPix(wcs, ra, dec);
-    if (!Number.isFinite(px.x) || !Number.isFinite(px.y)) { setGotoMsg("target off the projection"); return; }
+    if (!Number.isFinite(px.x) || !Number.isFinite(px.y)) { setGotoMsg("target off the projection"); return true; }
     h.setCenter(px.x, px.y);
-    // Zoom so the target spans ~GOTO_FOV_ARCSEC across the viewer (buffer px per native px).
+    // Zoom so the target spans ~fovArcsec across the viewer (buffer px per native px).
     const cssW = viewerBoxRef.current?.clientWidth ?? (typeof window !== "undefined" ? window.innerWidth : 1000);
     const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
-    const fovNativePx = GOTO_FOV_ARCSEC / PIXSCALE_ARCSEC;   // ~167 px for 5"
+    const fovNativePx = fovArcsec / PIXSCALE_ARCSEC;   // ~333 px for 10"
     h.setZoom((cssW * dpr) / fovNativePx);
     setGotoMsg(`→ ${ra.toFixed(5)}, ${dec.toFixed(5)}`);
+    return true;
   }, []);
 
-  // Deep-link (?id=…): jump to the object once the viewer + index are ready.
+  // Deep-link (?id=…): jump to the object at ~10"×10" once the viewer is ready. The
+  // viewer's WCS can lag the `ready` signal (esp. big fields), so retry until it lands.
   useEffect(() => {
-    if (ready && pendingGotoRef.current) {
+    if (!ready || !pendingGotoRef.current) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
       const g = pendingGotoRef.current;
-      pendingGotoRef.current = null;
-      const t = setTimeout(() => handleGoto(g), 200);
-      return () => clearTimeout(t);
-    }
+      if (!g) return;
+      if (handleGoto(g, DEEPLINK_FOV_ARCSEC)) { pendingGotoRef.current = null; return; }
+      if (++tries < 30) timer = setTimeout(tick, 200);   // up to ~6 s for tiles/WCS
+      else pendingGotoRef.current = null;
+    };
+    timer = setTimeout(tick, 150);
+    return () => clearTimeout(timer);
   }, [ready, handleGoto]);
 
   const panelOpen = panel.kind !== "hidden";
