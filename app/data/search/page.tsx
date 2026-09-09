@@ -165,62 +165,111 @@ function sortMatches(all: MatchEntry[], col: string, dir: "asc" | "desc"): Match
 }
 
 // Parse a WHERE-style expression into a predicate + the raw index columns it needs attached.
-// Numeric fields support > < >= <= = != and `between a and b`; string fields (field, detectcat,
-// tile) support = / !=. Per-filter mag_<f>/snr_<f>/flux_<f> and colors <a>-<b> are numeric.
-// A single connector level (all AND or all OR).
-function makePredicate(query: string): { test: (r: IdxRow) => boolean; need: string[] } | { error: string } {
+// Supports AND/OR with parentheses for grouping (AND binds tighter than OR, standard),
+// e.g.  za > 12 and selected = 1 and (snr_f277w >= 10 or snr_f356w >= 10). Leaf conditions:
+// numeric fields > < >= <= = != and `between a and b`; string fields (field, detectcat, tile)
+// = / !=; `= none` tests a missing value. Per-filter mag_/snr_/flux_ and colors <a>-<b>.
+type Pred = (r: IdxRow) => boolean;
+function makePredicate(query: string): { test: Pred; need: string[] } | { error: string } {
   let q = query.trim().toLowerCase();
   if (!q) return { error: "Type a condition, e.g.  za > 9 and m444 < 28" };
-  // Protect the "and" inside `between a and b` before splitting on the AND/OR
-  // connectors. Use a sentinel with no word chars so \band\b can't match it
-  // (":and:" fails — the colons are non-word, so the boundaries still match).
-  q = q.replace(/between\s+(-?[\d.]+)\s+and\s+(-?[\d.]+)/g, "between $1 \u0001 $2");
-  const connectors: string[] = q.match(/\b(and|or)\b/g) ?? [];
-  const useOr = connectors.includes("or");
-  if (useOr && connectors.includes("and")) return { error: "Mixing AND and OR isn't supported — use one." };
-  const parts = q.split(/\b(?:and|or)\b/).map(s => s.replace(/\u0001/g, "and").trim()).filter(Boolean);
+  // Protect the "and" inside `between a and b` so tokenizing on AND/OR won't split it.
+  // "__and__" has no \band\b boundary (underscores are word chars), so the tokenizer skips it.
+  q = q.replace(/between\s+(-?[\d.]+)\s+and\s+(-?[\d.]+)/g, "between $1 __and__ $2");
 
-  // Field token: a built-in/mag_/snr_/flux_ name, or a color `<filtA>-<filtB>`.
   const FIELD = "([a-z][\\w]*(?:-[a-z0-9]+)?)";
-  const conds: ((r: IdxRow) => boolean)[] = [];
-  for (const part of parts) {
+  // Parse ONE leaf condition -> predicate (or an error).
+  function parseLeaf(raw: string): Pred | { error: string } {
+    const part = raw.replace(/__and__/g, "and").trim();
     let m: RegExpMatchArray | null;
     if ((m = part.match(new RegExp(`^${FIELD}\\s+between\\s+(-?[\\d.]+)\\s+and\\s+(-?[\\d.]+)$`)))) {
       const f = m[1], lo = parseFloat(m[2]), hi = parseFloat(m[3]);
       if (!isKnownField(f)) return { error: `Unknown field "${f}"` };
       if (QUERY_STR.includes(f)) return { error: `"${f}" can't use between (not numeric)` };
       const get = colGetter(f);
-      conds.push(r => { const v = get(r); return typeof v === "number" && v >= lo && v <= hi; });
-    } else if ((m = part.match(new RegExp(`^${FIELD}\\s*(>=|<=|!=|==|=|>|<)\\s*(.+)$`)))) {
+      return r => { const v = get(r); return typeof v === "number" && v >= lo && v <= hi; };
+    }
+    if ((m = part.match(new RegExp(`^${FIELD}\\s*(>=|<=|!=|==|=|>|<)\\s*(.+)$`)))) {
       const f = m[1], op = m[2], valraw = m[3].trim().replace(/^['"]|['"]$/g, "");
       if (!isKnownField(f)) return { error: `Unknown field "${f}"` };
       if (QUERY_STR.includes(f)) {
         if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != on "${f}"` };
-        conds.push(r => { const v = r[f]; if (v == null) return false; const eq = String(v).toLowerCase() === valraw; return op === "!=" ? !eq : eq; });
-      } else if (valraw === "none" || valraw === "null") {
-        // Missing-value test, e.g. `czspec = none` (no campfire spec-z / not spectroscopically observed).
+        return r => { const v = r[f]; if (v == null) return false; const eq = String(v).toLowerCase() === valraw; return op === "!=" ? !eq : eq; };
+      }
+      if (valraw === "none" || valraw === "null") {   // missing-value test, e.g. czspec = none
         if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != with "none"` };
         const get = colGetter(f);
-        conds.push(r => { const v = get(r); const missing = v == null || (typeof v === "number" && !Number.isFinite(v)); return op === "!=" ? !missing : missing; });
-      } else {
-        const x = parseFloat(valraw);
-        if (!Number.isFinite(x)) return { error: `"${valraw}" is not a number` };
-        const get = colGetter(f);
-        conds.push(r => {
-          const v = get(r);
-          if (typeof v !== "number" || !Number.isFinite(v)) return false;
-          switch (op) {
-            case ">": return v > x; case "<": return v < x;
-            case ">=": return v >= x; case "<=": return v <= x;
-            case "!=": return v !== x; default: return v === x;
-          }
-        });
+        return r => { const v = get(r); const missing = v == null || (typeof v === "number" && !Number.isFinite(v)); return op === "!=" ? !missing : missing; };
       }
-    } else {
-      return { error: `Could not parse "${part}". Try  field op value  (e.g. za > 9).` };
+      const x = parseFloat(valraw);
+      if (!Number.isFinite(x)) return { error: `"${valraw}" is not a number` };
+      const get = colGetter(f);
+      return r => {
+        const v = get(r);
+        if (typeof v !== "number" || !Number.isFinite(v)) return false;
+        switch (op) {
+          case ">": return v > x; case "<": return v < x;
+          case ">=": return v >= x; case "<=": return v <= x;
+          case "!=": return v !== x; default: return v === x;
+        }
+      };
     }
+    return { error: `Could not parse "${part}". Try  field op value  (e.g. za > 9).` };
   }
-  return { test: (r: IdxRow) => useOr ? conds.some(c => c(r)) : conds.every(c => c(r)), need: neededIndexCols(query) };
+
+  // Tokenize into ( ) and or, plus condition strings between them.
+  type Tok = { t: "(" | ")" | "and" | "or" } | { t: "cond"; v: string };
+  const toks: Tok[] = [];
+  const re = /(\()|(\))|\b(and)\b|\b(or)\b/g;
+  let last = 0, mm: RegExpExecArray | null;
+  while ((mm = re.exec(q)) !== null) {
+    const c = q.slice(last, mm.index).trim();
+    if (c) toks.push({ t: "cond", v: c });
+    toks.push({ t: (mm[1] ? "(" : mm[2] ? ")" : mm[3] ? "and" : "or") } as Tok);
+    last = re.lastIndex;
+  }
+  const tail = q.slice(last).trim();
+  if (tail) toks.push({ t: "cond", v: tail });
+
+  // Recursive descent:  or := and (or and)* ;  and := factor (and factor)* ;  factor := ( or ) | cond
+  let pos = 0, parseErr: string | null = null;
+  const peek = () => toks[pos];
+  function parseOr(): Pred | null {
+    const first = parseAnd(); if (!first) return null;
+    let node: Pred = first;
+    while (peek()?.t === "or") { pos++; const rhs = parseAnd(); if (!rhs) return null; const l: Pred = node; node = r => l(r) || rhs(r); }
+    return node;
+  }
+  function parseAnd(): Pred | null {
+    const first = parseFactor(); if (!first) return null;
+    let node: Pred = first;
+    while (peek()?.t === "and") { pos++; const rhs = parseFactor(); if (!rhs) return null; const l: Pred = node; node = r => l(r) && rhs(r); }
+    return node;
+  }
+  function parseFactor(): Pred | null {
+    const tk = peek();
+    if (!tk) { parseErr = "Unexpected end of query."; return null; }
+    if (tk.t === "(") {
+      pos++;
+      const inner = parseOr(); if (!inner) return null;
+      if (peek()?.t !== ")") { parseErr = "Missing ')'."; return null; }
+      pos++;
+      return inner;
+    }
+    if (tk.t === "cond") {
+      pos++;
+      const leaf = parseLeaf(tk.v);
+      if (typeof leaf !== "function") { parseErr = leaf.error; return null; }
+      return leaf;
+    }
+    parseErr = `Unexpected "${tk.t}".`;
+    return null;
+  }
+
+  const tree = parseOr();
+  if (!tree) return { error: parseErr ?? "Could not parse the query." };
+  if (pos !== toks.length) return { error: "Unbalanced parentheses in the query." };
+  return { test: tree, need: neededIndexCols(query) };
 }
 
 // Rasterize a live on-page <svg> (with CSS-variable colors resolved via getComputedStyle)
