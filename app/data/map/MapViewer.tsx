@@ -32,6 +32,7 @@ import {
   type ViewerConfig,
   type TrilogyParams,
   type TrilogyStats,
+  type StretchMode,
 } from "@fitsgl/core";
 import {
   loadField,
@@ -71,14 +72,31 @@ type Knob = {
   min: number;
   max: number;
   step: number;
-  log?: boolean; // slider position is log10-spaced across [min,max]
+  log?: boolean;        // slider position is log10-spaced across [min,max]
+  trilogyOnly?: boolean; // only shapes the trilogy curve (ignored by linear/log/sqrt/asinh)
 };
+// The trilogy params set each band's normalization interval [x0,x2] (black/white points)
+// via applyTrilogy — the multiband shader then applies the SELECTED transfer curve
+// (u_stretchMode) over that interval. So noisesig/satpercent/noisesig0 shape the levels
+// for EVERY mode; noiselum only solves the trilogy softening K, so it is trilogy-only.
 const SCALING_KNOBS: Knob[] = [
-  { key: "noiselum", label: "Noise floor", hint: "brightness of the sky/noise", min: 0, max: 0.4, step: 0.005 },
+  { key: "noiselum", label: "Noise floor", hint: "brightness of the sky/noise (trilogy)", min: 0, max: 0.4, step: 0.005, trilogyOnly: true },
   { key: "noisesig", label: "Contrast", hint: "noise anchor · mean + n·σ", min: 0.5, max: 4, step: 0.05 },
   { key: "satpercent", label: "White point", hint: "% pixels saturated", min: 0.001, max: 1, step: 0.001, log: true },
   { key: "noisesig0", label: "Black point", hint: "sky floor · mean − n·σ", min: 1, max: 3, step: 0.05 },
 ];
+
+// Every transfer curve @fitsgl/core supports (StretchMode). trilogy is the campfire
+// default; the others reuse the same per-band black/white points and just swap the curve
+// applied on top (u_stretchMode) — no tile rescan, no camera move.
+const STRETCH_MODE_OPTS: { mode: StretchMode; label: string; hint: string }[] = [
+  { mode: "trilogy", label: "Trilogy", hint: "Coe faithful log (campfire default)" },
+  { mode: "log",     label: "Log",     hint: "astropy LogStretch (a=1000)" },
+  { mode: "asinh",   label: "Asinh",   hint: "astropy AsinhStretch (a=0.1)" },
+  { mode: "sqrt",    label: "Sqrt",    hint: "square-root" },
+  { mode: "linear",  label: "Linear",  hint: "identity" },
+];
+const DEFAULT_STRETCH_MODE: StretchMode = "trilogy";
 
 // Cap on drawn overlay glyphs per frame — the viewport cull keeps only what's visible,
 // and this bounds the SVG node count so pan/zoom stays smooth even zoomed all the way
@@ -191,6 +209,9 @@ export default function MapViewer({
   // panel mutates these and each change re-derives the stretch on the existing viewer
   // via applyTrilogy — no camera move, no overlay rebuild.
   const [trilogy, setTrilogy] = useState<TrilogyParams>(CAMPFIRE_TRILOGY);
+  // Selected transfer curve. trilogy is the default; the panel can switch to any mode
+  // @fitsgl/core supports (log/asinh/sqrt/linear), applied over the same per-band levels.
+  const [stretchMode, setStretchMode] = useState<StretchMode>(DEFAULT_STRETCH_MODE);
   const [panelOpen, setPanelOpen] = useState(true);
 
   const clickRef = useRef(onSourceClick);
@@ -259,20 +280,29 @@ export default function MapViewer({
   // updates the transfer curve — it does NOT touch the camera or the SVG overlay, so the
   // Kron ellipses and the current pan/zoom are preserved. No-ops until the viewer's
   // source mode has settled (else applyTrilogy would run against the wrong band set).
-  const applyScaling = useCallback((params: TrilogyParams) => {
+  const applyScaling = useCallback((params: TrilogyParams, mode: StretchMode) => {
     const h = handleRef.current;
     const viewer = h?.getViewer();
     const { stats, single } = statsRef.current;
     if (!viewer || !stats) return;
     const expectedMode = single ? "single" : "multiband";
     if (viewer.sourceMode !== expectedMode) return;
+    // applyTrilogy sets each band's black/white points (x0/x2) from the params; the
+    // selected curve is then applied over that interval by the shader. For any non-
+    // trilogy curve we still call applyTrilogy to establish the levels, then override
+    // the transfer function with setStretchMode(mode).
     viewer.applyTrilogy(single ? stats[0] : stats, params);
-    viewer.setStretchMode("trilogy");
+    viewer.setStretchMode(mode);
   }, []);
 
-  // Apply live whenever the panel params change (viewer already up). The onReady/onFrame
-  // paths cover the pre-mode-settled window; this covers subsequent slider drags.
-  useEffect(() => { applyScaling(trilogy); }, [trilogy, applyScaling]);
+  // Apply live whenever the panel params OR the selected mode change (viewer already up).
+  // The onReady/onFrame paths cover the pre-mode-settled window; this covers panel edits.
+  useEffect(() => { applyScaling(trilogy, stretchMode); }, [trilogy, stretchMode, applyScaling]);
+
+  // Latest scaling, read by the post-ready poke loop so it can (re)apply the stretch as
+  // the viewer's source mode settles even if no panel edit fires the effect above.
+  const scalingRef = useRef({ trilogy, stretchMode });
+  scalingRef.current = { trilogy, stretchMode };
 
   // Load our search index (positions, selected, za, geometry) once.
   useEffect(() => {
@@ -431,12 +461,13 @@ export default function MapViewer({
     let tries = 0;
     const tick = () => {
       enforceCamera();
+      applyScaling(scalingRef.current.trilogy, scalingRef.current.stretchMode);
       project();
       tries += 1;
       if (tries < 12) setTimeout(tick, 250);
     };
     requestAnimationFrame(tick);
-  }, [project, enforceCamera]);
+  }, [project, enforceCamera, applyScaling]);
 
   const onReady = useCallback((h: FitsViewerHandle) => {
     handleRef.current = h;
@@ -524,10 +555,12 @@ export default function MapViewer({
           the trilogy stretch live via applyScaling (through the viewer handle). */}
       <ScalingPanel
         params={trilogy}
+        mode={stretchMode}
         open={panelOpen}
         onToggle={() => setPanelOpen(o => !o)}
         onChange={patch => setTrilogy(p => ({ ...p, ...patch }))}
-        onReset={() => setTrilogy(CAMPFIRE_TRILOGY)}
+        onModeChange={setStretchMode}
+        onReset={() => { setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE); }}
       />
     </div>
   );
@@ -542,15 +575,21 @@ export default function MapViewer({
 // Knobs plus the RGB weight matrix / colormap / band rail — none of which the map needs,
 // since the map's bands, weights and colormap are fixed).
 function ScalingPanel({
-  params, open, onToggle, onChange, onReset,
+  params, mode, open, onToggle, onChange, onModeChange, onReset,
 }: {
   params: TrilogyParams;
+  mode: StretchMode;
   open: boolean;
   onToggle: () => void;
   onChange: (patch: Partial<TrilogyParams>) => void;
+  onModeChange: (mode: StretchMode) => void;
   onReset: () => void;
 }) {
-  const isDefault = SCALING_KNOBS.every(k => params[k.key] === CAMPFIRE_TRILOGY[k.key]);
+  const isDefault =
+    mode === DEFAULT_STRETCH_MODE &&
+    SCALING_KNOBS.every(k => params[k.key] === CAMPFIRE_TRILOGY[k.key]);
+  // noiselum only shapes the trilogy curve; hide it for the other transfer functions.
+  const knobs = SCALING_KNOBS.filter(k => !k.trilogyOnly || mode === "trilogy");
   return (
     <div
       style={{
@@ -578,7 +617,27 @@ function ScalingPanel({
 
       {open && (
         <div style={{ padding: "2px 12px 12px" }}>
-          {SCALING_KNOBS.map(k => {
+          {/* Transfer-curve (stretch-mode) selector. */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: "0.68rem", color: "var(--text)", fontWeight: 600, marginBottom: 3 }}>Stretch</div>
+            <select
+              aria-label="Stretch mode"
+              value={mode}
+              onChange={e => onModeChange(e.target.value as StretchMode)}
+              className="mono"
+              style={{
+                width: "100%", background: "var(--bg)", border: "1px solid var(--border-bright)",
+                borderRadius: 5, color: "var(--accent)", fontSize: "0.7rem", padding: "5px 7px", cursor: "pointer",
+              }}
+            >
+              {STRETCH_MODE_OPTS.map(o => <option key={o.mode} value={o.mode}>{o.label}</option>)}
+            </select>
+            <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 2 }}>
+              {STRETCH_MODE_OPTS.find(o => o.mode === mode)?.hint}
+            </div>
+          </div>
+
+          {knobs.map(k => {
             const val = params[k.key];
             // For a log slider, map the value to a 0..1000 position over [log(min),log(max)].
             const toPos = (v: number) =>
