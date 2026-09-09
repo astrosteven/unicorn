@@ -27,6 +27,7 @@ import {
 import {
   loadFitsglConfig,
   skyToPix,
+  pixToSky,
   DEFAULT_TRILOGY_PARAMS,
   type FitsglConfig,
   type ViewerConfig,
@@ -132,6 +133,88 @@ function niceScaleBar(arcsecPerCssPx: number): { px: number; label: string } | n
   return { px, label };
 }
 
+// ---- NIRSpec aperture geometry ---------------------------------------------
+// NIRSpec MSA micro-shutter: ~0.20" (dispersion) × 0.46" (spatial), with ~0.07" opaque
+// bars between adjacent shutters. A 3-shutter slitlet stacks 3 along the SPATIAL axis:
+// spatial extent = 3×0.46 + 2×0.07 = 1.52" (each open shutter drawn separately so the
+// bars read as gaps). NIRSpec IFU aperture is a 3"×3" square.
+const MSA_SHUTTER_DISP = 0.20;   // arcsec, dispersion (short) axis
+const MSA_SHUTTER_SPAT = 0.46;   // arcsec, spatial (long) axis of one shutter
+const MSA_BAR = 0.07;            // arcsec, opaque bar between shutters
+const IFU_SIDE = 3.0;            // arcsec, NIRSpec IFU field of view (3"×3")
+
+// Screen-space aperture frame at a centre point. `disp`/`spat` are the on-screen vectors
+// (CSS px) of a +1" step along the dispersion and spatial axes respectively — already
+// carrying the arcsec→px scale, the PA rotation, and the WCS orientation (North-up/flip).
+type ApFrame = { cx: number; cy: number; disp: { x: number; y: number }; spat: { x: number; y: number } };
+
+// Build the aperture screen frame. PA is east-of-north, and orients the SPATIAL (long)
+// axis of the aperture — i.e. the slitlet's long axis / the IFU's +y side points along PA.
+// The dispersion axis is 90° clockwise-on-sky from spatial. The North (n̂) and East (ê)
+// screen unit-vectors are derived empirically from the WCS via pixToSky/skyToPix so the
+// overlay tracks the real sky orientation under North-up and any parity flip; if no WCS is
+// available we fall back to screen-up=North, screen-right=East (PA still applies).
+function apertureFrame(
+  h: FitsViewerHandle,
+  centerWorld: { x: number; y: number },
+  centerScreen: { x: number; y: number },
+  arcsecPerCssPx: number,
+  paDeg: number,
+): ApFrame | null {
+  if (!(arcsecPerCssPx > 0)) return null;
+  const wcs = h.getViewer()?.getWcs();
+  // Screen unit vectors for North (+Dec) and East (+RA).
+  let nHat = { x: 0, y: -1 };  // default: north = screen up
+  let eHat = { x: -1, y: 0 };  // default: east = screen left (E-left, standard)
+  if (wcs) {
+    const sky = pixToSky(wcs, centerWorld.x, centerWorld.y);
+    const dDeg = 1 / 3600; // 1" step
+    const north = skyToPix(wcs, sky.ra, sky.dec + dDeg);
+    const east = skyToPix(wcs, sky.ra + dDeg / Math.cos((sky.dec * Math.PI) / 180), sky.dec);
+    const pN = h.imageToScreen(north.x, north.y);
+    const pE = h.imageToScreen(east.x, east.y);
+    if (pN && pE) {
+      const nv = { x: pN.x - centerScreen.x, y: pN.y - centerScreen.y };
+      const ev = { x: pE.x - centerScreen.x, y: pE.y - centerScreen.y };
+      const nMag = Math.hypot(nv.x, nv.y), eMag = Math.hypot(ev.x, ev.y);
+      if (nMag > 0 && eMag > 0) {
+        nHat = { x: nv.x / nMag, y: nv.y / nMag };
+        eHat = { x: ev.x / eMag, y: ev.y / eMag };
+      }
+    }
+  }
+  // Spatial axis points along PA (east-of-north): cos·N + sin·E.
+  const pa = (paDeg * Math.PI) / 180;
+  const cs = Math.cos(pa), sn = Math.sin(pa);
+  const spatHat = { x: cs * nHat.x + sn * eHat.x, y: cs * nHat.y + sn * eHat.y };
+  // Dispersion axis: PA+90° east-of-north (rotate the spatial dir 90° toward east).
+  const dispHat = { x: -sn * nHat.x + cs * eHat.x, y: -sn * nHat.y + cs * eHat.y };
+  const perArcsecPx = 1 / arcsecPerCssPx;
+  return {
+    cx: centerScreen.x, cy: centerScreen.y,
+    spat: { x: spatHat.x * perArcsecPx, y: spatHat.y * perArcsecPx },
+    disp: { x: dispHat.x * perArcsecPx, y: dispHat.y * perArcsecPx },
+  };
+}
+
+// Map an aperture-frame point (dArcsec along dispersion, sArcsec along spatial) to a
+// screen "x,y" string for an SVG polygon.
+function apPt(f: ApFrame, dArcsec: number, sArcsec: number): string {
+  const x = f.cx + f.disp.x * dArcsec + f.spat.x * sArcsec;
+  const y = f.cy + f.disp.y * dArcsec + f.spat.y * sArcsec;
+  return `${x.toFixed(1)},${y.toFixed(1)}`;
+}
+
+// One rectangle (2·halfDisp × 2·halfSpat about a spatial offset), as a 4-point polygon.
+function apRect(f: ApFrame, halfDisp: number, sCenter: number, halfSpat: number): string {
+  return [
+    apPt(f, -halfDisp, sCenter - halfSpat),
+    apPt(f, halfDisp, sCenter - halfSpat),
+    apPt(f, halfDisp, sCenter + halfSpat),
+    apPt(f, -halfDisp, sCenter + halfSpat),
+  ].join(" ");
+}
+
 // ---- Filter model ----------------------------------------------------------
 export type MapFilters = {
   selectedOnly: boolean;
@@ -230,6 +313,14 @@ export default function MapViewer({
   // Adaptive scale bar (bottom-left): pixel length on screen + its human label. Recomputed
   // every frame from the live zoom; null until the first projection has a camera.
   const [scaleBar, setScaleBar] = useState<{ px: number; label: string } | null>(null);
+  // NIRSpec aperture overlays (MSA 3-shutter slitlet + IFU). Toggles + a shared PA (deg,
+  // east-of-north). Optionally pinned to a fixed sky position; null = follow view centre.
+  const [msaOn, setMsaOn] = useState(false);
+  const [ifuOn, setIfuOn] = useState(false);
+  const [paDeg, setPaDeg] = useState(0);
+  const [apertureSky, setApertureSky] = useState<{ ra: number; dec: number } | null>(null);
+  // Screen-space polygons for the active apertures, recomputed each frame in project().
+  const [apertures, setApertures] = useState<{ msa: string[]; ifu: string | null }>({ msa: [], ifu: null });
   // Live trilogy scaling params driven by the SCALING panel. Starts at CAMPFIRE; the
   // panel mutates these and each change re-derives the stretch on the existing viewer
   // via applyTrilogy — no camera move, no overlay rebuild.
@@ -309,6 +400,9 @@ export default function MapViewer({
   // In a ref too, so the stable per-frame `project` reads it without re-subscribing.
   const pixelScaleRef = useRef(pixelScale);
   pixelScaleRef.current = pixelScale;
+  // Aperture-overlay settings, in a ref for the same reason (project runs per frame).
+  const apRef = useRef({ msaOn, ifuOn, paDeg, apertureSky });
+  apRef.current = { msaOn, ifuOn, paDeg, apertureSky };
 
   // Re-derive + apply the trilogy stretch on the LIVE viewer from the given params. This
   // is the exact FitsExplorer path (applyTrilogy + setStretchMode("trilogy")): it only
@@ -400,18 +494,50 @@ export default function MapViewer({
     const list = sourcesRef.current;
     const asDot = zoom < DOT_ZOOM;
 
-    // Adaptive scale bar: measure CSS px per native px empirically from imageToScreen over
-    // a 100-native-px span at the view centre (robust to DPR + North-up rotation), then
-    // arcsec/CSS-px = pixelScale / (cssPxPerNativePx). Snap to a nice round angular length.
+    // Adaptive scale bar + NIRSpec apertures both need CSS px per native px: measure it
+    // empirically from imageToScreen over a 100-native-px span at the view centre (robust
+    // to DPR + North-up rotation). arcsec/CSS-px = pixelScale / (cssPxPerNativePx).
     {
       const a = h.imageToScreen(cam.centerX, cam.centerY);
       const b = h.imageToScreen(cam.centerX + 100, cam.centerY);
+      let arcsecPerCssPx = 0;
       if (a && b) {
         const cssPxPer100 = Math.hypot(b.x - a.x, b.y - a.y);
         if (cssPxPer100 > 0) {
-          const arcsecPerCssPx = (pixelScaleRef.current * 100) / cssPxPer100;
+          arcsecPerCssPx = (pixelScaleRef.current * 100) / cssPxPer100;
           setScaleBar(niceScaleBar(arcsecPerCssPx));
         }
+      }
+
+      // NIRSpec aperture overlays. Centre on a pinned sky position if set, else the view
+      // centre. Build the screen frame (arcsec→px + PA + WCS orientation), then the MSA
+      // 3-shutter slitlet (3 open shutters along the spatial axis, ~0.07" bars between)
+      // and/or the 3"×3" IFU square. All in arcsec, so they scale with zoom.
+      const ap = apRef.current;
+      if ((ap.msaOn || ap.ifuOn) && arcsecPerCssPx > 0) {
+        let cw = { x: cam.centerX, y: cam.centerY };
+        if (ap.apertureSky) {
+          const wcs = h.getViewer()?.getWcs();
+          if (wcs) {
+            const p = skyToPix(wcs, ap.apertureSky.ra, ap.apertureSky.dec);
+            if (Number.isFinite(p.x) && Number.isFinite(p.y)) cw = { x: p.x, y: p.y };
+          }
+        }
+        const cs = h.imageToScreen(cw.x, cw.y);
+        const frame = cs ? apertureFrame(h, cw, cs, arcsecPerCssPx, ap.paDeg) : null;
+        if (frame) {
+          const hd = MSA_SHUTTER_DISP / 2, hs = MSA_SHUTTER_SPAT / 2;
+          const pitch = MSA_SHUTTER_SPAT + MSA_BAR;   // shutter-to-shutter spacing
+          const msa = ap.msaOn
+            ? [-1, 0, 1].map(k => apRect(frame, hd, k * pitch, hs))
+            : [];
+          const ifu = ap.ifuOn ? apRect(frame, IFU_SIDE / 2, 0, IFU_SIDE / 2) : null;
+          setApertures({ msa, ifu });
+        } else {
+          setApertures({ msa: [], ifu: null });
+        }
+      } else {
+        setApertures({ msa: [], ifu: null });
       }
     }
 
@@ -477,6 +603,10 @@ export default function MapViewer({
     }
     setGlyphs(out);
   }, []);
+
+  // Re-project when aperture settings change — toggling/PA don't move the camera, so
+  // onFrame won't fire; poke project directly so the overlay updates immediately.
+  useEffect(() => { project(); }, [msaOn, ifuOn, paDeg, apertureSky, project]);
 
   // Re-assert a pending camera target (set by the page's deep-link / "go to") until the
   // viewer actually holds it. The viewer auto-fits the whole mosaic at construction and
@@ -601,6 +731,23 @@ export default function MapViewer({
         })}
       </svg>
 
+      {/* NIRSpec aperture overlays — MSA 3-shutter slitlet (cyan) + IFU 3"×3" (magenta),
+          centred on the view (or pinned sky pos), rotated by PA. Non-interactive. */}
+      {(apertures.msa.length > 0 || apertures.ifu) && (
+        <svg
+          data-overlay="apertures"
+          width="100%" height="100%"
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
+        >
+          {apertures.ifu && (
+            <polygon points={apertures.ifu} fill="rgba(224,120,224,0.08)" stroke="#e078e0" strokeWidth={1.6} />
+          )}
+          {apertures.msa.map((pts, k) => (
+            <polygon key={k} points={pts} fill="rgba(94,224,224,0.12)" stroke="#5ee0e0" strokeWidth={1.4} />
+          ))}
+        </svg>
+      )}
+
       {/* Adaptive scale bar — bottom-left. Length + label recomputed every frame from the
           live zoom, snapped to a nice round arcsec/arcmin value. */}
       {scaleBar && (
@@ -633,16 +780,37 @@ export default function MapViewer({
       )}
 
       {/* SCALING panel — top-right, where FitsExplorer's View panel used to sit. Drives
-          the trilogy stretch live via applyScaling (through the viewer handle). */}
-      <ScalingPanel
-        params={trilogy}
-        mode={stretchMode}
-        open={panelOpen}
-        onToggle={() => setPanelOpen(o => !o)}
-        onChange={patch => setTrilogy(p => ({ ...p, ...patch }))}
-        onModeChange={setStretchMode}
-        onReset={() => { setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE); }}
-      />
+          the trilogy stretch live via applyScaling (through the viewer handle). Stacked
+          with the NIRSpec aperture panel in one top-right column so they never overlap. */}
+      <div style={{ position: "absolute", top: 12, right: 12, zIndex: 15, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end" }}>
+        <ScalingPanel
+          params={trilogy}
+          mode={stretchMode}
+          open={panelOpen}
+          onToggle={() => setPanelOpen(o => !o)}
+          onChange={patch => setTrilogy(p => ({ ...p, ...patch }))}
+          onModeChange={setStretchMode}
+          onReset={() => { setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE); }}
+        />
+        <AperturePanel
+          msaOn={msaOn} ifuOn={ifuOn} paDeg={paDeg} pinned={apertureSky != null}
+          onMsa={setMsaOn} onIfu={setIfuOn} onPa={setPaDeg}
+          onTogglePin={() => {
+            setApertureSky(prev => {
+              if (prev) return null;   // unpin → follow view centre
+              // Pin to the CURRENT view centre's sky position.
+              const h = handleRef.current;
+              const cam = h?.getCameraState();
+              const wcs = h?.getViewer()?.getWcs();
+              if (cam && wcs) {
+                const s = pixToSky(wcs, cam.centerX, cam.centerY);
+                if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) return { ra: s.ra, dec: s.dec };
+              }
+              return prev;
+            });
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -674,7 +842,6 @@ function ScalingPanel({
   return (
     <div
       style={{
-        position: "absolute", top: 12, right: 12, zIndex: 15,
         width: open ? 224 : undefined,
         background: "rgba(13,10,26,0.86)", backdropFilter: "blur(6px)",
         border: "1px solid var(--border-bright)", borderRadius: 8,
@@ -760,6 +927,104 @@ function ScalingPanel({
             }}
           >
             Reset to default
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- NIRSpec aperture control panel ----------------------------------------
+// Compact panel pinned under the SCALING panel (top-right). Toggles the MSA 3-shutter
+// slitlet and the IFU 3"×3" overlays, a shared PA input (degrees, east-of-north, orients
+// the slitlet long axis), and a pin that fixes the aperture at the current view centre's
+// sky position (so panning no longer drags it) vs following the view centre.
+function AperturePanel({
+  msaOn, ifuOn, paDeg, pinned, onMsa, onIfu, onPa, onTogglePin,
+}: {
+  msaOn: boolean;
+  ifuOn: boolean;
+  paDeg: number;
+  pinned: boolean;
+  onMsa: (v: boolean) => void;
+  onIfu: (v: boolean) => void;
+  onPa: (v: number) => void;
+  onTogglePin: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const anyOn = msaOn || ifuOn;
+  const row: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 9 };
+  return (
+    <div
+      style={{
+        width: open ? 224 : undefined,
+        background: "rgba(13,10,26,0.86)", backdropFilter: "blur(6px)",
+        border: "1px solid var(--border-bright)", borderRadius: 8,
+        boxShadow: "0 6px 24px rgba(0,0,0,0.4)", overflow: "hidden",
+      }}
+    >
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="mono"
+        aria-expanded={open}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, width: "100%",
+          background: "none", border: "none", cursor: "pointer",
+          color: anyOn ? "#5ee0e0" : "var(--accent)", fontSize: "0.72rem", letterSpacing: "0.08em",
+          padding: "9px 11px",
+        }}
+      >
+        <span style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s", display: "inline-block", fontSize: "0.7rem" }}>▸</span>
+        NIRSPEC{anyOn ? " ●" : ""}
+      </button>
+
+      {open && (
+        <div style={{ padding: "2px 12px 12px" }}>
+          <label style={row}>
+            <input type="checkbox" checked={msaOn} onChange={e => onMsa(e.target.checked)}
+              style={{ accentColor: "#5ee0e0", width: 15, height: 15 }} />
+            <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>MSA 3-shutter slitlet</span>
+          </label>
+          <label style={row}>
+            <input type="checkbox" checked={ifuOn} onChange={e => onIfu(e.target.checked)}
+              style={{ accentColor: "#e078e0", width: 15, height: 15 }} />
+            <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>IFU (3″×3″)</span>
+          </label>
+
+          <div style={{ marginBottom: 9 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
+              <span style={{ fontSize: "0.68rem", color: "var(--text)", fontWeight: 600 }}>PA (deg)</span>
+              <span className="mono" style={{ fontSize: "0.68rem", color: "var(--accent)" }}>{paDeg.toFixed(0)}°</span>
+            </div>
+            <input
+              type="range" aria-label="Position angle" min={0} max={360} step={1}
+              value={((paDeg % 360) + 360) % 360}
+              onChange={e => onPa(Number(e.target.value))}
+              style={{ width: "100%", accentColor: "var(--accent)", cursor: "pointer", height: 4 }}
+            />
+            <input
+              type="number" aria-label="Position angle degrees" value={paDeg}
+              onChange={e => onPa(Number(e.target.value))}
+              style={{
+                width: "100%", marginTop: 5, background: "var(--bg)",
+                border: "1px solid var(--border-bright)", borderRadius: 5, color: "var(--text)",
+                fontFamily: "'Space Mono', monospace", fontSize: "0.72rem", padding: "4px 7px",
+              }}
+            />
+            <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 2 }}>east of north · orients the slit long axis</div>
+          </div>
+
+          <button
+            onClick={onTogglePin}
+            className="mono"
+            style={{
+              width: "100%", background: pinned ? "var(--accent-dim)" : "none",
+              border: "1px solid var(--border-bright)", borderRadius: 5,
+              color: pinned ? "var(--accent)" : "var(--text-muted)", cursor: "pointer",
+              fontSize: "0.68rem", padding: "6px 10px",
+            }}
+          >
+            {pinned ? "Pinned · click to follow view" : "Pin to view centre"}
           </button>
         </div>
       )}
