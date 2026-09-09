@@ -12,6 +12,7 @@ import dynamic from "next/dynamic";
 import {
   SEARCH_FIELDS,
   loadField,
+  loadSpecz,
   fetchObject,
   ResultCard,
   type FieldConfig,
@@ -156,6 +157,23 @@ export default function MapPage() {
   // Whether the CURRENT field has any queued objects (drives the banner + auto-fit).
   const queuedHereRef = useRef<Set<number> | null>(null);
   queuedHereRef.current = queueIdsForField(mapQueueRef.current, activeField.field);
+
+  // Campfire spec-z ids for the active field: ellipses with a spec-z draw green. Loaded
+  // from the same per-field sidecar the cards use (cached); null until it lands / if absent.
+  const [zspecIds, setZspecIds] = useState<Set<number> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setZspecIds(null);
+    loadSpecz(activeField)
+      .then(map => {
+        if (cancelled) return;
+        const ids = new Set<number>();
+        for (const k in map) if (map[k]?.z != null) ids.add(Number(k));
+        setZspecIds(ids.size ? ids : null);
+      })
+      .catch(() => { if (!cancelled) setZspecIds(null); });
+    return () => { cancelled = true; };
+  }, [activeField]);
 
   const configUrl = useMemo(() => `${tileBase(activeField)}/fitsgl.json`, [activeField]);
   const pendingGotoRef = useRef<string | null>(initialGotoId());
@@ -353,8 +371,11 @@ export default function MapPage() {
               </select>
             </div>
             <p style={{ color: "var(--text-muted)", fontSize: "0.82rem" }}>
-              Interactive NIRCam color map. Pan and zoom the mosaic; click a source (green = selected,
-              yellow = not) to open its SED and P(z). Filter at left; jump to a source at right.
+              Interactive NIRCam color map. Pan and zoom the mosaic; click a source
+              (<span style={{ color: "#43d17a" }}>green = spec-z</span>,{" "}
+              <span style={{ color: "#f2d43a" }}>yellow = selected</span>,{" "}
+              <span style={{ color: "#e0503a" }}>red = not selected</span>) to open its SED and P(z).
+              Filter at left; jump to a source at right.
             </p>
           </div>
           <GotoBox onGo={handleGoto} msg={gotoMsg} />
@@ -405,6 +426,7 @@ export default function MapPage() {
             configUrl={configUrl}
             filters={filters}
             queuedIds={queuedIds}
+            zspecIds={zspecIds}
             onSourceClick={openSource}
             onCount={setShown}
             onReadyHandle={onReadyHandle}
@@ -578,10 +600,14 @@ function FilterSidebar({
       <div style={{ marginTop: "1.4rem", fontSize: "0.72rem", color: "var(--text-muted)", lineHeight: 1.9 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
           <span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #43d17a", display: "inline-block" }} />
-          selected
+          spec-z
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
           <span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #f2d43a", display: "inline-block" }} />
+          selected
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+          <span style={{ width: "11px", height: "11px", borderRadius: "50%", border: "2px solid #e0503a", display: "inline-block" }} />
           not selected
         </div>
         {shown != null && (

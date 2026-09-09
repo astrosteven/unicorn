@@ -45,9 +45,11 @@ import {
 
 type LoadState = "loading" | "ready" | "error";
 
-// Overlay colors: selected sources green, everything else yellow.
-const GREEN = "#43d17a";
-const YELLOW = "#f2d43a";
+// Overlay colors (priority): a campfire spec-z → green; else selected → yellow;
+// else not selected → red.
+const GREEN = "#43d17a";   // has a campfire spec-z
+const YELLOW = "#f2d43a";  // selected (no spec-z)
+const RED = "#e0503a";     // not selected
 
 // Default trilogy scaling — the CAMPFIRE values (campfire.hollisakins.com) the map
 // ships with; the scaling panel starts here and "Reset to default" returns here. Same
@@ -103,6 +105,10 @@ const DEFAULT_STRETCH_MODE: StretchMode = "trilogy";
 // and this bounds the SVG node count so pan/zoom stays smooth even zoomed all the way
 // out over the whole 174k-source mosaic.
 const MAX_GLYPHS = 4000;
+// When the filtered/queued list is at most this many, bypass the viewport cull and draw
+// every source every frame — small sets shouldn't flicker in/out at the window edge while
+// zooming. Comfortably under MAX_GLYPHS so the stride never kicks in for a "show all" set.
+const SHOW_ALL_MAX = 500;
 // Ellipse polygon resolution (vertices). 16 is smooth on-screen and cheap.
 const ELLIPSE_SEGMENTS = 16;
 // Below this many drawing-buffer px per world px, draw a small dot instead of a Kron
@@ -311,7 +317,7 @@ function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters): Src[] {
 
 // One drawable glyph in SCREEN space, produced by projecting a source through the
 // viewer's imageToScreen for the current frame.
-type Glyph = { id: number; sel: boolean; poly?: string; cx?: number; cy?: number; r?: number };
+type Glyph = { id: number; sel: boolean; zspec?: boolean; poly?: string; cx?: number; cy?: number; r?: number };
 
 // A camera target the viewer must ADOPT AND HOLD: world-pixel centre + zoom (drawing-
 // buffer px per native px). The page writes this ref (deep-link goto or the "go to" box);
@@ -325,6 +331,7 @@ export default function MapViewer({
   configUrl,
   filters,
   queuedIds,
+  zspecIds,
   onSourceClick,
   onCount,
   onReadyHandle,
@@ -337,6 +344,8 @@ export default function MapViewer({
   /** Search → map handoff: when non-null, draw ONLY sources whose id ∈ this set (the
    *  queried objects for the active field). When null, draw every source (default). */
   queuedIds?: Set<number> | null;
+  /** Ids (this field) that have a campfire spec-z — drawn green, overriding selected/not. */
+  zspecIds?: Set<number> | null;
   onSourceClick: (id: number) => void;
   /** Report how many sources pass the active filters (total, not just on-screen). */
   onCount?: (n: number) => void;
@@ -388,6 +397,9 @@ export default function MapViewer({
   // per-frame project() reads the latest without re-subscribing. null = draw all sources.
   const queuedIdsRef = useRef<Set<number> | null>(queuedIds ?? null);
   queuedIdsRef.current = queuedIds ?? null;
+  // Campfire spec-z id set for this field (green glyphs), same live-ref pattern.
+  const zspecIdsRef = useRef<Set<number> | null>(zspecIds ?? null);
+  zspecIdsRef.current = zspecIds ?? null;
   // Tiled fields (COSMOS/EGS) have per-tile catalog x,y that don't map to the fitsgl
   // virtual grid — resolve each source's world px from ra/dec via the viewer WCS instead.
   const tiledRef = useRef(false);
@@ -539,7 +551,7 @@ export default function MapViewer({
     countShown(sourcesRef.current);
     project();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queuedIds]);
+  }, [queuedIds, zspecIds]);
 
   // Project the (culled) filtered sources to screen glyphs for the current frame. Reads
   // sourcesRef + the live viewer handle; called from onFrame and on filter change.
@@ -557,6 +569,7 @@ export default function MapViewer({
     // the queue on/off — or switching fields — needs no source-list rebuild.
     const qids = queuedIdsRef.current;
     const list = qids ? sourcesRef.current.filter(s => qids.has(s.id)) : sourcesRef.current;
+    const zids = zspecIdsRef.current;
     const asDot = zoom < DOT_ZOOM;
 
     // Adaptive scale bar + NIRSpec apertures both need CSS px per native px: measure it
@@ -637,14 +650,23 @@ export default function MapViewer({
     // W/zoom × H/zoom world px about the camera centre; take a generous margin (×1.5 +
     // pad) so display rotation / North-up can't clip edge sources. This yields the set
     // actually on-screen without projecting every one of the 174k sources per frame.
-    const halfW = (W / zoom) * 0.75 + 60;
-    const halfH = (H / zoom) * 0.75 + 60;
-    const x0 = cam.centerX - halfW, x1 = cam.centerX + halfW;
-    const y0 = cam.centerY - halfH, y1 = cam.centerY + halfH;
-    const visible: Src[] = [];
-    for (let k = 0; k < list.length; k++) {
-      const s = list[k];
-      if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) visible.push(s);
+    //
+    // BUT when the whole list is small (e.g. a small query subset), skip the cull and draw
+    // every source every frame — otherwise sources near the padded window edge flicker in
+    // and out while zooming. A few hundred glyphs is cheap to project unconditionally.
+    let visible: Src[];
+    if (list.length <= SHOW_ALL_MAX) {
+      visible = list;
+    } else {
+      const halfW = (W / zoom) * 0.75 + 60;
+      const halfH = (H / zoom) * 0.75 + 60;
+      const x0 = cam.centerX - halfW, x1 = cam.centerX + halfW;
+      const y0 = cam.centerY - halfH, y1 = cam.centerY + halfH;
+      visible = [];
+      for (let k = 0; k < list.length; k++) {
+        const s = list[k];
+        if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) visible.push(s);
+      }
     }
 
     // Phase 2 — if more are visible than the cap, stride-sample the VISIBLE set uniformly
@@ -659,8 +681,9 @@ export default function MapViewer({
       if (!c) continue;
       const scx = c.x - rect.left, scy = c.y - rect.top;
 
+      const zspec = zids?.has(s.id) ?? false;
       if (asDot || !(s.semiA > 0 && s.semiB > 0) || Number.isNaN(s.th)) {
-        out.push({ id: s.id, sel: s.sel, cx: scx, cy: scy, r: asDot ? 1.6 : 4 });
+        out.push({ id: s.id, sel: s.sel, zspec, cx: scx, cy: scy, r: asDot ? 1.6 : 4 });
         continue;
       }
       // Project the ellipse's world-space rim vertices → screen (handles North-up too).
@@ -677,7 +700,7 @@ export default function MapViewer({
         pts.push(`${(p.x - rect.left).toFixed(1)},${(p.y - rect.top).toFixed(1)}`);
       }
       if (bad) continue;
-      out.push({ id: s.id, sel: s.sel, poly: pts.join(" ") });
+      out.push({ id: s.id, sel: s.sel, zspec, poly: pts.join(" ") });
     }
     setGlyphs(out);
   }, []);
@@ -784,7 +807,7 @@ export default function MapViewer({
         style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
       >
         {glyphs.map((g, k) => {
-          const color = g.sel ? GREEN : YELLOW;
+          const color = g.zspec ? GREEN : g.sel ? YELLOW : RED;
           const onClick = (e: React.MouseEvent) => { e.stopPropagation(); clickRef.current(g.id); };
           if (g.poly) {
             return (
