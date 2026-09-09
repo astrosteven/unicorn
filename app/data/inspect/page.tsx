@@ -13,7 +13,7 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase, type Inspection, type InspectDecision } from "@/lib/supabase";
 import {
   SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot, StampMontage,
-  type SourceResult, type FieldConfig, type FieldIndex, type ZGrid,
+  type SourceResult, type FieldConfig, type FieldIndex,
 } from "@/app/data/_card/objectCard";
 
 // On-the-fly WebGL color cutout (client-only), same as the card uses.
@@ -85,8 +85,10 @@ function LoginForm() {
 }
 
 // ---------------------------------------------------------------------------
-// Queue model
+// Queue model. IDs are NOT unique across fields (CEERS 100 ≠ EGS 100), so every row is
+// identified by the composite key `${field}:${id}` — never a bare id.
 type QueueRow = {
+  field: string;
   id: number;
   ra: number | null;
   dec: number | null;
@@ -95,8 +97,10 @@ type QueueRow = {
   decision: InspectDecision;   // resumed from Supabase, else "not_inspected"
   notes: string;
 };
+// The composite identity of a row.
+const rowKey = (r: QueueRow) => `${r.field}:${r.id}`;
 
-type SortKey = "id" | "ra" | "dec" | "za" | "mabs" | "decision";
+type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "decision";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 const DECISIONS: { key: InspectDecision; label: string; color: string; hot: string }[] = [
@@ -116,8 +120,11 @@ const FIELDS = SEARCH_FIELDS.filter(f => f.available);
 function Inspector({ email }: { email: string }) {
   // A one-time "send to inspector" handoff from the search page (else null → normal mode).
   const [external] = useState<ExternalQueue | null>(() => readHandoff());
+  // Fields in play: the handoff's fields, or all available fields.
   const fields = useMemo(() => (external ? externalFields(external) : FIELDS), [external]);
-  const [fc, setFc] = useState<FieldConfig>(() => fields.find(f => f.field === "CEERS") ?? fields[0]);
+  // The field selector: "all" (default) merges every field's queue into one, else a
+  // single field name. IDs collide across fields, so rows carry their field.
+  const [fieldSel, setFieldSel] = useState<string>("all");
   const [rows, setRows] = useState<QueueRow[] | null>(null);
   const [loadErr, setLoadErr] = useState("");
   const [minZa, setMinZa] = useState(7);
@@ -126,12 +133,10 @@ function Inspector({ email }: { email: string }) {
   const [decFilter, setDecFilter] = useState<"all" | InspectDecision>("all");
   const [sortKey, setSortKey] = useState<SortKey>("za");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);   // za desc by default (highest-z first)
-  const [selId, setSelId] = useState<number | null>(null);
+  const [selKey, setSelKey] = useState<string | null>(null);
   const [autoAdvance, setAutoAdvance] = useState(true);
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
-  // zgrid for the loaded field, needed by fetchObject. Kept alongside the row state.
-  const zgRef = useRef<ZGrid | null>(null);
   // SourceResult cache keyed by `${field}:${id}` — powers instant advance via prefetch.
   const cardCache = useRef<Map<string, SourceResult | null>>(new Map());
   // In-flight card fetches, so prefetch + the active load don't double-fetch.
@@ -140,52 +145,47 @@ function Inspector({ email }: { email: string }) {
   // The currently-shown card (looked up / fetched from the cache).
   const [card, setCard] = useState<SourceResult | null | "loading" | "notfound">(null);
 
-  // -- load a field: build the queue from the index + resume decisions from Supabase --
-  const load = useCallback(async (field: FieldConfig, minz: number, selOnly: boolean) => {
-    setRows(null); setLoadErr(""); setSelId(null); setCard(null);
+  // -- load one or all fields: build each queue from its index, resume decisions from
+  // Supabase, and reveal fields progressively (setRows after each field completes) so
+  // the user can start triaging CEERS while COSMOS's big index is still downloading. --
+  const load = useCallback(async (fSel: string, minz: number, selOnly: boolean) => {
+    setRows(null); setLoadErr(""); setSelKey(null); setCard(null);
     cardCache.current.clear(); inflight.current.clear();
+
+    const targets = (external ? externalFields(external) : FIELDS)
+      .filter(f => fSel === "all" || f.field === fSel);
+
+    // Fetch ALL inspections once (no field filter) → map by `${field}:${obj_id}`.
+    // Best-effort: table may be empty/absent → degrade to all-not_inspected.
+    const byKey = new Map<string, Inspection>();
     try {
-      const { idx, zg } = await loadField(field);
-      zgRef.current = zg;
-      // External handoff (from a search query): queue is exactly those objects in this
-      // field; otherwise build from the index with the min-za / selected filters.
-      const built = external
-        ? external.objects.filter(o => o.field === field.field).map(extToRow)
-        : buildQueue(idx, minz, selOnly);
-      // Merge in any existing inspections for this field (best-effort — table may be
-      // empty or absent; we degrade to all-not_inspected rather than fail the page).
-      let byId: Record<number, Inspection> = {};
-      try {
-        const { data, error } = await supabase
-          .from("inspections").select("*").eq("field", field.field);
-        if (!error && data) for (const r of data as Inspection[]) byId[r.obj_id] = r;
-      } catch { /* table missing / offline: leave everything not_inspected */ }
-      for (const row of built) {
-        const rec = byId[row.id];
-        if (rec) { row.decision = rec.decision; row.notes = rec.notes ?? ""; }
+      const { data, error } = await supabase.from("inspections").select("*");
+      if (!error && data) for (const r of data as Inspection[]) byKey.set(`${r.field}:${r.obj_id}`, r);
+    } catch { /* table missing / offline */ }
+
+    const acc: QueueRow[] = [];
+    try {
+      for (const f of targets) {
+        const { idx } = await loadField(f);
+        const built = external
+          ? external.objects.filter(o => o.field === f.field).map(extToRow)
+          : buildQueue(idx, f.field, minz, selOnly);
+        for (const row of built) {
+          const rec = byKey.get(rowKey(row));
+          if (rec) { row.decision = rec.decision; row.notes = rec.notes ?? ""; }
+        }
+        acc.push(...built);
+        setRows([...acc]);   // progressive: reveal this field's rows now
       }
-      setRows(built);
+      if (!targets.length) setRows([]);   // nothing selected → empty queue
     } catch (e: any) {
-      setLoadErr(`Could not load ${field.field}: ${e?.message ?? e}`);
-      setRows([]);
+      setLoadErr(`Could not load queue: ${e?.message ?? e}`);
+      setRows([...acc]);   // keep whatever loaded before the error
     }
   }, [external]);
 
-  useEffect(() => { load(fc, minZa, selectedOnly); }, [fc]);   // reload on field change
-  // Rebuild the queue when the min-za threshold or the selected-only toggle changes.
-  // (No-op in external-handoff mode — that queue is fixed to the query's objects.)
-  useEffect(() => {
-    if (!rows || external) return;
-    (async () => {
-      const { idx } = await loadField(fc);
-      const built = buildQueue(idx, minZa, selectedOnly);
-      // preserve decisions we already have in memory
-      const cur = new Map(rows.map(r => [r.id, r]));
-      for (const row of built) { const p = cur.get(row.id); if (p) { row.decision = p.decision; row.notes = p.notes; } }
-      setRows(built);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [minZa, selectedOnly]);
+  // One effect: (re)load whenever the field selection or the queue filters change.
+  useEffect(() => { load(fieldSel, minZa, selectedOnly); }, [fieldSel, minZa, selectedOnly, load]);
 
   // -- derived: filtered + sorted view of the queue --
   const view = useMemo(() => {
@@ -196,6 +196,7 @@ function Inspector({ email }: { email: string }) {
     if (q) v = v.filter(r => String(r.id).includes(q));
     const get = (r: QueueRow): number | string => {
       if (sortKey === "decision") return r.decision;
+      if (sortKey === "field") return r.field;
       const val = r[sortKey];
       return val == null ? (sortDir === 1 ? Infinity : -Infinity) : val;
     };
@@ -203,41 +204,45 @@ function Inspector({ email }: { email: string }) {
       const av = get(a), bv = get(b);
       if (av < bv) return -1 * sortDir;
       if (av > bv) return 1 * sortDir;
+      // stable tiebreak on composite identity
+      if (a.field !== b.field) return a.field < b.field ? -1 : 1;
       return a.id - b.id;
     });
   }, [rows, decFilter, search, sortKey, sortDir]);
 
   // Keep a ref to the current view for keyboard nav without stale closures.
   const viewRef = useRef(view); viewRef.current = view;
-  const selIdRef = useRef(selId); selIdRef.current = selId;
+  const selKeyRef = useRef(selKey); selKeyRef.current = selKey;
 
-  // -- fetch (or hit cache for) a single object's card --
-  const getCard = useCallback((id: number): Promise<SourceResult | null> => {
-    const key = `${fc.field}:${id}`;
+  // -- fetch (or hit cache for) a single row's card. Resolves the row's field config and
+  // its (cached) zgrid, so this works across fields in the merged "all" queue. --
+  const getCard = useCallback((row: QueueRow): Promise<SourceResult | null> => {
+    const key = rowKey(row);
     if (cardCache.current.has(key)) return Promise.resolve(cardCache.current.get(key)!);
     const existing = inflight.current.get(key);
     if (existing) return existing;
-    const zg = zgRef.current;
+    const fc = SEARCH_FIELDS.find(f => f.field === row.field);
     const p = (async () => {
-      if (!zg) return null;
-      const s = await fetchObject(fc, id, zg);
+      if (!fc) return null;
+      const { zg } = await loadField(fc);   // cached per field → fast after first load
+      const s = await fetchObject(fc, row.id, zg);
       cardCache.current.set(key, s);
       inflight.current.delete(key);
       return s;
     })();
     inflight.current.set(key, p);
     return p;
-  }, [fc]);
+  }, []);
 
   // -- prefetch the next N rows (cards + stamp images) so advancing is instant --
-  const prefetchAround = useCallback((id: number) => {
+  const prefetchAround = useCallback((key: string) => {
     const v = viewRef.current;
-    const pos = v.findIndex(r => r.id === id);
+    const pos = v.findIndex(r => rowKey(r) === key);
     if (pos < 0) return;
     for (let k = 1; k <= 3; k++) {
       const nxt = v[pos + k];
       if (!nxt) break;
-      getCard(nxt.id).then(src => {
+      getCard(nxt).then(src => {
         // Warm the stamp montage image too, so the montage paints instantly.
         if (src?.stampUrl && typeof Image !== "undefined") { const im = new Image(); im.src = src.stampUrl; }
       });
@@ -245,24 +250,24 @@ function Inspector({ email }: { email: string }) {
   }, [getCard]);
 
   // -- select a row: show its card (from cache if warm), then prefetch ahead --
-  const selectRow = useCallback((id: number) => {
-    setSelId(id);
-    const key = `${fc.field}:${id}`;
+  const selectRow = useCallback((row: QueueRow) => {
+    const key = rowKey(row);
+    setSelKey(key);
     if (cardCache.current.has(key)) {
       setCard(cardCache.current.get(key) ?? "notfound");
     } else {
       setCard("loading");
-      getCard(id).then(src => {
+      getCard(row).then(src => {
         // Only apply if this row is still the selected one.
-        if (selIdRef.current === id) setCard(src ?? "notfound");
+        if (selKeyRef.current === key) setCard(src ?? "notfound");
       });
     }
-    prefetchAround(id);
-  }, [fc, getCard, prefetchAround]);
+    prefetchAround(key);
+  }, [getCard, prefetchAround]);
 
   // Auto-select the first row once the view is ready and nothing is selected.
   useEffect(() => {
-    if (selId == null && view.length) selectRow(view[0].id);
+    if (selKey == null && view.length) selectRow(view[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.length]);
 
@@ -270,47 +275,45 @@ function Inspector({ email }: { email: string }) {
   const step = useCallback((delta: number) => {
     const v = viewRef.current;
     if (!v.length) return;
-    const cur = selIdRef.current;
-    const pos = cur == null ? -1 : v.findIndex(r => r.id === cur);
+    const cur = selKeyRef.current;
+    const pos = cur == null ? -1 : v.findIndex(r => rowKey(r) === cur);
     const next = v[Math.max(0, Math.min(v.length - 1, pos + delta))];
-    if (next) selectRow(next.id);
+    if (next) selectRow(next);
   }, [selectRow]);
 
   // -- record a decision: optimistic local update + background Supabase upsert --
   const decide = useCallback((decision: InspectDecision, notesOverride?: string) => {
-    const id = selIdRef.current;
-    if (id == null) return;
-    const zg = zgRef.current;
+    const key = selKeyRef.current;
+    if (key == null) return;
     let saved: QueueRow | undefined;
     setRows(prev => {
       if (!prev) return prev;
       return prev.map(r => {
-        if (r.id !== id) return r;
+        if (rowKey(r) !== key) return r;
         saved = { ...r, decision, notes: notesOverride ?? r.notes };
         return saved;
       });
     });
     if (!saved) return;
     // Fire-and-forget upsert (do NOT block UI). onConflict keeps one row per field+obj.
-    void upsert(saved, fc, email, setSaveState);
+    void upsert(saved, email, setSaveState);
     // Auto-advance after a decision (not for a bare notes edit).
     if (autoAdvance && notesOverride === undefined) step(1);
-    void zg;
-  }, [fc, email, autoAdvance, step]);
+  }, [email, autoAdvance, step]);
 
   // Debounced notes save (500ms) — edits the selected row's notes, then upserts.
   const notesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editNotes = useCallback((text: string) => {
-    const id = selIdRef.current;
-    if (id == null) return;
+    const key = selKeyRef.current;
+    if (key == null) return;
     let saved: QueueRow | undefined;
-    setRows(prev => prev?.map(r => (r.id === id ? (saved = { ...r, notes: text }) : r)) ?? prev);
+    setRows(prev => prev?.map(r => (rowKey(r) === key ? (saved = { ...r, notes: text }) : r)) ?? prev);
     if (notesTimer.current) clearTimeout(notesTimer.current);
     setSaveState("saving");
     notesTimer.current = setTimeout(() => {
-      if (saved) void upsert(saved, fc, email, setSaveState);
+      if (saved) void upsert(saved, email, setSaveState);
     }, 500);
-  }, [fc, email]);
+  }, [email]);
 
   // -- keyboard: letters = decisions, arrows = nav (also ⌘K/⌘U/⌘R from the desktop app) --
   useEffect(() => {
@@ -334,7 +337,7 @@ function Inspector({ email }: { email: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [decide, step]);
 
-  const sel = rows?.find(r => r.id === selId) ?? null;
+  const sel = rows?.find(r => rowKey(r) === selKey) ?? null;
   const counts = useMemo(() => {
     const c: Record<string, number> = { keep: 0, undecided: 0, remove: 0, not_inspected: 0 };
     for (const r of rows ?? []) c[r.decision]++;
@@ -371,7 +374,8 @@ function Inspector({ email }: { email: string }) {
       {/* Filters */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 12px", alignItems: "center", marginBottom: "0.9rem" }}>
         <label className="mono" style={lbl}>Field
-          <select value={fc.field} onChange={e => setFc(fields.find(f => f.field === e.target.value) ?? fc)} style={ctrl}>
+          <select value={fieldSel} onChange={e => setFieldSel(e.target.value)} style={ctrl}>
+            <option value="all">all</option>
             {fields.map(f => <option key={f.field} value={f.field}>{f.field}</option>)}
           </select>
         </label>
@@ -419,26 +423,27 @@ function Inspector({ email }: { email: string }) {
             <thead style={{ position: "sticky", top: 0, background: "var(--bg-elev, #16112a)", zIndex: 1 }}>
               <tr>
                 {([
-                  ["", "decision"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"],
+                  ["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"],
                 ] as [string, SortKey][]).map(([label, key]) => (
                   <th key={key} onClick={() => toggleSort(key)}
-                    style={{ padding: "7px 8px", textAlign: key === "decision" ? "center" : "right", color: sortKey === key ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap", userSelect: "none" }}>
+                    style={{ padding: "7px 8px", textAlign: key === "decision" ? "center" : key === "field" ? "left" : "right", color: sortKey === key ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap", userSelect: "none" }}>
                     {label}{sortKey === key ? (sortDir === 1 ? " ▲" : " ▼") : ""}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows == null && <tr><td colSpan={6} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading queue…</td></tr>}
-              {rows != null && view.length === 0 && <tr><td colSpan={6} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>no rows match</td></tr>}
+              {rows == null && <tr><td colSpan={7} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading queue…</td></tr>}
+              {rows != null && view.length === 0 && <tr><td colSpan={7} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>no rows match</td></tr>}
               {view.map(r => {
-                const active = r.id === selId;
+                const active = selKey === rowKey(r);
                 return (
-                  <tr key={r.id} onClick={() => selectRow(r.id)}
+                  <tr key={rowKey(r)} onClick={() => selectRow(r)}
                     style={{ cursor: "pointer", background: active ? "rgba(196,144,216,0.16)" : "transparent", borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent" }}>
                     <td style={{ padding: "5px 8px", textAlign: "center" }}>
                       <span title={r.decision} style={{ display: "inline-block", width: "10px", height: "10px", borderRadius: "50%", background: decColor(r.decision), verticalAlign: "middle" }} />
                     </td>
+                    <td style={{ padding: "5px 8px", textAlign: "left", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.field}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--accent)", fontWeight: 700 }}>{r.id}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.ra != null ? r.ra.toFixed(5) : "—"}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.dec != null ? r.dec.toFixed(5) : "—"}</td>
@@ -457,7 +462,7 @@ function Inspector({ email }: { email: string }) {
             <div className="card" style={{ padding: "0.85rem 1rem", marginBottom: "12px", position: "sticky", top: "84px", zIndex: 2 }}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center", marginBottom: "0.6rem" }}>
                 <span className="mono" style={{ fontSize: "0.8rem", color: "var(--accent)", fontWeight: 700, marginRight: "6px" }}>
-                  {fc.field} · ID {sel.id}
+                  {sel.field} · ID {sel.id}
                 </span>
                 {DECISIONS.map(d => {
                   const on = sel.decision === d.key;
@@ -568,16 +573,17 @@ function externalFields(q: ExternalQueue): FieldConfig[] {
   return SEARCH_FIELDS.filter(f => names.has(f.field));
 }
 function extToRow(o: ExtObj): QueueRow {
-  return { id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, decision: "not_inspected", notes: "" };
+  return { field: o.field, id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, decision: "not_inspected", notes: "" };
 }
 
-function buildQueue(idx: FieldIndex, minZa: number, selectedOnly: boolean): QueueRow[] {
+function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedOnly: boolean): QueueRow[] {
   const out: QueueRow[] = [];
   for (let i = 0; i < idx.n; i++) {
     const za = idx.za[i];
     if (za == null || za < minZa) continue;
     if (selectedOnly && idx.selected?.[i] !== 1) continue;   // only doselect-selected objects
     out.push({
+      field: fieldName,
       id: idx.id[i],
       ra: idx.ra[i] ?? null,
       dec: idx.dec[i] ?? null,
@@ -591,14 +597,16 @@ function buildQueue(idx: FieldIndex, minZa: number, selectedOnly: boolean): Queu
 }
 
 // The exact Supabase upsert: one row per (field, obj_id), conflict-merged on that key.
-async function upsert(row: QueueRow, fc: FieldConfig, inspector: string, setState: (s: SaveState) => void) {
+// Resolves the row's field config so the merged "all" queue writes the right version.
+async function upsert(row: QueueRow, inspector: string, setState: (s: SaveState) => void) {
   setState("saving");
+  const fc = SEARCH_FIELDS.find(f => f.field === row.field);
   const payload: Inspection = {
-    field: fc.field,
+    field: row.field,
     obj_id: row.id,
     ra: row.ra,
     dec: row.dec,
-    version: fc.version,
+    version: fc?.version ?? null,
     z: row.za,
     decision: row.decision,
     notes: row.notes || null,
