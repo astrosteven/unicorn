@@ -110,6 +110,7 @@ function Inspector({ email }: { email: string }) {
   const [rows, setRows] = useState<QueueRow[] | null>(null);
   const [loadErr, setLoadErr] = useState("");
   const [minZa, setMinZa] = useState(7);
+  const [selectedOnly, setSelectedOnly] = useState(true);   // only inspect selected=1 objects
   const [search, setSearch] = useState("");
   const [decFilter, setDecFilter] = useState<"all" | InspectDecision>("all");
   const [sortKey, setSortKey] = useState<SortKey>("za");
@@ -129,13 +130,13 @@ function Inspector({ email }: { email: string }) {
   const [card, setCard] = useState<SourceResult | null | "loading" | "notfound">(null);
 
   // -- load a field: build the queue from the index + resume decisions from Supabase --
-  const load = useCallback(async (field: FieldConfig, minz: number) => {
+  const load = useCallback(async (field: FieldConfig, minz: number, selOnly: boolean) => {
     setRows(null); setLoadErr(""); setSelId(null); setCard(null);
     cardCache.current.clear(); inflight.current.clear();
     try {
       const { idx, zg } = await loadField(field);
       zgRef.current = zg;
-      const built = buildQueue(idx, minz);
+      const built = buildQueue(idx, minz, selOnly);
       // Merge in any existing inspections for this field (best-effort — table may be
       // empty or absent; we degrade to all-not_inspected rather than fail the page).
       let byId: Record<number, Inspection> = {};
@@ -155,20 +156,20 @@ function Inspector({ email }: { email: string }) {
     }
   }, []);
 
-  useEffect(() => { load(fc, minZa); }, [fc]);   // reload on field change
-  // Rebuild the queue when the min-za threshold changes (index is already cached).
+  useEffect(() => { load(fc, minZa, selectedOnly); }, [fc]);   // reload on field change
+  // Rebuild the queue when the min-za threshold or the selected-only toggle changes.
   useEffect(() => {
     if (!rows) return;
     (async () => {
       const { idx } = await loadField(fc);
-      const built = buildQueue(idx, minZa);
+      const built = buildQueue(idx, minZa, selectedOnly);
       // preserve decisions we already have in memory
       const cur = new Map(rows.map(r => [r.id, r]));
       for (const row of built) { const p = cur.get(row.id); if (p) { row.decision = p.decision; row.notes = p.notes; } }
       setRows(built);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [minZa]);
+  }, [minZa, selectedOnly]);
 
   // -- derived: filtered + sorted view of the queue --
   const view = useMemo(() => {
@@ -370,6 +371,10 @@ function Inspector({ email }: { email: string }) {
           <input type="number" step={0.5} value={minZa}
             onChange={e => setMinZa(Number(e.target.value) || 0)} style={{ ...ctrl, width: "72px" }} />
         </label>
+        <label className="mono" style={{ ...lbl, cursor: "pointer" }} title="Only show objects with selected=1 (doselect sample)">
+          <input type="checkbox" checked={selectedOnly} onChange={e => setSelectedOnly(e.target.checked)} />
+          selected only
+        </label>
         <label className="mono" style={lbl}>ID
           <input type="text" placeholder="search id" value={search}
             onChange={e => setSearch(e.target.value)} style={{ ...ctrl, width: "110px" }} />
@@ -472,11 +477,12 @@ function Inspector({ email }: { email: string }) {
 }
 
 // ---- helpers ---------------------------------------------------------------
-function buildQueue(idx: FieldIndex, minZa: number): QueueRow[] {
+function buildQueue(idx: FieldIndex, minZa: number, selectedOnly: boolean): QueueRow[] {
   const out: QueueRow[] = [];
   for (let i = 0; i < idx.n; i++) {
     const za = idx.za[i];
     if (za == null || za < minZa) continue;
+    if (selectedOnly && idx.selected?.[i] !== 1) continue;   // only doselect-selected objects
     out.push({
       id: idx.id[i],
       ra: idx.ra[i] ?? null,
