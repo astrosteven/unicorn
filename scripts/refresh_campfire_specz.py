@@ -151,34 +151,44 @@ def _radec_to_unit(ra_deg, dec_deg):
 
 
 def crossmatch(idx, cat, radius_arcsec):
-    """Nearest campfire source within radius for each UNICORN object. Returns
-    {obj_id_str: {"z","q","cid","sep"}}.  Uses 3D unit-vector KD-tree (pole-safe)."""
+    """Assign each campfire spec-z to its SINGLE nearest UNICORN photometric object
+    (spec -> phot direction). This is the correct direction: a spectrum belongs to
+    exactly one photometric counterpart -- the detection closest to the spectroscopic
+    position -- so a spec-z is NOT copied onto every nearby detection. (Matching the
+    other way, phot -> nearest spec, lets a foreground object next to a high-z target
+    steal that target's spec-z; e.g. a z~5 neighbour of Maisie grabbing z=11.41.)
+    If two spec-z contend for the same photometric object, the closer one wins.
+    Returns {obj_id_str: {"z","q","cid","cf","sep"}}. 3D unit-vector KD-tree (pole-safe)."""
     import numpy as np
     from scipy.spatial import cKDTree
 
     cat = [c for c in cat if c["ra"] is not None and c["dec"] is not None]
     if not cat:
         return {}
-    cxyz = _radec_to_unit([c["ra"] for c in cat], [c["dec"] for c in cat])
-    tree = cKDTree(cxyz)
-
+    # KD-tree on the UNICORN photometric positions; for each spec-z find its nearest one.
     uxyz = _radec_to_unit(idx["ra"], idx["dec"])
+    tree = cKDTree(uxyz)
+    cxyz = _radec_to_unit([c["ra"] for c in cat], [c["dec"] for c in cat])
     # chord length for a given angular sep: 2*sin(theta/2)
     chord = 2.0 * np.sin(np.radians(radius_arcsec / 3600.0) / 2.0)
-    dist, who = tree.query(uxyz, k=1, distance_upper_bound=chord)
+    dist, who = tree.query(cxyz, k=1, distance_upper_bound=chord)
 
     ids = idx["id"]
     out = {}
-    for i, (d, j) in enumerate(zip(dist, who)):
-        if not np.isfinite(d) or j >= len(cat):
+    for ci, (d, ui) in enumerate(zip(dist, who)):
+        if not np.isfinite(d) or ui >= len(ids):
             continue
         sep = 2.0 * np.degrees(np.arcsin(min(d / 2.0, 1.0))) * 3600.0  # chord -> arcsec
-        c = cat[j]
-        out[str(ids[i])] = {
+        uid = str(ids[ui])
+        prev = out.get(uid)
+        if prev is not None and prev["sep"] <= sep:
+            continue   # this photometric object already claimed by a closer spec-z
+        c = cat[ci]
+        out[uid] = {
             "z":   round(c["z"], 4) if c["z"] is not None else None,
             "q":   c["q"],          # int 0-4; see QUALITY. site defaults to showing q>=3
-            "cid": c["id"],         # campfire object_id, for ?search=
-            "cf":  c["cf"],         # campfire field, for /nircam/<cf>
+            "cid": c["id"],         # campfire object_id, for the spectrum deep-link
+            "cf":  c["cf"],         # campfire field
             "sep": round(float(sep), 3),
         }
     return out
