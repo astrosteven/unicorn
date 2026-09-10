@@ -5,7 +5,7 @@
 //   • Register — email + password + a REQUIRED justification. On sign-up we insert a
 //     `pending` row into public.profiles and best-effort ping the owner via the
 //     notify-signup Edge Function, then show a "request submitted" confirmation.
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
@@ -13,6 +13,15 @@ import { supabase } from "@/lib/supabase";
 // The justification prompt must read exactly like this (per site owner).
 const JUSTIFICATION_LABEL =
   "UNICORN is currently open only for known collaborators of the UT Finkelstein Research Group. Please provide a short justification here:";
+
+// Cloudflare Turnstile site key (PUBLIC — safe in the client). Supabase Auth has Captcha
+// protection enabled, so every signup/signin must carry a fresh Turnstile token.
+const TURNSTILE_SITE_KEY = "0x4AAAAAAEvfQRgVzVqy1YJy";
+type Turnstile = {
+  render: (el: HTMLElement, opts: Record<string, unknown>) => string;
+  reset: (id: string) => void;
+};
+const getTurnstile = () => (window as unknown as { turnstile?: Turnstile }).turnstile;
 
 type Mode = "signin" | "register";
 
@@ -24,14 +33,47 @@ export default function LoginPage() {
   const [error, setError]         = useState("");
   const [loading, setLoading]     = useState(false);
   const [submitted, setSubmitted] = useState(false); // register confirmation
+  const [captchaToken, setCaptchaToken] = useState("");
+  const captchaBox = useRef<HTMLDivElement>(null);
+  const captchaId  = useRef<string | null>(null);
   const router = useRouter();
+
+  // Load Turnstile once and render the widget; its callback supplies the token Supabase needs.
+  useEffect(() => {
+    const API = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    const render = () => {
+      const ts = getTurnstile();
+      if (!ts || !captchaBox.current || captchaId.current !== null) return;
+      captchaId.current = ts.render(captchaBox.current, {
+        sitekey: TURNSTILE_SITE_KEY,
+        theme: "dark",
+        callback: (t: string) => setCaptchaToken(t),
+        "expired-callback": () => setCaptchaToken(""),
+        "error-callback": () => setCaptchaToken(""),
+      });
+    };
+    if (!document.querySelector(`script[src^="${API.split("?")[0]}"]`)) {
+      const s = document.createElement("script");
+      s.src = API; s.async = true; s.defer = true;
+      document.head.appendChild(s);
+    }
+    const iv = setInterval(() => { if (getTurnstile()) { clearInterval(iv); render(); } }, 150);
+    return () => clearInterval(iv);
+  }, []);
+
+  // Turnstile tokens are single-use — reset the widget after each attempt so a retry gets a new one.
+  const resetCaptcha = () => {
+    const ts = getTurnstile();
+    if (ts && captchaId.current !== null) ts.reset(captchaId.current);
+    setCaptchaToken("");
+  };
 
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
     setError(""); setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({ email, password, options: { captchaToken } });
     setLoading(false);
-    if (error) { setError(error.message); return; }
+    if (error) { setError(error.message); resetCaptcha(); return; }
     router.push("/data");
   }
 
@@ -40,8 +82,8 @@ export default function LoginPage() {
     if (!justification.trim()) return;
     setError(""); setLoading(true);
 
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    if (error) { setLoading(false); setError(error.message); return; }
+    const { data, error } = await supabase.auth.signUp({ email, password, options: { captchaToken } });
+    if (error) { setLoading(false); setError(error.message); resetCaptcha(); return; }
 
     // If email confirmation is OFF a session is returned immediately and we can insert
     // the profile row now. If it's ON there's no session yet (the row is inserted on
@@ -87,7 +129,7 @@ export default function LoginPage() {
   };
   const registerReady = mode === "register" && justification.trim().length > 0 && !!email && !!password;
   const signinReady   = mode === "signin" && !!email && !!password;
-  const canSubmit     = mode === "signin" ? signinReady : registerReady;
+  const canSubmit     = (mode === "signin" ? signinReady : registerReady) && !!captchaToken;
 
   return (
     <main style={{
@@ -206,6 +248,9 @@ export default function LoginPage() {
                     />
                   </>
                 )}
+
+                {/* Cloudflare Turnstile challenge — its token is required by Supabase Auth. */}
+                <div ref={captchaBox} style={{ marginBottom: "14px", minHeight: "65px" }} />
 
                 {error && (
                   <p style={{
