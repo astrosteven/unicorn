@@ -38,6 +38,7 @@ export interface PhotometryResult {
 // Measure an aperture at (ra,dec). `bands` optional — omit for the Worker's default set.
 // Throws with a readable message on auth failure / Worker error.
 export async function measureAperture(
+  field: string,
   ra: number,
   dec: number,
   shape: Aperture,
@@ -50,7 +51,7 @@ export async function measureAperture(
   const res = await fetch(PHOTOMETRY_WORKER_URL, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-    body: JSON.stringify({ field: "CEERS", ra, dec, shape, bands }),
+    body: JSON.stringify({ field, ra, dec, shape, bands }),
   });
   if (!res.ok) {
     const msg = (await res.json().catch(() => ({} as { error?: string }))).error;

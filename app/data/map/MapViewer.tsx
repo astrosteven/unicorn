@@ -58,6 +58,9 @@ const YELLOW = "#f2d43a";  // selected (no spec-z)
 const RED = "#e0503a";     // not selected
 // Custom-aperture photometry draw tool: the IN-PROGRESS drag circle's stroke colour.
 const CYAN = "#38d0f0";
+// Fields the photometry Worker can measure (mosaics on Corral + wired in the Worker's
+// per-field config). Extend as each field's SCI/ERR mosaics come online.
+const PHOTO_FIELDS = new Set(["CEERS", "NGDEEP"]);
 // Palette cycled across ACCUMULATED photometry apertures — each measured aperture takes the
 // next colour (wrapping), shared by its map circle, its legend swatch and its SED series.
 const PHOTO_PALETTE = ["#38d0f0", "#f2d43a", "#43d17a", "#e078e0", "#f0902d", "#8a7bff", "#e0503a", "#4dd6c0"];
@@ -392,8 +395,8 @@ export default function MapViewer({
   // Which shape the Measure tool draws while it's ON: a drag CIRCLE (mousedown centre →
   // drag radius) or a hand-drawn POLYGON (click vertices → double-click / Enter to close).
   const [photoShape, setPhotoShape] = useState<"circle" | "polygon">("circle");
-  const isCeers = field.field === "CEERS";
-  const photoEnabled = session != null && isCeers;
+  const photoFieldOk = PHOTO_FIELDS.has(field.field);
+  const photoEnabled = session != null && photoFieldOk;
   // `draw` holds the IN-PROGRESS drag (its sky centre + radius, re-pinned each frame). On
   // release it becomes a new entry in the ACCUMULATED aperture list `photoAps` — measurements
   // don't replace each other, they stack (each with a palette colour) until Clear.
@@ -1060,7 +1063,7 @@ export default function MapViewer({
     setPhotoAps(prev => [...prev, { n, color, ra, dec, radiusArcsec, shape: { kind: "circle", radiusArcsec }, state: { kind: "measuring" } }]);
     // When the request settles, patch ONLY this aperture's state (matched by its index n),
     // leaving the rest of the accumulated set untouched.
-    void measureAperture(ra, dec, { type: "circle", radius_arcsec: radiusArcsec })
+    void measureAperture(field.field, ra, dec, { type: "circle", radius_arcsec: radiusArcsec })
       .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
       .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
         ? { ...a, state: { kind: "error", message: err instanceof Error ? err.message : String(err) } }
@@ -1103,7 +1106,7 @@ export default function MapViewer({
       n, color, ra: cRa, dec: cDec, radiusArcsec: 0,
       shape: { kind: "polygon", vertices }, state: { kind: "measuring" },
     }]);
-    void measureAperture(cRa, cDec, { type: "polygon", vertices })
+    void measureAperture(field.field, cRa, cDec, { type: "polygon", vertices })
       .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
       .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
         ? { ...a, state: { kind: "error", message: err instanceof Error ? err.message : String(err) } }
@@ -1141,7 +1144,7 @@ export default function MapViewer({
     const ap = photoAps.find(a => a.n === n);
     if (!ap || ap.shape.kind !== "circle") return;   // radius adjust is circles-only
     setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, radiusArcsec: r, shape: { kind: "circle", radiusArcsec: r }, state: { kind: "measuring" } } : a));
-    void measureAperture(ap.ra, ap.dec, { type: "circle", radius_arcsec: r })
+    void measureAperture(field.field, ap.ra, ap.dec, { type: "circle", radius_arcsec: r })
       .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
       .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
         ? { ...a, state: { kind: "error", message: err instanceof Error ? err.message : String(err) } }
@@ -1563,7 +1566,7 @@ export default function MapViewer({
           photoTool={photoTool}
           photoShape={photoShape}
           photoEnabled={photoEnabled}
-          photoHint={session == null ? "sign in on /data/review to measure" : !isCeers ? "CEERS only for now" : ""}
+          photoHint={session == null ? "sign in on /data/review to measure" : !photoFieldOk ? "not available for this field yet" : ""}
           onToggleOpen={() => setPhotoPanelOpen(o => !o)}
           onPhotoTool={togglePhotoTool}
           onPhotoShape={setPhotoShape}
