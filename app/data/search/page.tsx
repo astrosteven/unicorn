@@ -578,8 +578,7 @@ export default function SearchPage() {
   const [mode, setMode] = useState<SearchMode>("id");
   const [idInput, setIdInput] = useState("");
   const [nameInput, setNameInput] = useState("");
-  const [raInput, setRaInput] = useState("");
-  const [decInput, setDecInput] = useState("");
+  const [coordInput, setCoordInput] = useState("");   // single "RA, Dec" (deg) entry
   const [radiusInput, setRadiusInput] = useState("0.2");
   const [uploadText, setUploadText] = useState("");
   const [queryInput, setQueryInput] = useState(() =>
@@ -1019,12 +1018,13 @@ export default function SearchPage() {
       } else if (mode === "radec") {
         // Cone search → the SAME sortable results table Query/Upload use (map↗, inspect,
         // downloads, click-a-row bio plot), rows ordered by separation (closest first).
-        const ra = parseFloat(raInput);
-        const dec = parseFloat(decInput);
+        // One box: "RA, Dec" (comma or whitespace separated), decimal degrees.
+        const nums = coordInput.trim().split(/[\s,]+/).map(s => parseFloat(s)).filter(n => Number.isFinite(n));
+        const ra = nums[0], dec = nums[1];
         const radius = parseFloat(radiusInput) || 0.2;
-        if (!Number.isFinite(ra) || !Number.isFinite(dec)) {
+        if (nums.length < 2 || !Number.isFinite(ra) || !Number.isFinite(dec)) {
           setStatus("notfound");
-          setMatchSummary("Enter numeric RA and Dec in degrees.");
+          setMatchSummary("Enter coordinates as 'RA, Dec' in degrees — e.g. 150.102626, 2.249597.");
           return;
         }
         const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadField(fc)) })));
@@ -1261,11 +1261,10 @@ export default function SearchPage() {
           <div style={{ display: "flex", gap: "10px", alignItems: "flex-end", flexWrap: "wrap" }}>
             <FieldSelect value={searchField} onChange={setSearchField} includeAll={true} />
             {[
-              { label: "RA (deg)", val: raInput,     set: setRaInput,     ph: "e.g. 214.943" },
-              { label: "Dec (deg)", val: decInput,   set: setDecInput,    ph: "e.g. 52.942" },
-              { label: "Radius (\")", val: radiusInput, set: setRadiusInput, ph: "0.2" },
+              { label: "RA, Dec (deg)", val: coordInput,  set: setCoordInput,  ph: "e.g. 150.102626, 2.249597", flex: "3 1 240px" },
+              { label: "Radius (\")",   val: radiusInput,  set: setRadiusInput, ph: "0.2", flex: "1 1 90px" },
             ].map(field => (
-              <div key={field.label} style={{ flex: 1, minWidth: "130px" }}>
+              <div key={field.label} style={{ flex: field.flex, minWidth: 0 }}>
                 <label style={{ display: "block", fontSize: "0.72rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", letterSpacing: "0.1em", marginBottom: "6px" }}>
                   {field.label.toUpperCase()}
                 </label>
