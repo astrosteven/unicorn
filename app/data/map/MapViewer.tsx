@@ -174,6 +174,11 @@ const MSA_QUAD_DISP = 365 * 0.267;   // arcsec, one quadrant along dispersion (�
 const MSA_QUAD_SPAT = 171 * 0.528;   // arcsec, one quadrant along spatial (≈90.3")
 const MSA_GAP_DISP = 13.0;           // arcsec, inter-quadrant gap between columns (dispersion)
 const MSA_GAP_SPAT = 18.0;           // arcsec, inter-quadrant gap between rows (spatial)
+// NIRSpec MSA V3IdlYAngle from pysiaf (NRS_FULL_MSA) — the angle between the aperture's ideal
+// Y axis and the telescope V3 axis. APT's aperture PA relates to the observatory V3PA by
+// APA = V3PA + V3IdlYAngle, so V3PA = (aperture PA) − 138.5746°. Our PA slider IS the aperture
+// PA (on-sky, E of N), so this converts the shown PA to the JWST V3PA to request in APT.
+const NRS_MSA_V3IDLYANGLE = 138.5746;
 
 // Screen-space aperture frame at a centre point. `disp`/`spat` are the on-screen vectors
 // (CSS px) of a +1" step along the dispersion and spatial axes respectively — already
@@ -1998,6 +2003,11 @@ function NIRSpecPanel({
               onChange={e => onPa(Number(e.target.value))}
               style={{ width: "100%", accentColor: "var(--accent)", cursor: "pointer", height: 4 }}
             />
+            {/* Live JWST V3PA for this aperture PA (V3PA = aperture PA − NIRSpec MSA V3IdlYAngle). */}
+            <div className="mono" style={{ fontSize: "0.62rem", color: "var(--text-dim)", marginTop: 3 }}
+              title="JWST V3 position angle to request in APT = aperture PA − NIRSpec MSA V3IdlYAngle (138.57°). Verify against APT.">
+              V3PA ≈ <span style={{ color: "var(--accent2)" }}>{((((paDeg - NRS_MSA_V3IDLYANGLE) % 360) + 360) % 360).toFixed(1)}°</span>
+            </div>
             <input
               type="number" aria-label="Position angle degrees" value={paDeg}
               onChange={e => onPa(Number(e.target.value))}
