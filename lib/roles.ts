@@ -14,8 +14,11 @@ import { supabase } from "@/lib/supabase";
 
 export type Role = "pending" | "general" | "key" | "admin";
 
-// Routes any visitor can see with NO login (and therefore no redirect).
-export const PUBLIC_ROUTES = ["/data", "/data/fields"];
+// Routes any visitor can see with NO login (and therefore no redirect). These are
+// PREFIX-matched via under(), so the overview "/data" must NOT go here — it would
+// prefix-match every /data/* route and make the whole site public. The overview is
+// exact-matched separately in routeAllowed().
+export const PUBLIC_ROUTES = ["/data/fields"];
 
 // General tier adds these; key adds the two after; admin gets its own page too.
 const GENERAL_ROUTES = ["/data/catalogs", "/data/map", "/data/search"];
@@ -30,7 +33,8 @@ function under(pathname: string, base: string): boolean {
 // Tier table. `role === null` means not logged in → public routes only.
 // Higher tiers inherit everything the lower tiers can see; admin sees all.
 export function routeAllowed(pathname: string, role: Role | null): boolean {
-  if (PUBLIC_ROUTES.some(r => under(pathname, r))) return true;
+  if (pathname === "/data") return true;               // overview landing — EXACT (not a prefix)
+  if (PUBLIC_ROUTES.some(r => under(pathname, r))) return true;  // /data/fields (+ sub-routes)
   if (role == null) return false;              // anon: only public routes
   if (role === "admin") return true;           // admin: everything
 
