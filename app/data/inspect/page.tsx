@@ -12,9 +12,11 @@ import dynamic from "next/dynamic";
 import type { Session } from "@supabase/supabase-js";
 import { supabase, type Inspection, type InspectDecision } from "@/lib/supabase";
 import {
-  SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot, StampMontage,
+  SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot,
   type SourceResult, type FieldConfig, type FieldIndex,
 } from "@/app/data/_card/objectCard";
+import { prefetchStamp } from "@/lib/photometry";
+import { LiveStampMontage } from "@/app/data/inspect/LiveStampMontage";
 
 // On-the-fly WebGL color cutout (client-only), same as the card uses.
 const FitsglCutout = dynamic(() => import("@/app/data/_card/FitsglCutout").then(m => m.FitsglCutout), { ssr: false });
@@ -243,8 +245,15 @@ function Inspector({ email }: { email: string }) {
       const nxt = v[pos + k];
       if (!nxt) break;
       getCard(nxt).then(src => {
-        // Warm the stamp montage image too, so the montage paints instantly.
+        // Warm the pre-baked montage PNG (fallback) so it paints instantly if the live
+        // endpoint is down.
         if (src?.stampUrl && typeof Image !== "undefined") { const im = new Image(); im.src = src.stampUrl; }
+        // Warm the LIVE stamp's raw pixels via the Worker (module-cached in lib/photometry),
+        // so the next object's grayscale montage renders instantly on open.
+        if (src) {
+          const pra = Number(src.row["RA"]), pdec = Number(src.row["DEC"]);
+          if (Number.isFinite(pra) && Number.isFinite(pdec)) prefetchStamp(src.field, pra, pdec);
+        }
       });
     }
   }, [getCard]);
@@ -558,7 +567,9 @@ function InspectCard({ src }: { src: SourceResult }) {
           </div>
         )}
       </div>
-      {src.stampUrl && <StampMontage url={src.stampUrl} />}
+      {ra != null && dec != null && Number.isFinite(Number(ra)) && Number.isFinite(Number(dec)) && (
+        <LiveStampMontage field={src.field} ra={Number(ra)} dec={Number(dec)} fallbackUrl={src.stampUrl} />
+      )}
     </div>
   );
 }
