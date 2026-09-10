@@ -830,23 +830,49 @@ export default function SearchPage() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("queue") === "1") return;   // let the MSA handoff take precedence
     const q = params.get("q");
-    if (!q) return;
-    setMode("query");
-    setQueryInput(q);
-    const cols = params.get("cols");
-    if (cols) setViewColsInput(cols);
-    setAutoRun(true);
+    if (q) {
+      setMode("query");
+      setQueryInput(q);
+      const cols = params.get("cols");
+      if (cols) setViewColsInput(cols);
+      setAutoRun(true);
+      return;
+    }
+    // No ?q= / ?queue= handoff — restore the last search (its inputs) so returning to this
+    // tab from the map/inspector doesn't lose it. Matters most for UPLOAD (its file content
+    // has no URL form), but restores every mode. autoRun re-runs it against the cached indices.
+    try {
+      const raw = sessionStorage.getItem("unicorn_searchState");
+      if (raw) {
+        const s = JSON.parse(raw) as Record<string, unknown>;
+        if (s && typeof s === "object") {
+          if (typeof s.mode === "string") setMode(s.mode as SearchMode);
+          if (typeof s.idInput === "string") setIdInput(s.idInput);
+          if (typeof s.nameInput === "string") setNameInput(s.nameInput);
+          if (typeof s.coordInput === "string") setCoordInput(s.coordInput);
+          if (typeof s.radiusInput === "string") setRadiusInput(s.radiusInput);
+          if (typeof s.uploadText === "string") setUploadText(s.uploadText);
+          if (typeof s.queryInput === "string") setQueryInput(s.queryInput);
+          if (typeof s.viewColsInput === "string") setViewColsInput(s.viewColsInput);
+          if (typeof s.searchField === "string") setSearchField(s.searchField);
+          setAutoRun(true);
+        }
+      }
+    } catch { /* ignore malformed snapshot */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fire the ?q= search once mode + queryInput have actually settled to the URL values.
+  // Fire an auto-run search once state has settled. Two triggers set autoRun: a ?q= link
+  // (wait until queryInput matches the URL before firing) and the restore-on-mount above
+  // (any mode — fire as soon as the restored inputs are in). Runs once, then clears autoRun.
   useEffect(() => {
-    if (autoRun && mode === "query" && queryInput === new URLSearchParams(window.location.search).get("q")) {
-      setAutoRun(false);
-      doSearch();
-    }
+    if (!autoRun) return;
+    const urlQ = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("q") : null;
+    if (urlQ != null && !(mode === "query" && queryInput === urlQ)) return;  // ?q= not settled yet
+    setAutoRun(false);
+    doSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRun, mode, queryInput]);
+  }, [autoRun, mode, queryInput, uploadText, coordInput, idInput, nameInput, radiusInput]);
 
   // Hand the current query's matched objects to the visual inspector (via sessionStorage).
   const INSPECT_HANDOFF_CAP = 10000;
@@ -1027,6 +1053,13 @@ export default function SearchPage() {
     setResultView("table");   // a new search starts on the table; plot re-derives from queryAllRef
     setResults([]);
     setMatchSummary("");
+    // Persist exactly what was searched so returning to this tab (e.g. after opening the map)
+    // restores it and re-runs — otherwise an UPLOADED list is lost and must be re-uploaded.
+    try {
+      sessionStorage.setItem("unicorn_searchState", JSON.stringify({
+        mode, idInput, nameInput, coordInput, radiusInput, uploadText, queryInput, viewColsInput, searchField,
+      }));
+    } catch { /* quota — non-fatal */ }
     const avail = SEARCH_FIELDS.filter(f => f.available);
     const fields = searchField === "all" ? avail : avail.filter(f => f.field === searchField);
 
