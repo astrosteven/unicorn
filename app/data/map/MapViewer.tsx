@@ -272,6 +272,69 @@ function apRectAt(f: ApFrame, dCenter: number, halfDisp: number, sCenter: number
   ].join(" ");
 }
 
+// ---- MSA-field point-in-quadrant collection (WORLD/pixel space) -------------
+// A 2-D vector in WORLD PIXELS (the fitsgl camera's native grid), used to build the MSA
+// quadrant corners in the SAME space the catalog sources live in (each Src has world px
+// x,y). This is deliberately NOT screen space: testing in world px means EVERY catalog
+// source is tested (not just the on-screen ones), so the collected set is complete.
+type Vec2 = { x: number; y: number };
+
+// The aperture frame in WORLD PIXELS: the quadrant-centre world px + the per-arcsec world-px
+// vectors along the dispersion and spatial axes (already carrying PA + the WCS N/E
+// orientation, mirroring apertureFrame but in world px rather than screen px). Built by
+// projecting the centre and two 1″ N/E offsets through skyToPix and combining by PA — the
+// exact analogue of apertureFrame's screen basis.
+type ApFrameWorld = { cx: number; cy: number; disp: Vec2; spat: Vec2 };
+function apertureFrameWorld(
+  wcs: NonNullable<ReturnType<NonNullable<ReturnType<FitsViewerHandle["getViewer"]>>["getWcs"]>>,
+  center: { ra: number; dec: number },
+  paDeg: number,
+): ApFrameWorld | null {
+  const c = skyToPix(wcs, center.ra, center.dec);
+  if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) return null;
+  const dDeg = 1 / 3600; // 1″ step
+  const north = skyToPix(wcs, center.ra, center.dec + dDeg);
+  const east = skyToPix(wcs, center.ra + dDeg / Math.cos((center.dec * Math.PI) / 180), center.dec);
+  const nVec: Vec2 = { x: north.x - c.x, y: north.y - c.y };   // 1″ north, in world px
+  const eVec: Vec2 = { x: east.x - c.x, y: east.y - c.y };     // 1″ east
+  if (!(Math.hypot(nVec.x, nVec.y) > 0) || !(Math.hypot(eVec.x, eVec.y) > 0)) return null;
+  // Spatial axis points along PA (east-of-north): cos·N + sin·E. Dispersion is PA+90°.
+  const pa = (paDeg * Math.PI) / 180;
+  const cs = Math.cos(pa), sn = Math.sin(pa);
+  return {
+    cx: c.x, cy: c.y,
+    spat: { x: cs * nVec.x + sn * eVec.x, y: cs * nVec.y + sn * eVec.y },
+    disp: { x: -sn * nVec.x + cs * eVec.x, y: -sn * nVec.y + cs * eVec.y },
+  };
+}
+
+// The 4 world-pixel corners of one MSA quadrant centred at (dCenter,sCenter) arcsec in the
+// aperture frame, half-extent (halfDisp,halfSpat) arcsec — the world-px analogue of apRectAt.
+function quadCornersWorld(f: ApFrameWorld, dCenter: number, halfDisp: number, sCenter: number, halfSpat: number): Vec2[] {
+  const at = (d: number, s: number): Vec2 => ({
+    x: f.cx + f.disp.x * d + f.spat.x * s,
+    y: f.cy + f.disp.y * d + f.spat.y * s,
+  });
+  return [
+    at(dCenter - halfDisp, sCenter - halfSpat),
+    at(dCenter + halfDisp, sCenter - halfSpat),
+    at(dCenter + halfDisp, sCenter + halfSpat),
+    at(dCenter - halfDisp, sCenter + halfSpat),
+  ];
+}
+
+// Standard ray-cast point-in-polygon (works for any simple polygon; each quadrant is a
+// convex rotated rectangle, so this is exact). `poly` is a CCW/CW loop of world-px corners.
+function pointInPoly(px: number, py: number, poly: Vec2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    const hit = (yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (hit) inside = !inside;
+  }
+  return inside;
+}
+
 // ---- Filter model ----------------------------------------------------------
 export type MapFilters = {
   selectedOnly: boolean;
@@ -386,6 +449,11 @@ export default function MapViewer({
   const [apertureSky, setApertureSky] = useState<{ ra: number; dec: number } | null>(null);
   // Screen-space polygons for the active apertures, recomputed each frame in project().
   const [apertures, setApertures] = useState<{ msa: string[]; ifu: string | null; field: string[] }>({ msa: [], ifu: null, field: [] });
+  // Catalog sources whose world-px position falls inside any of the 4 MSA quadrants at the
+  // current centre + PA. Collected in WORLD/pixel space (ALL sources tested, not just the
+  // on-screen ones) whenever the MSA-field overlay is on; drives the "N in MSA" readout +
+  // the CSV / results-table handoff. Each carries id + sky pos (+ za / mag for the CSV).
+  const [msaSources, setMsaSources] = useState<{ id: number; ra: number; dec: number; za: number | null; mag: number | null }[]>([]);
 
   // ---- Custom-aperture photometry draw tool ---------------------------------
   // The tool is enabled only when the user is signed in (Supabase session) AND the active
@@ -471,6 +539,9 @@ export default function MapViewer({
   // The current filtered source list, held in a ref so the per-frame projector reads
   // the latest without being a hook dependency (projection must not re-subscribe onFrame).
   const sourcesRef = useRef<Src[]>([]);
+  // The loaded index in a ref so the per-frame MSA-quadrant collector can read za / mag
+  // (parallel arrays) at each source's position without re-subscribing project().
+  const idxRef = useRef<FieldIndex | null>(null);
   // Search → map handoff id set (queried objects for this field), in a ref so the stable
   // per-frame project() reads the latest without re-subscribing. null = draw all sources.
   const queuedIdsRef = useRef<Set<number> | null>(queuedIds ?? null);
@@ -725,11 +796,66 @@ export default function MapViewer({
               )
             : [];
           setApertures({ msa, ifu, field });
+
+          // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
+          // EVERY source is tested (not just the on-screen ones the screen `field` polygons
+          // cover). Build the same 4 quadrant rectangles as `field` above, but as world-px
+          // corners (quadCornersWorld mirrors apRectAt in world px), then point-in-poly each
+          // source's (x,y). Uses the WHOLE filtered source list (sourcesRef), ignoring the
+          // viewport cull. The quadrant offsets/half-extents match the drawn overlay exactly,
+          // so the collected set visually coincides with the four amber rectangles.
+          if (ap.msaFieldOn) {
+            const wcs = h.getViewer()?.getWcs();
+            // The aperture centre in SKY coords: the pinned sky pos, else the view-centre px
+            // → sky. quadCornersWorld's frame is built from this same centre + PA.
+            let centerSky: { ra: number; dec: number } | null = ap.apertureSky ?? null;
+            if (!centerSky && wcs) {
+              const s = pixToSky(wcs, cw.x, cw.y);
+              if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) centerSky = { ra: s.ra, dec: s.dec };
+            }
+            const fw = wcs && centerSky ? apertureFrameWorld(wcs, centerSky, ap.paDeg) : null;
+            if (fw) {
+              const quads = [[-offD, -offS], [offD, -offS], [-offD, offS], [offD, offS]].map(
+                ([cd, cs]) => quadCornersWorld(fw, cd, hqd, cs, hqs),
+              );
+              // A generous world-px bounding box over all 4 quadrants → cheap reject before the
+              // per-quadrant ray-cast (the quadrant span is ~100″/0.03 ≈ few thousand px).
+              let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+              for (const q of quads) for (const c of q) {
+                if (c.x < bx0) bx0 = c.x; if (c.x > bx1) bx1 = c.x;
+                if (c.y < by0) by0 = c.y; if (c.y > by1) by1 = c.y;
+              }
+              const ix = idxRef.current;
+              const found: { id: number; ra: number; dec: number; za: number | null; mag: number | null }[] = [];
+              for (const s of sourcesRef.current) {
+                if (s.x < bx0 || s.x > bx1 || s.y < by0 || s.y > by1) continue;
+                let inside = false;
+                for (const q of quads) { if (pointInPoly(s.x, s.y, q)) { inside = true; break; } }
+                if (!inside) continue;
+                const pos = ix ? idToPosRef.current.get(s.id) : undefined;
+                const za = pos != null && ix?.za ? (ix.za[pos] ?? null) : null;
+                const mag = pos != null && ix ? (ix.m444?.[pos] ?? ix.m277?.[pos] ?? null) : null;
+                found.push({ id: s.id, ra: s.ra, dec: s.dec, za, mag });
+              }
+              // Only push when the set actually changed (id list) — avoids a per-frame setState
+              // storm (project runs every frame) that would re-render the panel needlessly.
+              setMsaSources(prev => {
+                if (prev.length === found.length && prev.every((p, k) => p.id === found[k].id)) return prev;
+                return found;
+              });
+            } else {
+              setMsaSources(prev => (prev.length ? [] : prev));
+            }
+          } else {
+            setMsaSources(prev => (prev.length ? [] : prev));
+          }
         } else {
           setApertures({ msa: [], ifu: null, field: [] });
+          setMsaSources(prev => (prev.length ? [] : prev));
         }
       } else {
         setApertures({ msa: [], ifu: null, field: [] });
+        setMsaSources(prev => (prev.length ? [] : prev));
       }
 
       // Custom-aperture photometry circles. Every accumulated aperture (plus the in-progress
@@ -932,6 +1058,7 @@ export default function MapViewer({
   }, [idx]);
   const idToPosRef = useRef(idToPos);
   idToPosRef.current = idToPos;
+  idxRef.current = idx;
 
   // Pick a catalog object (called from an ellipse click while catalog mode is ON): resolve its
   // catalog position, pull its native per-band flux from loadFilters at that position, and append
@@ -1176,6 +1303,50 @@ export default function MapViewer({
     setCatalogPicks([]);
     catalogSeqRef.current = 0;
   }, []);
+
+  // ---- MSA-quadrant source handoffs -----------------------------------------
+  // Download the collected in-MSA sources as CSV (id,ra,dec,za,mag). Client-side Blob, no
+  // deps — the same recipe downloadPhoto uses. mag is the F444W index mag (F277W fallback).
+  const downloadMsaSources = useCallback(() => {
+    if (!msaSources.length) return;
+    const rows = ["id,ra,dec,za,mag"];
+    for (const s of msaSources) {
+      rows.push([
+        s.id,
+        Number.isFinite(s.ra) ? s.ra.toFixed(6) : "",
+        Number.isFinite(s.dec) ? s.dec.toFixed(6) : "",
+        s.za != null && Number.isFinite(s.za) ? s.za.toFixed(4) : "",
+        s.mag != null && Number.isFinite(s.mag) ? s.mag.toFixed(3) : "",
+      ].join(","));
+    }
+    const blob = new Blob([rows.join("\n") + "\n"], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "unicorn_msa_sources.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, [msaSources]);
+
+  // Open the collected in-MSA sources in the Search page's sortable results table. Mirrors the
+  // map's own localStorage["mapQueue"] handoff (Search → map), but the OTHER direction: stash a
+  // { field, id, ra, dec } list under localStorage["searchQueue"] (with a ts + label, so the
+  // Search page can honour it once, fresh, then clear it) and open /data/search?queue=1 in a new
+  // tab. Search reads it into the same table the Upload-List / Query modes use.
+  const openMsaInTable = useCallback(() => {
+    if (!msaSources.length) return;
+    const objects = msaSources.map(s => ({
+      field: field.field, id: s.id,
+      ra: Number.isFinite(s.ra) ? s.ra : null,
+      dec: Number.isFinite(s.dec) ? s.dec : null,
+    }));
+    try {
+      localStorage.setItem("searchQueue", JSON.stringify({ label: "MSA quadrants", ts: Date.now(), objects }));
+    } catch { /* quota — open the search page anyway */ }
+    window.open("/unicorn/data/search?queue=1", "_blank");
+  }, [msaSources, field.field]);
 
   // Export the accumulated photometry as CSV — one row per (aperture, band). Columns:
   // aperture,ra,dec,radius_arcsec,band,wavelength_um,flux_nJy,err_nJy,snr,ab_mag. Client-side
@@ -1533,6 +1704,8 @@ export default function MapViewer({
         />
         <NIRSpecPanel
           msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apertureSky != null}
+          msaCount={msaSources.length}
+          onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={setPaDeg}
           onTogglePin={() => {
             setApertureSky(prev => {
@@ -1707,19 +1880,25 @@ function ScalingPanel({
 // sky position (so panning no longer drags it) vs following the view centre. (The custom
 // photometry draw tool lives in its own separate PHOTOMETRY panel below this one.)
 function NIRSpecPanel({
-  msaOn, ifuOn, msaFieldOn, paDeg, pinned,
-  onMsa, onIfu, onMsaField, onPa, onTogglePin,
+  msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount,
+  onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable,
 }: {
   msaOn: boolean;
   ifuOn: boolean;
   msaFieldOn: boolean;
   paDeg: number;
   pinned: boolean;
+  /** Count of catalog sources inside the 4 MSA quadrants at the current centre + PA. */
+  msaCount: number;
   onMsa: (v: boolean) => void;
   onIfu: (v: boolean) => void;
   onMsaField: (v: boolean) => void;
   onPa: (v: number) => void;
   onTogglePin: () => void;
+  /** Download the in-MSA sources as CSV (id,ra,dec,za,mag). */
+  onMsaCsv: () => void;
+  /** Open the in-MSA sources in the Search page's results table (new tab). */
+  onMsaTable: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const anyOn = msaOn || ifuOn || msaFieldOn;
@@ -1765,6 +1944,48 @@ function NIRSpecPanel({
               style={{ accentColor: "#f0b050", width: 15, height: 15 }} />
             <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>MSA field (4 quadrants)</span>
           </label>
+
+          {/* In-MSA catalog readout + handoffs — shown only while the MSA-field overlay is on.
+              The count updates live as the centre / PA change (project() re-collects each frame).
+              CSV downloads id,ra,dec,za,mag; "table ↗" opens the matched objects on the Search
+              page's sortable results table (new tab). Both are no-ops with an empty set. */}
+          {msaFieldOn && (
+            <div style={{ marginBottom: 9, paddingLeft: 23 }}>
+              <div className="mono" style={{ fontSize: "0.66rem", color: "#f0b050", marginBottom: 6 }}>
+                ⓘ {msaCount.toLocaleString()} source{msaCount === 1 ? "" : "s"} in MSA
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={onMsaCsv}
+                  disabled={msaCount === 0}
+                  className="mono"
+                  title="Download the in-MSA catalog sources as CSV (id,ra,dec,za,mag)"
+                  style={{
+                    flex: 1, background: "none", border: "1px solid var(--border-bright)", borderRadius: 5,
+                    color: msaCount === 0 ? "var(--text-dim)" : "var(--text-muted)",
+                    cursor: msaCount === 0 ? "default" : "pointer", opacity: msaCount === 0 ? 0.55 : 1,
+                    fontSize: "0.66rem", padding: "5px 6px",
+                  }}
+                >
+                  ⬇ CSV
+                </button>
+                <button
+                  onClick={onMsaTable}
+                  disabled={msaCount === 0}
+                  className="mono"
+                  title="Open these in-MSA sources in the Search results table (new tab)"
+                  style={{
+                    flex: 1, background: "none", border: "1px solid var(--border-bright)", borderRadius: 5,
+                    color: msaCount === 0 ? "var(--text-dim)" : "var(--text-muted)",
+                    cursor: msaCount === 0 ? "default" : "pointer", opacity: msaCount === 0 ? 0.55 : 1,
+                    fontSize: "0.66rem", padding: "5px 6px",
+                  }}
+                >
+                  ▤ table ↗
+                </button>
+              </div>
+            </div>
+          )}
 
           <div style={{ marginBottom: 9 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>

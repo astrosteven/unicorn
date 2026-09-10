@@ -741,6 +741,78 @@ export default function SearchPage() {
   const queryAllRef = useRef<MatchEntry[]>([]);
   const router = useRouter();
 
+  // ---- Map → Search handoff ("open in table") -------------------------------
+  // The color map's MSA-quadrant tool stashes its matched objects in localStorage["searchQueue"]
+  // ({ label, ts, objects:[{field,id,ra,dec}] }) and opens /data/search?queue=1 in a new tab —
+  // the mirror of the map's own localStorage["mapQueue"] handoff, in the other direction. On
+  // load, if ?queue=1 and a FRESH (<1h) searchQueue exists, read + clear it and render those
+  // objects in the SAME sortable results table the Upload-List / Query modes use: match each
+  // {field,id} to its index position (indexRowAt → toQueryRow), exactly like showMatchTable.
+  const SEARCH_QUEUE_MAX_AGE_MS = 60 * 60 * 1000;   // 1 h — stale handoffs are ignored
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("queue") !== "1") return;
+    let raw: string | null = null;
+    try { raw = localStorage.getItem("searchQueue"); localStorage.removeItem("searchQueue"); } catch { return; }
+    if (!raw) return;
+    let q: { label?: string; ts?: number; objects?: { field: string; id: number; ra: number | null; dec: number | null }[] };
+    try { q = JSON.parse(raw); } catch { return; }
+    if (!q || !Array.isArray(q.objects) || !q.objects.length) return;
+    if (typeof q.ts === "number" && Date.now() - q.ts > SEARCH_QUEUE_MAX_AGE_MS) return;
+    const label = q.label || "queued objects";
+
+    let cancelled = false;
+    (async () => {
+      setStatus("searching");
+      // Group the queued objects by field so each field's index + spec-z sidecar loads once.
+      const byField = new Map<string, number[]>();   // field → ids (in queued order)
+      const order: string[] = [];                    // fields in first-seen order
+      for (const o of q.objects!) {
+        if (!o || typeof o.field !== "string" || !Number.isFinite(o.id)) continue;
+        if (!byField.has(o.field)) { byField.set(o.field, []); order.push(o.field); }
+        byField.get(o.field)!.push(o.id);
+      }
+      const CAP = TABLE_CAP;
+      const rows: QueryRow[] = [];
+      const all: MatchEntry[] = [];
+      let total = 0;
+      for (const fieldName of order) {
+        const fc = SEARCH_FIELDS.find(f => f.field === fieldName);
+        if (!fc) continue;
+        const { idx } = await loadField(fc);
+        if (cancelled) return;
+        const sz = await loadSpecz(fc);
+        if (cancelled) return;
+        // id → index position, so each queued id resolves to its row (indexRowAt) directly.
+        const pos = new Map<number, number>();
+        for (let i = 0; i < idx.id.length; i++) pos.set(idx.id[i], i);
+        for (const id of byField.get(fieldName)!) {
+          const i = pos.get(id);
+          if (i == null) continue;
+          const cz = sz[String(id)] ?? null;
+          const r = indexRowAt(idx, i, cz);
+          total++;
+          if (rows.length < CAP) rows.push(toQueryRow(fc, id, r, cz, []));
+          all.push({ fc, id, r, cz });
+        }
+      }
+      if (cancelled) return;
+      queryAllRef.current = all;
+      setSort({ col: null, dir: "asc" });
+      setResults([]); setQueryCard(null); setQueryCardId(null);
+      setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
+      if (total === 0) {
+        setStatus("notfound");
+        setMatchSummary(`No matched sources for "${label}".`);
+      } else {
+        setStatus("table");
+        setMatchSummary(`${total.toLocaleString()} source${total === 1 ? "" : "s"} in the MSA quadrants${total > CAP ? ` — showing first ${CAP}` : ""}.`);
+      }
+    })().catch(() => { if (!cancelled) setStatus("idle"); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Hand the current query's matched objects to the visual inspector (via sessionStorage).
   const INSPECT_HANDOFF_CAP = 10000;
   function sendToInspector() {
