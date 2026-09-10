@@ -40,6 +40,10 @@ begin
   update public.profiles set role = new_role where user_id = target;
 end;
 $$;
+-- Base table privileges for the authenticated role. WITHOUT this, every authenticated
+-- read/insert is denied ("42501 permission denied for table profiles") BEFORE RLS even
+-- runs, so the client can't read anyone's role. RLS (above) still restricts which rows.
+grant select, insert on public.profiles to authenticated;
 grant execute on function public.is_admin() to authenticated;
 grant execute on function public.approve_user(uuid, text) to authenticated;
 
