@@ -13,7 +13,7 @@ const FIELDS = [
     area: "106 arcmin²",
     imaging: "JWST NIRCam + HST ACS/WFC3",
     filters: ["F435W","F606W","F814W","F070W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
-    program: "CEERS (ERS 1345), MINERVA (GO 7814), SPAM",
+    program: "CEERS (ERS 1345), MINERVA (GO 7814), SPAM (GO 8559)",
     notes: "Custom UNICORN single-tile reduction",
   },
   {
@@ -26,7 +26,7 @@ const FIELDS = [
     area: "171 arcmin²",
     imaging: "JWST NIRCam + HST ACS/WFC3",
     filters: ["F435W","F606W","F814W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
-    program: "CEERS (ERS 1345), MINERVA (GO 7814), SPAM",
+    program: "CEERS (ERS 1345), MINERVA (GO 7814), SPAM (GO 8559)",
     notes: "Tiled reduction (coming soon)",
   },
   {
@@ -65,7 +65,7 @@ const FIELDS = [
     area: "262 arcmin²",
     imaging: "JWST NIRCam",
     filters: ["F435W","F606W","F814W","F090W","F115W","F140M","F150W","F182M","F200W","F210M","F250M","F277W","F335M","F356W","F410M","F444W","F480M"],
-    program: "PRIMER (GO 1837), COSMOS-Web (GO 1727), MINERVA (GO 7814), COSMOS-3D",
+    program: "PRIMER (GO 1837), COSMOS-Web (GO 1727), MINERVA (GO 7814), COSMOS-3D (GO 5893)",
     notes: "Custom UNICORN reduction",
   },
   {
@@ -91,7 +91,7 @@ const FIELDS = [
     area: "18 arcmin²",
     imaging: "JWST NIRCam",
     filters: ["F435W","F606W","F775W","F814W","F115W","F150W","F200W","F277W","F356W","F444W"],
-    program: "NGDEEP (GO 2079), MIDIS",
+    program: "NGDEEP (GO 2079), MIDIS (GTO 1283)",
     notes: "Custom UNICORN reduction",
   },
   {
@@ -104,7 +104,7 @@ const FIELDS = [
     area: "92 arcmin²",
     imaging: "JWST NIRCam",
     filters: ["F070W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
-    program: "UNCOVER (GO 2561)",
+    program: "UNCOVER (GO 2561), GLASS (ERS 1324), MegaScience (GO 4111), ALT (GO 3516), DDT (GO 2756)",
     notes: "Custom UNICORN reduction",
   },
   {
@@ -117,7 +117,7 @@ const FIELDS = [
     area: "1274 arcmin²",
     imaging: "JWST NIRCam",
     filters: ["F606W","F814W","F090W","F115W","F140M","F150W","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
-    program: "COSMOS-Web (GO 1727), COSMOS-3D",
+    program: "COSMOS-Web (GO 1727), COSMOS-3D (GO 5893)",
     notes: "Custom UNICORN reduction",
   },
 ];
