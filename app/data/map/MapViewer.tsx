@@ -195,11 +195,13 @@ type ApFrame = { cx: number; cy: number; disp: { x: number; y: number }; spat: {
 // (magnitude = local px/arcsec, direction = local N/E under North-up + any parity flip)
 // are correct right at the aperture and stay locked as the camera zooms/pans.
 //
-// Two conventions must match the ellipse path so the aperture doesn't drift on zoom:
-//  1. FITS pixel-centre: `skyToPix`/camera pixels are corner-origin (world (0,0) = top-left
-//     pixel corner), so `imageToScreen` needs +0.5 on both axes — the ellipse code uses
-//     `imageToScreen(s.x+0.5, s.y+0.5)`. Omitting it leaves a half-native-pixel error that
-//     scales with zoom (0.5·zoom screen px) — the exact "drifts off on zoom-in" bug.
+// Coordinate convention (must match every other overlay so nothing drifts):
+//  1. `skyToPix` already returns fitsgl WORLD coordinates (per @fitsgl/core: world (0,0) is
+//     the top-left pixel CORNER, pixel centres at +0.5, and skyToPix folds the FITS-1-based
+//     CRPIX in via its own -0.5). `imageToScreen` is the exact inverse of that world space,
+//     so `imageToScreen(skyToPix(ra,dec))` lands on the source with NO extra offset. (A prior
+//     spurious +0.5 here shifted every overlay half a native pixel off the rendered image —
+//     Mark Dickinson's off-centre ellipses. Do NOT re-add it.)
 //  2. `imageToScreen` returns viewport-relative CLIENT px; the overlay SVG is inset:0 in
 //     the wrapper, so subtract the wrapper rect's left/top to get overlay-local px.
 //
@@ -212,7 +214,7 @@ function apertureFrame(
   paDeg: number,
 ): ApFrame | null {
   const P = (wx: number, wy: number) => {
-    const p = h.imageToScreen(wx + 0.5, wy + 0.5);   // +0.5: FITS pixel-centre (match ellipses)
+    const p = h.imageToScreen(wx, wy);   // no offset: skyToPix world coords register 1:1 with the image
     return p ? { x: p.x - rect.left, y: p.y - rect.top } : null;
   };
   const c = P(centerWorld.x, centerWorld.y);
@@ -783,7 +785,7 @@ export default function MapViewer({
       if ((ap.msaOn || ap.ifuOn || ap.msaFieldOn) && arcsecPerCssPx > 0) {
         // Aperture centre world pixel: the pinned sky position (locked under pan/zoom) if
         // set, else the live view centre. apertureFrame anchors on this exact pixel via the
-        // same +0.5 / rect-relative imageToScreen the ellipses use, so a pinned aperture
+        // same rect-relative imageToScreen the ellipses use, so a pinned aperture
         // stays welded to its sky pixel at every zoom.
         let cw = { x: cam.centerX, y: cam.centerY };
         if (ap.apertureSky) {
@@ -876,7 +878,7 @@ export default function MapViewer({
 
       // Custom-aperture photometry circles. Every accumulated aperture (plus the in-progress
       // drag) is pinned to its SKY centre (welded under pan/zoom): sky → world px via the
-      // viewer WCS, then world → screen via the SAME +0.5 / rect-relative imageToScreen the
+      // viewer WCS, then world → screen via the SAME rect-relative imageToScreen the
       // ellipses use, so it never drifts. Radius: project a point radius_arcsec due north of
       // the centre and take the screen distance (matches the scale-bar's arcsec→px above).
       const pds = photoDrawRef.current;
@@ -886,9 +888,9 @@ export default function MapViewer({
           const circles: { cx: number; cy: number; r: number; color: string }[] = [];
           for (const pd of pds) {
             const cWorld = skyToPix(wcs, pd.ra, pd.dec);
-            const cScreen = h.imageToScreen(cWorld.x + 0.5, cWorld.y + 0.5);
+            const cScreen = h.imageToScreen(cWorld.x, cWorld.y);
             const edgeWorld = skyToPix(wcs, pd.ra, pd.dec + pd.radiusArcsec / 3600);
-            const eScreen = h.imageToScreen(edgeWorld.x + 0.5, edgeWorld.y + 0.5);
+            const eScreen = h.imageToScreen(edgeWorld.x, edgeWorld.y);
             if (cScreen && eScreen) {
               const cx = cScreen.x - rect.left, cy = cScreen.y - rect.top;
               const ex = eScreen.x - rect.left, ey = eScreen.y - rect.top;
@@ -904,7 +906,7 @@ export default function MapViewer({
       }
 
       // Custom-aperture photometry POLYGONS. Same welding recipe as the circles: each sky
-      // vertex → world px via the viewer WCS, then world → screen via the SAME +0.5 /
+      // vertex → world px via the viewer WCS, then world → screen via the same
       // rect-relative imageToScreen the ellipses use, so the polygon stays pinned under
       // pan/zoom. Accumulated polygons are drawn closed; the in-progress one is drawn open
       // with a rubber-band edge from the last vertex to the live cursor + vertex dots.
@@ -914,7 +916,7 @@ export default function MapViewer({
         if (wcs) {
           const toScreen = (ra: number, dec: number): { x: number; y: number } | null => {
             const w = skyToPix(wcs, ra, dec);
-            const p = h.imageToScreen(w.x + 0.5, w.y + 0.5);
+            const p = h.imageToScreen(w.x, w.y);
             return p ? { x: p.x - rect.left, y: p.y - rect.top } : null;
           };
           const polys: { points: string; color: string; closed: boolean; dots: { x: number; y: number }[]; rubber: string | null }[] = [];
@@ -949,7 +951,7 @@ export default function MapViewer({
 
       // Picked catalog-object markers — one small outline per pick in its series colour, so the
       // user sees which objects are on the SED. Pinned to each pick's sky position via the same
-      // +0.5 / rect-relative imageToScreen the ellipses use, so they stay welded on pan/zoom.
+      // rect-relative imageToScreen the ellipses use, so they stay welded on pan/zoom.
       const picks = catalogPicksRef.current;
       if (picks.length) {
         const wcs = h.getViewer()?.getWcs();
@@ -958,7 +960,7 @@ export default function MapViewer({
           for (const p of picks) {
             if (!Number.isFinite(p.ra) || !Number.isFinite(p.dec)) continue;
             const cWorld = skyToPix(wcs, p.ra, p.dec);
-            const cScreen = h.imageToScreen(cWorld.x + 0.5, cWorld.y + 0.5);
+            const cScreen = h.imageToScreen(cWorld.x, cWorld.y);
             if (cScreen) marks.push({ cx: cScreen.x - rect.left, cy: cScreen.y - rect.top, color: p.color });
           }
           setCatalogMarks(marks);
@@ -1015,7 +1017,7 @@ export default function MapViewer({
     const out: Glyph[] = [];
     for (let k = 0; k < visible.length && out.length < MAX_GLYPHS; k += stride) {
       const s = visible[k];
-      const c = h.imageToScreen(s.x + 0.5, s.y + 0.5);
+      const c = h.imageToScreen(s.x, s.y);
       if (!c) continue;
       const scx = c.x - rect.left, scy = c.y - rect.top;
 
@@ -1031,8 +1033,8 @@ export default function MapViewer({
       for (let j = 0; j < ELLIPSE_SEGMENTS; j++) {
         const phi = (2 * Math.PI * j) / ELLIPSE_SEGMENTS;
         const ex = s.semiA * Math.cos(phi), ey = s.semiB * Math.sin(phi);
-        const wx = s.x + 0.5 + ex * ct - ey * st;
-        const wy = s.y + 0.5 + ex * st + ey * ct;
+        const wx = s.x + ex * ct - ey * st;
+        const wy = s.y + ex * st + ey * ct;
         const p = h.imageToScreen(wx, wy);
         if (!p) { bad = true; break; }
         pts.push(`${(p.x - rect.left).toFixed(1)},${(p.y - rect.top).toFixed(1)}`);
@@ -1622,7 +1624,7 @@ export default function MapViewer({
 
       {/* Custom-aperture photometry circles — every accumulated aperture in its own palette
           colour, plus the in-progress drag (cyan). Each is pinned to its sky centre via the
-          same +0.5 / rect-relative imageToScreen the ellipses use, so they stay welded on
+          same rect-relative imageToScreen the ellipses use, so they stay welded on
           pan/zoom. Non-interactive; the capture layer above handles the drawing. */}
       {photoCircles.length > 0 && (
         <svg
@@ -1642,7 +1644,7 @@ export default function MapViewer({
       {/* Custom-aperture photometry polygons — every accumulated polygon in its own palette
           colour (drawn closed/filled-faint), plus the in-progress polygon (cyan, open, with a
           dashed rubber-band edge to the cursor + vertex dots). Each vertex is pinned to its sky
-          position via the same +0.5 / rect-relative imageToScreen the ellipses use, so they
+          position via the same rect-relative imageToScreen the ellipses use, so they
           stay welded on pan/zoom. Non-interactive; the capture layer above handles the drawing. */}
       {photoPolys.length > 0 && (
         <svg
