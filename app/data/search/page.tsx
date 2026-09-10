@@ -917,6 +917,35 @@ export default function SearchPage() {
     setMatchSummary("");
     const avail = SEARCH_FIELDS.filter(f => f.available);
     const fields = searchField === "all" ? avail : avail.filter(f => f.field === searchField);
+
+    // Every result-producing mode funnels its matched (field, index-position) pairs through
+    // this so ID / Name / RA-Dec / Upload all render the SAME sortable, clickable table
+    // (map↗, inspect, download, click-a-row bio plot). speczByfield loaded on demand.
+    const showMatchTable = async (
+      matches: { fc: typeof SEARCH_FIELDS[0]; idx: Awaited<ReturnType<typeof loadField>>["idx"]; i: number }[],
+      label: (total: number) => string,
+    ) => {
+      const CAP = TABLE_CAP;
+      const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
+      const rows: QueryRow[] = [];
+      const all: MatchEntry[] = [];
+      let total = 0;
+      for (const m of matches) {
+        if (!speczByField.has(m.fc.field)) speczByField.set(m.fc.field, await loadSpecz(m.fc));
+        const id = m.idx.id[m.i];
+        const cz = speczByField.get(m.fc.field)?.[String(id)] ?? null;
+        const r = indexRowAt(m.idx, m.i, cz);
+        total++;
+        if (rows.length < CAP) rows.push(toQueryRow(m.fc, id, r, cz, []));
+        all.push({ fc: m.fc, id, r, cz });
+      }
+      queryAllRef.current = all;
+      setSort({ col: null, dir: "asc" });
+      setResults([]); setQueryCard(null); setQueryCardId(null);
+      setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
+      setStatus("table");
+      setMatchSummary(label(total) + (total > CAP ? ` — showing first ${CAP}` : "") + ".");
+    };
     if (fields.length === 0) {
       setStatus("notfound");
       setMatchSummary("No fields are connected yet.");
@@ -983,18 +1012,16 @@ export default function SearchPage() {
         const labels = await loadLabels();
         const hits = labels.filter(l =>
           l.name.toLowerCase().includes(q) || (l.aka ?? []).some(a => a.toLowerCase().includes(q)));
-        const named: SourceResult[] = [];
+        const matches: { fc: typeof SEARCH_FIELDS[0]; idx: Awaited<ReturnType<typeof loadField>>["idx"]; i: number }[] = [];
         for (const l of hits) {
           const fc = avail.find(f => f.field === l.field);
           if (!fc) continue;
-          const { zg } = await loadField(fc);
-          const src = await fetchObject(fc, l.id, zg);
-          if (src) named.push(src);
+          const { idx } = await loadField(fc);
+          const i = idx.id.indexOf(l.id);
+          if (i >= 0) matches.push({ fc, idx, i });
         }
-        if (named.length === 0) { setStatus("notfound"); setMatchSummary(`No named object matches "${nameInput.trim()}".`); return; }
-        setResults(named);
-        if (named.length === 1) setStatus("found");
-        else { setStatus("multi"); setMatchSummary(`${named.length} named matches.`); }
+        if (matches.length === 0) { setStatus("notfound"); setMatchSummary(`No named object matches "${nameInput.trim()}".`); return; }
+        await showMatchTable(matches, t => `${t.toLocaleString()} named match${t === 1 ? "" : "es"} for "${nameInput.trim()}"`);
         return;
       }
 
@@ -1022,13 +1049,19 @@ export default function SearchPage() {
           setMatchSummary("Enter an object ID — optionally field-prefixed, e.g. \"CEERS 1019\".");
           return;
         }
+        const matches: { fc: typeof SEARCH_FIELDS[0]; idx: Awaited<ReturnType<typeof loadField>>["idx"]; i: number }[] = [];
         for (const fc of idFields) {
-          const { idx, zg } = await loadField(fc);
-          if (idx.id.includes(id)) {
-            const src = await fetchObject(fc, id, zg);
-            if (src) found.push(src);
-          }
+          const { idx } = await loadField(fc);
+          const i = idx.id.indexOf(id);
+          if (i >= 0) matches.push({ fc, idx, i });
         }
+        if (matches.length === 0) {
+          setStatus("notfound");
+          setMatchSummary(`No source with ID ${id}${idFields.length === 1 ? ` in ${idFields[0].field}` : ""}.`);
+          return;
+        }
+        await showMatchTable(matches, t => `${t.toLocaleString()} match${t === 1 ? "" : "es"} for ID ${id}`);
+        return;
       } else if (mode === "radec") {
         // Cone search → the SAME sortable results table Query/Upload use (map↗, inspect,
         // downloads, click-a-row bio plot), rows ordered by separation (closest first).
