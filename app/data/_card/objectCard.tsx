@@ -7,6 +7,7 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabase";
+import { useProfile } from "@/lib/roles";
 import { Comments } from "./Comments";
 
 // On-the-fly WebGL color cutout (window + WebGL2), loaded client-only via next/dynamic
@@ -915,20 +916,17 @@ export function ResultCard({ src }: { src: SourceResult }) {
 // merges into the By-Name search (loadLabels) and shows immediately as a ★ on the card.
 // Hidden entirely when signed out (mirrors the /data/review auth pattern).
 function AddNameControl({ src, onAdded }: { src: SourceResult; onAdded: (rec: LabelRec) => void }) {
-  const [email, setEmail] = useState<string | null>(null);
+  const { session, role } = useProfile();
+  const email = session?.user.email ?? null;
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [reference, setReference] = useState("");
   const [state, setState] = useState<"idle" | "saving" | "done">("idle");
   const [err, setErr] = useState("");
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setEmail(s?.user.email ?? null));
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  if (!email) return null;  // signed out — no control at all
+  // Only key/admin may attach names (matches the object_labels insert policy). General &
+  // pending users don't see the control at all; signed-out users have no email/role.
+  if (!email || (role !== "key" && role !== "admin")) return null;
 
   const save = async () => {
     const nm = name.trim();

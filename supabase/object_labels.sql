@@ -24,11 +24,18 @@ alter table public.object_labels enable row level security;
 drop policy if exists object_labels_read on public.object_labels;
 create policy object_labels_read on public.object_labels for select using (true);
 
--- INSERT: any authenticated (logged-in, approved) user may attach a name. The frontend
--- shows the control to every signed-in user; role tiers are enforced by route access, not here.
+-- is_key_or_admin(): SECURITY DEFINER so it bypasses RLS on profiles (mirrors is_admin()).
+create or replace function public.is_key_or_admin() returns boolean
+  language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.profiles where user_id = auth.uid() and role in ('key','admin'));
+$$;
+grant execute on function public.is_key_or_admin() to authenticated;
+
+-- INSERT: only key/admin users may attach a name. General/pending users can't (the frontend
+-- also hides the control for them); this policy is the real enforcement.
 drop policy if exists object_labels_insert on public.object_labels;
 create policy object_labels_insert on public.object_labels
-  for insert to authenticated with check (true);
+  for insert to authenticated with check (public.is_key_or_admin());
 
 -- Base-table privileges. WITHOUT these, every read/insert is denied ("42501 permission
 -- denied for table object_labels") BEFORE RLS runs. RLS (above) still governs which rows.
