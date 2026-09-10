@@ -121,7 +121,8 @@ export function sedPointsFromBands(
 ): { wav: number; flux: number; err: number }[] {
   const out: { wav: number; flux: number; err: number }[] = [];
   for (const b of bands) {
-    const wav = FILTER_WAVES[b.band];
+    // Worker returns lowercase band names (f115w); FILTER_WAVES keys are uppercase.
+    const wav = FILTER_WAVES[b.band.toUpperCase()];
     if (wav === undefined || !Number.isFinite(b.flux_nJy)) continue;
     out.push({ wav, flux: b.flux_nJy, err: Number.isFinite(b.err_nJy) ? b.err_nJy : 0 });
   }

@@ -36,6 +36,7 @@ export default function PhotometryPanel({
   onPhotoTool,
   onClear,
   onDownload,
+  onAdjust,
 }: {
   open: boolean;
   /** The accumulated apertures (measuring / done / error), each with its palette colour. */
@@ -48,8 +49,16 @@ export default function PhotometryPanel({
   onPhotoTool: () => void;
   onClear: () => void;
   onDownload: () => void;
+  /** Re-measure aperture #n at a new radius (arcsec) — for the ± steppers. */
+  onAdjust: (n: number, radiusArcsec: number) => void;
 }) {
   const hasAny = apertures.length > 0;
+  // Compact ± stepper button (adjust an aperture's radius by 0.05″ and re-measure).
+  const STEP_BTN: React.CSSProperties = {
+    width: 16, height: 16, lineHeight: "14px", textAlign: "center", padding: 0,
+    background: "none", border: "1px solid var(--border-bright)", borderRadius: 3,
+    color: "var(--text-muted)", cursor: "pointer", fontSize: "0.72rem",
+  };
   // Only finished measurements contribute a plotted SED series; measuring/errored ones still
   // show in the legend + tables so the user sees them accumulate.
   const series: SEDSeries[] = apertures
@@ -154,9 +163,15 @@ export default function PhotometryPanel({
                   <div key={a.n} className="mono" style={{ display: "flex", alignItems: "center", gap: 7, fontSize: "0.62rem", color: "var(--text-muted)" }}>
                     <span style={{ width: 11, height: 11, borderRadius: "50%", background: a.color, flex: "0 0 auto", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }} />
                     <span style={{ whiteSpace: "nowrap" }}>
-                      #{a.n}&nbsp; r={a.radiusArcsec.toFixed(2)}″&nbsp; {a.ra.toFixed(3)},{a.dec.toFixed(3)}
-                      {a.state.kind === "measuring" && " · measuring…"}
+                      #{a.n}&nbsp; {a.ra.toFixed(3)},{a.dec.toFixed(3)}
+                      {a.state.kind === "measuring" && " · …"}
                       {a.state.kind === "error" && " · failed"}
+                    </span>
+                    {/* radius stepper — re-measures this aperture at ±0.05″ */}
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, marginLeft: "auto" }}>
+                      <button title="shrink 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec - 0.05)} style={STEP_BTN}>−</button>
+                      <span style={{ minWidth: 42, textAlign: "center" }}>{a.radiusArcsec.toFixed(2)}″</span>
+                      <button title="grow 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec + 0.05)} style={STEP_BTN}>+</button>
                     </span>
                   </div>
                 ))}

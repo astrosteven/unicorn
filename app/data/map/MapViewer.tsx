@@ -862,6 +862,21 @@ export default function MapViewer({
         : a)));
   }, [skyAt]);
 
+  // Adjust an already-drawn aperture's radius (± from the panel) and re-measure it in place,
+  // keeping the same centre + colour + index. The circle re-projects immediately (photoAps
+  // change → project()); the new flux lands when the request settles.
+  const adjustAperture = useCallback((n: number, newRadiusArcsec: number) => {
+    const r = Math.max(0.03, Math.round(newRadiusArcsec * 1000) / 1000);
+    const ap = photoAps.find(a => a.n === n);
+    if (!ap) return;
+    setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, radiusArcsec: r, state: { kind: "measuring" } } : a));
+    void measureAperture(ap.ra, ap.dec, { type: "circle", radius_arcsec: r })
+      .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
+      .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
+        ? { ...a, state: { kind: "error", message: err instanceof Error ? err.message : String(err) } }
+        : a)));
+  }, [photoAps]);
+
   // The capture overlay occludes the viewer canvas, so wheel events land on it instead of
   // the canvas — which would kill zoom while the tool is on. Re-dispatch the wheel to the
   // canvas beneath so zoom keeps working; the drag (pointer) is still ours for drawing.
@@ -1142,7 +1157,7 @@ export default function MapViewer({
           with the NIRSpec + PHOTOMETRY panels in one top-right column so they never overlap.
           maxHeight + overflow lets the (potentially tall) PHOTOMETRY panel scroll rather
           than run off the bottom of the map. */}
-      <div style={{ position: "absolute", top: 12, right: 12, bottom: 12, zIndex: 15, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", overflowY: "auto", pointerEvents: "none" }}>
+      <div style={{ position: "absolute", top: 12, right: 12, bottom: 12, zIndex: 20, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", overflowY: "auto", pointerEvents: "none" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", pointerEvents: "auto" }}>
         <ScalingPanel
           params={trilogy}
@@ -1179,7 +1194,7 @@ export default function MapViewer({
           is measured from the right column's box and the panel lands on the right, clipped.
           Its SED + tables get tall, so cap height with an INTERNAL scroll (pointer-events:auto
           so the wheel scrolls it); the container shrink-wraps so it never blocks map panning. */}
-      <div style={{ position: "absolute", top: 12, left: 14, zIndex: 16, maxHeight: "calc(100% - 64px)", overflowY: "auto", pointerEvents: "auto" }}>
+      <div style={{ position: "absolute", top: 12, left: 14, zIndex: 20, maxHeight: "calc(100% - 64px)", overflowY: "auto", pointerEvents: "auto" }}>
         <PhotometryPanel
           open={photoPanelOpen}
           apertures={photoAps}
@@ -1190,6 +1205,7 @@ export default function MapViewer({
           onPhotoTool={() => setPhotoTool(v => !v)}
           onClear={clearPhoto}
           onDownload={downloadPhoto}
+          onAdjust={adjustAperture}
         />
       </div>
     </div>
