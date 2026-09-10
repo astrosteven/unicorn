@@ -1249,8 +1249,34 @@ export default function SearchPage() {
         // matched (field, index-position) pair, then render the SAME sortable results
         // table Query mode uses (map↗ links, sorting, click-a-row card, downloads,
         // "inspect these"). Upload order is preserved — the user can sort in the table.
-        const lines = uploadText.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#"));
-        requested = lines.length;
+        // Column names we recognise as RA / Dec / ID in a header row (normalized: lowercased,
+        // stripped to a-z0-9 so "RA_deg", "RAJ2000", "obj_id" all match).
+        const RA_NAMES  = new Set(["ra", "raj2000", "radeg", "ra2000", "alpha", "alphaj2000", "rightascension", "raj", "cra"]);
+        const DEC_NAMES = new Set(["dec", "de", "decj2000", "decdeg", "dec2000", "delta", "deltaj2000", "declination", "cdec"]);
+        const ID_NAMES  = new Set(["id", "objid", "objectid", "sourceid", "srcid", "number", "num", "index", "idx"]);
+        const splitRow = (l: string) => l.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+
+        // Smart header handling: if the first row is column NAMES (optionally with a leading
+        // '#'), auto-map the RA/Dec/ID columns so a headered CSV/whitespace table "just works".
+        // Otherwise fall back to the bare per-line "ID" or "RA Dec" format.
+        const rawLines = uploadText.split("\n").map(l => l.trim()).filter(Boolean);
+        let raCol = -1, decCol = -1, idCol = -1, headerConsumed = false;
+        if (rawLines.length) {
+          const head = splitRow(rawLines[0].replace(/^#+\s*/, ""));
+          const isHeader = head.length > 0 && head.every(t => !Number.isFinite(parseFloat(t)));
+          if (isHeader) {
+            head.forEach((t, i) => {
+              const k = t.toLowerCase().replace(/[^a-z0-9]/g, "");
+              if (raCol < 0 && RA_NAMES.has(k)) raCol = i;
+              else if (decCol < 0 && DEC_NAMES.has(k)) decCol = i;
+              else if (idCol < 0 && ID_NAMES.has(k)) idCol = i;
+            });
+            headerConsumed = true;
+          }
+        }
+        const dataLines = (headerConsumed ? rawLines.slice(1) : rawLines).filter(l => !l.startsWith("#"));
+        requested = dataLines.length;
+
         const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadField(fc)) })));
         const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
         for (const L of loaded) speczByField.set(L.fc.field, await loadSpecz(L.fc));
@@ -1268,28 +1294,30 @@ export default function SearchPage() {
           if (rows.length < CAP) rows.push(toQueryRow(L.fc, id, r, cz, []));
           all.push({ fc: L.fc, id, r, cz });
         };
-        for (const line of lines) {
-          const parts = line.split(/[\s,]+/);
-          if (parts.length === 1) {
-            const id = parseInt(parts[0], 10);
-            if (!Number.isFinite(id)) continue;
-            for (const L of loaded) {
-              const i = L.idx.id.indexOf(id);
-              if (i >= 0) { pushMatch(L, i); break; }
+        const matchById = (id: number) => {
+          if (!Number.isFinite(id)) return;
+          for (const L of loaded) { const i = L.idx.id.indexOf(id); if (i >= 0) { pushMatch(L, i); return; } }
+        };
+        const matchByRaDec = (ra: number, dec: number) => {
+          if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
+          let best: { L: typeof loaded[0]; i: number; sep: number } | null = null;
+          for (const L of loaded) {
+            for (let i = 0; i < L.idx.n; i++) {
+              const sep = angSep(ra, dec, L.idx.ra[i], L.idx.dec[i]);
+              if (sep <= 0.5 && (!best || sep < best.sep)) best = { L, i, sep };
             }
-          } else {
-            const ra = parseFloat(parts[0]);
-            const dec = parseFloat(parts[1]);
-            if (!Number.isFinite(ra) || !Number.isFinite(dec)) continue;
-            let best: { L: typeof loaded[0]; i: number; sep: number } | null = null;
-            for (const L of loaded) {
-              for (let i = 0; i < L.idx.n; i++) {
-                const sep = angSep(ra, dec, L.idx.ra[i], L.idx.dec[i]);
-                if (sep <= 0.5 && (!best || sep < best.sep)) best = { L, i, sep };
-              }
-            }
-            if (best) pushMatch(best.L, best.i);
           }
+          if (best) pushMatch(best.L, best.i);
+        };
+
+        for (const line of dataLines) {
+          const parts = splitRow(line);
+          // Headered file: pick the mapped columns (RA/Dec preferred over ID when both exist).
+          if (raCol >= 0 && decCol >= 0) { matchByRaDec(parseFloat(parts[raCol]), parseFloat(parts[decCol])); continue; }
+          if (idCol >= 0) { matchById(parseInt(parts[idCol], 10)); continue; }
+          // No header: bare "ID" (one token) or "RA Dec" (two).
+          if (parts.length === 1) matchById(parseInt(parts[0], 10));
+          else matchByRaDec(parseFloat(parts[0]), parseFloat(parts[1]));
         }
 
         if (total === 0) {

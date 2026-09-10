@@ -131,10 +131,10 @@ export default function Home() {
           gap: "2rem",
         }}>
           {[
-            { label: "Survey Fields", value: "8" },
+            { label: "Survey Fields", value: "9" },
             { label: "Total Sources",  value: "—" },
             { label: "Redshift Range", value: "0 – 12+" },
-            { label: "Telescope",      value: "JWST" },
+            { label: "Telescopes",     value: "HST+JWST" },
           ].map(s => (
             <div key={s.label}>
               <div className="mono" style={{

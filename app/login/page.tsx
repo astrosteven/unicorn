@@ -34,6 +34,7 @@ export default function LoginPage() {
   const [loading, setLoading]     = useState(false);
   const [submitted, setSubmitted] = useState(false); // register confirmation
   const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaErr, setCaptchaErr]     = useState("");
   const captchaBox = useRef<HTMLDivElement>(null);
   const captchaId  = useRef<string | null>(null);
   const router = useRouter();
@@ -47,14 +48,22 @@ export default function LoginPage() {
       captchaId.current = ts.render(captchaBox.current, {
         sitekey: TURNSTILE_SITE_KEY,
         theme: "dark",
-        callback: (t: string) => setCaptchaToken(t),
+        appearance: "always",              // always show the widget (never invisible)
+        callback: (t: string) => { setCaptchaToken(t); setCaptchaErr(""); },
         "expired-callback": () => setCaptchaToken(""),
-        "error-callback": () => setCaptchaToken(""),
+        "error-callback": (code: string) => {
+          setCaptchaToken("");
+          // Surface Cloudflare's code so a misconfig (e.g. this domain not on the widget's
+          // hostname allowlist → 110200) is diagnosable instead of showing a blank box.
+          setCaptchaErr(`Verification couldn't load (Turnstile ${code || "error"}). The site's domain may not be allowed for this Turnstile widget.`);
+          return true;
+        },
       });
     };
     if (!document.querySelector(`script[src^="${API.split("?")[0]}"]`)) {
       const s = document.createElement("script");
       s.src = API; s.async = true; s.defer = true;
+      s.onerror = () => setCaptchaErr("Couldn't reach Cloudflare Turnstile (network or ad-blocker?).");
       document.head.appendChild(s);
     }
     const iv = setInterval(() => { if (getTurnstile()) { clearInterval(iv); render(); } }, 150);
@@ -250,7 +259,12 @@ export default function LoginPage() {
                 )}
 
                 {/* Cloudflare Turnstile challenge — its token is required by Supabase Auth. */}
-                <div ref={captchaBox} style={{ marginBottom: "14px", minHeight: "65px" }} />
+                <div ref={captchaBox} style={{ marginBottom: captchaErr ? "6px" : "14px", minHeight: "65px" }} />
+                {captchaErr && (
+                  <p style={{ color: "var(--red)", fontSize: "0.72rem", marginBottom: "12px", lineHeight: 1.5, fontFamily: "'Space Mono', monospace" }}>
+                    {captchaErr}
+                  </p>
+                )}
 
                 {error && (
                   <p style={{
