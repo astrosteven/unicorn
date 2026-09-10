@@ -83,5 +83,17 @@ export function useProfile(): { session: Session | null; role: Role | null; load
     return () => { alive = false; sub.subscription.unsubscribe(); };
   }, []);
 
+  // While a logged-in user is still `pending`, poll their role so an approval (a DB change,
+  // which does NOT fire an auth event) unlocks the site live — no refresh, no email needed.
+  useEffect(() => {
+    if (!session || role !== "pending") return;
+    const iv = setInterval(async () => {
+      const { data } = await supabase
+        .from("profiles").select("role").eq("user_id", session.user.id).maybeSingle();
+      if (data?.role && data.role !== "pending") setRole(data.role as Role);
+    }, 20000);
+    return () => clearInterval(iv);
+  }, [session, role]);
+
   return { session, role, loading };
 }
