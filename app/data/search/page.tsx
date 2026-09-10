@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { useRouter } from "next/navigation";
 import JSZip from "jszip";
 import { FITSGL_BASE, CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map + campfire stretch
+import ScatterPlot from "./ScatterPlot";  // interactive SVG scatter of the matched set (Plot view)
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
 import {
   FILTER_WAVES,
@@ -73,7 +74,8 @@ function bandColorFlux(r: IdxRow, band: string): number | null {
   return used > 0 ? used : null;
 }
 // A value-extractor for a column, all derived from the native stored flux_<f>/fluxerr_<f>.
-function colGetter(col: string): (r: IdxRow) => number | string | null {
+// (Exported so the Plot view's ScatterPlot can pull arbitrary numeric columns off a row.)
+export function colGetter(col: string): (r: IdxRow) => number | string | null {
   let m: RegExpMatchArray | null;
   if ((m = col.match(/^flux_([a-z0-9]+)$/)) && KNOWN_FILTERS.has(m[1])) {
     const fc = `flux_${m[1]}`;
@@ -133,7 +135,8 @@ function fmtCell(v: number | string | null): string {
 
 // ---- Sortable results table -------------------------------------------------
 // One entry of the FULL retained match set (queryAllRef): field cfg + index row + campfire.
-type MatchEntry = { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null };
+// (Exported so the Plot view can scatter the full matched set.)
+export type MatchEntry = { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null };
 type SortState = { col: string | null; dir: "asc" | "desc" };
 // Value-extractor for a sortable column, keyed by the header label / dynamic queryCol name.
 // Fixed columns read the fixed fields; dynamic queryCols use colGetter on the index row.
@@ -587,6 +590,7 @@ export default function SearchPage() {
   const [queryRows, setQueryRows] = useState<QueryRow[]>([]);
   const [queryCols, setQueryCols] = useState<string[]>([]);
   const [sort, setSort] = useState<SortState>({ col: null, dir: "asc" });
+  const [resultView, setResultView] = useState<"table" | "plot">("table");   // results table vs. scatter plot
   const [defsOpen, setDefsOpen] = useState(false);
   const [zipping, setZipping] = useState<string | null>(null);
 
@@ -913,6 +917,7 @@ export default function SearchPage() {
   // query, then pulls per-object detail JSON for each hit to build a SourceResult.
   async function doSearch() {
     setStatus("searching");
+    setResultView("table");   // a new search starts on the table; plot re-derives from queryAllRef
     setResults([]);
     setMatchSummary("");
     const avail = SEARCH_FIELDS.filter(f => f.available);
@@ -1550,6 +1555,28 @@ export default function SearchPage() {
             </span>
           </div>
 
+          {/* Table ⇄ Plot view toggle — the Plot view scatters the FULL matched set. */}
+          <div style={{ display: "flex", gap: "4px", marginBottom: "1rem" }}>
+            {([
+              { key: "table", label: "▤ Table" },
+              { key: "plot",  label: "▦ Plot" },
+            ] as const).map(v => (
+              <button key={v.key} onClick={() => setResultView(v.key)} className="mono" style={{
+                padding: "6px 16px", borderRadius: "4px",
+                border: `1px solid ${resultView === v.key ? "var(--border-bright)" : "var(--border)"}`,
+                background: resultView === v.key ? "rgba(196,144,216,0.14)" : "transparent",
+                color: resultView === v.key ? "var(--accent)" : "var(--text-muted)",
+                fontSize: "0.78rem", cursor: "pointer",
+              }}>
+                {v.label}
+              </button>
+            ))}
+          </div>
+
+          {resultView === "plot" ? (
+            <ScatterPlot matches={queryAllRef.current} queryCols={queryCols} />
+          ) : (
+          <>
           <DownloadControls
             resolveRows={resolveQueryRows}
             count={queryTotal}
@@ -1654,6 +1681,8 @@ export default function SearchPage() {
               </tbody>
             </table>
           </div>
+          </>
+          )}
         </div>
       )}
     </main>
