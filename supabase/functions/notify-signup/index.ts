@@ -40,7 +40,11 @@ Deno.serve(async (req: Request) => {
           `<p><a href="${approveUrl}">Review &amp; approve →</a></p>`,
       }),
     });
-    return new Response(JSON.stringify({ ok: res.ok }), {
+    // Surface Resend's reason on failure (e.g. the onboarding@resend.dev sandbox only sends to
+    // your own account email until you verify a domain), so setup problems are diagnosable.
+    const detail = res.ok ? undefined : (await res.text()).slice(0, 500);
+    if (!res.ok) console.error("resend send failed", res.status, detail);
+    return new Response(JSON.stringify({ ok: res.ok, status: res.status, detail }), {
       status: res.ok ? 200 : 502, headers: { ...CORS, "content-type": "application/json" },
     });
   } catch (e) {
