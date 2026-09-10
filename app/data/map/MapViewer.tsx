@@ -28,6 +28,7 @@ import {
   loadFitsglConfig,
   skyToPix,
   pixToSky,
+  angularSeparationDeg,
   DEFAULT_TRILOGY_PARAMS,
   type FitsglConfig,
   type ViewerConfig,
@@ -42,6 +43,9 @@ import {
   type FieldIndex,
   type NumCol,
 } from "@/app/data/_card/objectCard";
+import { supabase } from "@/lib/supabase";
+import { measureAperture } from "@/lib/photometry";
+import PhotometryPanel, { type PhotState } from "./PhotometryPanel";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -50,6 +54,8 @@ type LoadState = "loading" | "ready" | "error";
 const GREEN = "#43d17a";   // has a campfire spec-z
 const YELLOW = "#f2d43a";  // selected (no spec-z)
 const RED = "#e0503a";     // not selected
+// Custom-aperture photometry draw tool: the drawn circle's stroke colour.
+const CYAN = "#38d0f0";
 
 // Default trilogy scaling — the CAMPFIRE values (campfire.hollisakins.com) the map
 // ships with; the scaling panel starts here and "Reset to default" returns here. Same
@@ -372,6 +378,33 @@ export default function MapViewer({
   const [apertureSky, setApertureSky] = useState<{ ra: number; dec: number } | null>(null);
   // Screen-space polygons for the active apertures, recomputed each frame in project().
   const [apertures, setApertures] = useState<{ msa: string[]; ifu: string | null; field: string[] }>({ msa: [], ifu: null, field: [] });
+
+  // ---- Custom-aperture photometry draw tool ---------------------------------
+  // The tool is enabled only when the user is signed in (Supabase session) AND the active
+  // field is CEERS (the Worker is CEERS-only). `photoTool` toggles the draw mode on/off.
+  const [session, setSession] = useState<import("@supabase/supabase-js").Session | null>(null);
+  const [photoTool, setPhotoTool] = useState(false);
+  const isCeers = field.field === "CEERS";
+  const photoEnabled = session != null && isCeers;
+  // The drawn aperture's SKY centre + radius (arcsec), stored so project() re-pins it to
+  // screen every frame (welded to its sky pixel under pan/zoom, exactly like the ellipses).
+  // null when nothing is drawn. `draw` holds the in-progress drag; `photoAp` the committed
+  // aperture (kept while its results panel is open).
+  const [draw, setDraw] = useState<{ ra: number; dec: number; radiusArcsec: number } | null>(null);
+  const [photoAp, setPhotoAp] = useState<{ ra: number; dec: number; radiusArcsec: number } | null>(null);
+  // Screen-space projection of the active aperture (centre px + radius px), rebuilt each
+  // frame in project() from its sky centre — null when off-screen or nothing drawn.
+  const [photoCircle, setPhotoCircle] = useState<{ cx: number; cy: number; r: number } | null>(null);
+  // The results-panel state (spinner / done / error), driven by measureAperture.
+  const [photoState, setPhotoState] = useState<PhotState>({ kind: "idle" });
+
+  // Track the Supabase session (same pattern as /data/review) so the tool button gates on
+  // sign-in and re-enables/disables live on login/logout.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
   // Live trilogy scaling params driven by the SCALING panel. Starts at CAMPFIRE; the
   // panel mutates these and each change re-derives the stretch on the existing viewer
   // via applyTrilogy — no camera move, no overlay rebuild.
@@ -461,6 +494,10 @@ export default function MapViewer({
   // Aperture-overlay settings, in a ref for the same reason (project runs per frame).
   const apRef = useRef({ msaOn, ifuOn, msaFieldOn, paDeg, apertureSky });
   apRef.current = { msaOn, ifuOn, msaFieldOn, paDeg, apertureSky };
+  // The photometry aperture to draw this frame — the in-progress drag if drawing, else the
+  // committed aperture. In a ref so the stable per-frame project() reads the latest.
+  const photoDrawRef = useRef<{ ra: number; dec: number; radiusArcsec: number } | null>(null);
+  photoDrawRef.current = draw ?? photoAp;
 
   // Re-derive + apply the trilogy stretch on the LIVE viewer from the given params. This
   // is the exact FitsExplorer path (applyTrilogy + setStretchMode("trilogy")): it only
@@ -630,6 +667,34 @@ export default function MapViewer({
       } else {
         setApertures({ msa: [], ifu: null, field: [] });
       }
+
+      // Custom-aperture photometry circle. Pinned to its SKY centre (welded under pan/zoom):
+      // sky → world px via the viewer WCS, then world → screen via the SAME +0.5 / rect-
+      // relative imageToScreen the ellipses use, so it never drifts. Radius: project a point
+      // radius_arcsec due north of the centre and take the screen distance (matches the
+      // scale-bar's arcsec→px measurement above).
+      const pd = photoDrawRef.current;
+      if (pd && arcsecPerCssPx > 0) {
+        const wcs = h.getViewer()?.getWcs();
+        if (wcs) {
+          const cWorld = skyToPix(wcs, pd.ra, pd.dec);
+          const cScreen = h.imageToScreen(cWorld.x + 0.5, cWorld.y + 0.5);
+          const edgeWorld = skyToPix(wcs, pd.ra, pd.dec + pd.radiusArcsec / 3600);
+          const eScreen = h.imageToScreen(edgeWorld.x + 0.5, edgeWorld.y + 0.5);
+          if (cScreen && eScreen) {
+            const cx = cScreen.x - rect.left, cy = cScreen.y - rect.top;
+            const ex = eScreen.x - rect.left, ey = eScreen.y - rect.top;
+            const r = Math.hypot(ex - cx, ey - cy);
+            setPhotoCircle({ cx, cy, r });
+          } else {
+            setPhotoCircle(null);
+          }
+        } else {
+          setPhotoCircle(null);
+        }
+      } else {
+        setPhotoCircle(null);
+      }
     }
 
     // Tiled fields: the catalog x,y are per-tile and don't line up with the fitsgl virtual
@@ -708,6 +773,104 @@ export default function MapViewer({
   // Re-project when aperture settings change — toggling/PA don't move the camera, so
   // onFrame won't fire; poke project directly so the overlay updates immediately.
   useEffect(() => { project(); }, [msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, project]);
+
+  // Re-project when the drawn photometry aperture changes (drag / commit / clear) — no
+  // camera move, so onFrame won't fire on its own.
+  useEffect(() => { project(); }, [draw, photoAp, project]);
+
+  // ---- Photometry draw tool: pointer handlers -------------------------------
+  // With the tool active, a drag on the map draws the aperture (NOT a pan): mousedown sets
+  // the sky centre, mousemove sets the radius (great-circle sep centre→cursor × 3600), and
+  // mouseup finalises and fires measureAperture. We intercept the pointer ONLY while the
+  // tool is active and a draw is in progress, so with the tool off the map pans exactly as
+  // before. Uses capture + stopPropagation so the viewer's own drag-pan never sees the drag.
+  const drawingRef = useRef<{ ra: number; dec: number } | null>(null);
+
+  const skyAt = useCallback((clientX: number, clientY: number): { ra: number; dec: number } | null => {
+    const h = handleRef.current;
+    if (!h) return null;
+    const w = h.screenToImage(clientX, clientY);
+    if (!w) return null;
+    const wcs = h.getViewer()?.getWcs();
+    if (!wcs) return null;
+    const s = pixToSky(wcs, w.x, w.y);
+    return Number.isFinite(s.ra) && Number.isFinite(s.dec) ? { ra: s.ra, dec: s.dec } : null;
+  }, []);
+
+  const onPhotoDown = useCallback((e: React.PointerEvent) => {
+    if (!photoTool) return;                 // tool off → let the map pan as usual
+    if (e.button !== 0) return;             // left-drag only
+    const c = skyAt(e.clientX, e.clientY);
+    if (!c) return;
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    drawingRef.current = c;
+    setPhotoAp(null);                       // clear any prior committed aperture
+    setPhotoState({ kind: "idle" });
+    setDraw({ ra: c.ra, dec: c.dec, radiusArcsec: 0 });
+  }, [photoTool, skyAt]);
+
+  const onPhotoMove = useCallback((e: React.PointerEvent) => {
+    const start = drawingRef.current;
+    if (!start) return;                     // not drawing → ignore (map handles its own moves)
+    e.stopPropagation();
+    const cur = skyAt(e.clientX, e.clientY);
+    if (!cur) return;
+    const radiusArcsec = angularSeparationDeg(start, cur) * 3600;
+    setDraw({ ra: start.ra, dec: start.dec, radiusArcsec });
+  }, [skyAt]);
+
+  const onPhotoUp = useCallback((e: React.PointerEvent) => {
+    const start = drawingRef.current;
+    if (!start) return;
+    e.stopPropagation();
+    drawingRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    const cur = skyAt(e.clientX, e.clientY);
+    const radiusArcsec = cur ? angularSeparationDeg(start, cur) * 3600 : 0;
+    const ap = { ra: start.ra, dec: start.dec, radiusArcsec };
+    setDraw(null);
+    // A too-small aperture (a stray click) is discarded — nothing to measure.
+    if (!(radiusArcsec > 0.02)) { setPhotoAp(null); setPhotoState({ kind: "idle" }); return; }
+    setPhotoAp(ap);
+    setPhotoState({ kind: "measuring", ra: ap.ra, dec: ap.dec, radiusArcsec });
+    void measureAperture(ap.ra, ap.dec, { type: "circle", radius_arcsec: radiusArcsec })
+      .then(result => setPhotoState({ kind: "done", ra: ap.ra, dec: ap.dec, radiusArcsec, result }))
+      .catch(err => setPhotoState({
+        kind: "error", ra: ap.ra, dec: ap.dec, radiusArcsec,
+        message: err instanceof Error ? err.message : String(err),
+      }));
+  }, [skyAt]);
+
+  // The capture overlay occludes the viewer canvas, so wheel events land on it instead of
+  // the canvas — which would kill zoom while the tool is on. Re-dispatch the wheel to the
+  // canvas beneath so zoom keeps working; the drag (pointer) is still ours for drawing.
+  const forwardWheel = useCallback((e: React.WheelEvent) => {
+    const canvas = wrapRef.current?.querySelector("canvas");
+    if (!canvas) return;
+    e.preventDefault();
+    canvas.dispatchEvent(new WheelEvent("wheel", {
+      deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+      clientX: e.clientX, clientY: e.clientY, bubbles: false, cancelable: true,
+    }));
+  }, []);
+
+  // Close the results panel: clear the drawn aperture + state so the user can draw another.
+  const closePhoto = useCallback(() => {
+    drawingRef.current = null;
+    setDraw(null);
+    setPhotoAp(null);
+    setPhotoState({ kind: "idle" });
+  }, []);
+
+  // Turning the tool off (or the enabling conditions lapsing) clears any in-progress draw.
+  useEffect(() => {
+    if (!photoTool) { drawingRef.current = null; setDraw(null); }
+  }, [photoTool]);
+  useEffect(() => {
+    if (!photoEnabled && photoTool) setPhotoTool(false);
+  }, [photoEnabled, photoTool]);
 
   // Re-assert a pending camera target (set by the page's deep-link / "go to") until the
   // viewer actually holds it. The viewer auto-fits the whole mosaic at construction and
@@ -799,6 +962,21 @@ export default function MapViewer({
         }}
         style={{ width: "100%", height: "100%" }}
       />
+
+      {/* Photometry draw-capture layer. Only mounted (and only pointer-eventful) while the
+          tool is active, so it intercepts the drag BEFORE the viewer's own pan; with the
+          tool off it isn't in the tree and the map pans/zooms/clicks exactly as before. */}
+      {photoTool && (
+        <div
+          data-overlay="photo-capture"
+          onPointerDown={onPhotoDown}
+          onPointerMove={onPhotoMove}
+          onPointerUp={onPhotoUp}
+          onWheel={forwardWheel}
+          style={{ position: "absolute", inset: 0, zIndex: 18, cursor: "crosshair", touchAction: "none" }}
+        />
+      )}
+
       {/* Overlay layer — pointer-events only on the glyphs, so panning the map still
           works everywhere between sources. */}
       <svg
@@ -855,6 +1033,23 @@ export default function MapViewer({
         </svg>
       )}
 
+      {/* Custom-aperture photometry circle (cyan) — pinned to its sky centre via the same
+          +0.5 / rect-relative imageToScreen the ellipses use, so it stays welded on pan/zoom.
+          Non-interactive; the capture layer above handles the drawing. */}
+      {photoCircle && (
+        <svg
+          data-overlay="photometry-circle"
+          width="100%" height="100%"
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
+        >
+          <circle
+            cx={photoCircle.cx} cy={photoCircle.cy} r={photoCircle.r}
+            fill="rgba(56,208,240,0.08)" stroke={CYAN} strokeWidth={1.6}
+          />
+          <circle cx={photoCircle.cx} cy={photoCircle.cy} r={1.5} fill={CYAN} />
+        </svg>
+      )}
+
       {/* Adaptive scale bar — bottom-left. Length + label recomputed every frame from the
           live zoom, snapped to a nice round arcsec/arcmin value. */}
       {scaleBar && (
@@ -886,6 +1081,9 @@ export default function MapViewer({
         </div>
       )}
 
+      {/* Photometry results panel — bottom-left, above the scale bar. */}
+      <PhotometryPanel state={photoState} onClose={closePhoto} />
+
       {/* SCALING panel — top-right, where FitsExplorer's View panel used to sit. Drives
           the trilogy stretch live via applyScaling (through the viewer handle). Stacked
           with the NIRSpec aperture panel in one top-right column so they never overlap. */}
@@ -901,6 +1099,9 @@ export default function MapViewer({
         />
         <AperturePanel
           msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apertureSky != null}
+          photoTool={photoTool} photoEnabled={photoEnabled}
+          photoHint={session == null ? "sign in on /data/review to measure" : !isCeers ? "CEERS only for now" : ""}
+          onPhotoTool={() => setPhotoTool(v => !v)}
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={setPaDeg}
           onTogglePin={() => {
             setApertureSky(prev => {
@@ -1047,13 +1248,21 @@ function ScalingPanel({
 // the slitlet long axis), and a pin that fixes the aperture at the current view centre's
 // sky position (so panning no longer drags it) vs following the view centre.
 function AperturePanel({
-  msaOn, ifuOn, msaFieldOn, paDeg, pinned, onMsa, onIfu, onMsaField, onPa, onTogglePin,
+  msaOn, ifuOn, msaFieldOn, paDeg, pinned,
+  photoTool, photoEnabled, photoHint, onPhotoTool,
+  onMsa, onIfu, onMsaField, onPa, onTogglePin,
 }: {
   msaOn: boolean;
   ifuOn: boolean;
   msaFieldOn: boolean;
   paDeg: number;
   pinned: boolean;
+  /** Custom-aperture photometry draw tool: current on/off, whether it's usable, and — when
+   *  not usable — a muted reason (not signed in / wrong field). */
+  photoTool: boolean;
+  photoEnabled: boolean;
+  photoHint: string;
+  onPhotoTool: () => void;
   onMsa: (v: boolean) => void;
   onIfu: (v: boolean) => void;
   onMsaField: (v: boolean) => void;
@@ -1079,16 +1288,45 @@ function AperturePanel({
         style={{
           display: "flex", alignItems: "center", gap: 8, width: "100%",
           background: "none", border: "none", cursor: "pointer",
-          color: anyOn ? "#5ee0e0" : "var(--accent)", fontSize: "0.72rem", letterSpacing: "0.08em",
+          color: photoTool ? "#38d0f0" : anyOn ? "#5ee0e0" : "var(--accent)", fontSize: "0.72rem", letterSpacing: "0.08em",
           padding: "9px 11px",
         }}
       >
         <span style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s", display: "inline-block", fontSize: "0.7rem" }}>▸</span>
-        NIRSPEC{anyOn ? " ●" : ""}
+        APERTURES{anyOn || photoTool ? " ●" : ""}
       </button>
 
       {open && (
         <div style={{ padding: "2px 12px 12px" }}>
+          {/* Custom-aperture photometry draw tool. Enabled only when signed in + on CEERS
+              (the Worker is CEERS-only); otherwise a muted button + hint. */}
+          <div style={{ marginBottom: 12, paddingBottom: 11, borderBottom: "1px solid var(--border)" }}>
+            <button
+              onClick={onPhotoTool}
+              disabled={!photoEnabled}
+              className="mono"
+              aria-pressed={photoTool}
+              style={{
+                width: "100%",
+                background: photoTool ? "rgba(56,208,240,0.16)" : "none",
+                border: `1px solid ${photoTool ? "rgba(56,208,240,0.5)" : "var(--border-bright)"}`,
+                borderRadius: 5,
+                color: !photoEnabled ? "var(--text-dim)" : photoTool ? "#38d0f0" : "var(--text-muted)",
+                cursor: photoEnabled ? "pointer" : "default", opacity: photoEnabled ? 1 : 0.6,
+                fontSize: "0.7rem", padding: "6px 10px",
+              }}
+            >
+              ⬤ Measure photometry{photoTool ? " · ON" : ""}
+            </button>
+            <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 4, lineHeight: 1.5 }}>
+              {!photoEnabled
+                ? photoHint
+                : photoTool
+                  ? "drag on the map to draw a circular aperture"
+                  : "custom circular-aperture flux (CEERS)"}
+            </div>
+          </div>
+
           <label style={row}>
             <input type="checkbox" checked={msaOn} onChange={e => onMsa(e.target.checked)}
               style={{ accentColor: "#5ee0e0", width: 15, height: 15 }} />
