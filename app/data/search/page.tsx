@@ -1002,13 +1002,27 @@ export default function SearchPage() {
       let requested = 1;
 
       if (mode === "id") {
-        const id = parseInt(idInput.trim(), 10);
+        // Accept an optional field prefix, e.g. "ceers 1019", "CEERS-1019",
+        // "primer-uds 55". A recognised field restricts the search to it; the trailing
+        // number is the id. A bare "1019" searches the dropdown's field(s) as before.
+        const raw = idInput.trim();
+        let idFields = fields;
+        let idStr = raw;
+        const pm = raw.match(/^(.+?)[\s_-]+(\d+)$/);
+        if (pm) {
+          idStr = pm[2];
+          const tok = pm[1].toLowerCase().replace(/[\s_-]/g, "");
+          const fc = avail.find(f =>
+            f.prefix.toLowerCase() === tok || f.field.toLowerCase().replace(/[\s_-]/g, "") === tok);
+          if (fc) idFields = [fc];
+        }
+        const id = parseInt(idStr, 10);
         if (!Number.isFinite(id)) {
           setStatus("notfound");
-          setMatchSummary("Enter a numeric object ID.");
+          setMatchSummary("Enter an object ID — optionally field-prefixed, e.g. \"CEERS 1019\".");
           return;
         }
-        for (const fc of fields) {
+        for (const fc of idFields) {
           const { idx, zg } = await loadField(fc);
           if (idx.id.includes(id)) {
             const src = await fetchObject(fc, id, zg);
@@ -1215,7 +1229,7 @@ export default function SearchPage() {
                 value={idInput}
                 onChange={e => setIdInput(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && doSearch()}
-                placeholder="e.g. 6613"
+                placeholder="e.g. 6613, or CEERS 1019"
                 style={{
                   width: "100%", background: "var(--bg)", border: "1px solid var(--border-bright)",
                   borderRadius: "4px", padding: "9px 12px", color: "var(--text)",
