@@ -389,12 +389,20 @@ export default function MapViewer({
   // field is CEERS (the Worker is CEERS-only). `photoTool` toggles the draw mode on/off.
   const [session, setSession] = useState<import("@supabase/supabase-js").Session | null>(null);
   const [photoTool, setPhotoTool] = useState(false);
+  // Which shape the Measure tool draws while it's ON: a drag CIRCLE (mousedown centre →
+  // drag radius) or a hand-drawn POLYGON (click vertices → double-click / Enter to close).
+  const [photoShape, setPhotoShape] = useState<"circle" | "polygon">("circle");
   const isCeers = field.field === "CEERS";
   const photoEnabled = session != null && isCeers;
   // `draw` holds the IN-PROGRESS drag (its sky centre + radius, re-pinned each frame). On
   // release it becomes a new entry in the ACCUMULATED aperture list `photoAps` — measurements
   // don't replace each other, they stack (each with a palette colour) until Clear.
   const [draw, setDraw] = useState<{ ra: number; dec: number; radiusArcsec: number } | null>(null);
+  // The IN-PROGRESS polygon while shape=polygon: the vertices dropped so far (sky [ra,dec]
+  // degrees), plus the live cursor sky position for the rubber-band edge back to the first
+  // vertex. Null when no polygon is being drawn. On close (double-click / Enter, ≥3 verts) it
+  // becomes a new accumulated aperture; Esc cancels it. Re-projected each frame like circles.
+  const [polyDraw, setPolyDraw] = useState<{ verts: [number, number][]; cursor: { ra: number; dec: number } | null } | null>(null);
   // Every measured aperture, in draw order. Each carries its sky centre + radius (so project()
   // re-pins its circle every frame, welded to its sky pixel like the ellipses), its 1-based
   // index `n`, palette `color`, and its measurement state (measuring / done / error).
@@ -402,6 +410,11 @@ export default function MapViewer({
   // Screen-space projections of ALL accumulated apertures' circles (centre px + radius px +
   // colour), rebuilt each frame in project() from each sky centre — plus the in-progress drag.
   const [photoCircles, setPhotoCircles] = useState<{ cx: number; cy: number; r: number; color: string }[]>([]);
+  // Screen-space projections of ALL accumulated polygon apertures (their vertex "x,y" point
+  // string + colour), rebuilt each frame in project() from each sky vertex — plus the
+  // in-progress polygon (its drawn edges as a point string, its rubber-band edge to the
+  // cursor, and its vertex dots), so hand-drawn apertures stay welded on pan/zoom like circles.
+  const [photoPolys, setPhotoPolys] = useState<{ points: string; color: string; closed: boolean; dots: { x: number; y: number }[]; rubber: string | null }[]>([]);
   // Screen-space markers for the picked catalog objects (centre px + colour), rebuilt each
   // frame in project() from each pick's sky position so they stay welded on pan/zoom.
   const [catalogMarks, setCatalogMarks] = useState<{ cx: number; cy: number; color: string }[]>([]);
@@ -528,8 +541,20 @@ export default function MapViewer({
   // per-frame project() reads the latest without re-subscribing.
   const photoDrawRef = useRef<{ ra: number; dec: number; radiusArcsec: number; color: string }[]>([]);
   photoDrawRef.current = [
-    ...photoAps.map(a => ({ ra: a.ra, dec: a.dec, radiusArcsec: a.radiusArcsec, color: a.color })),
+    // Circle apertures only — polygons are drawn separately (photoPolyRef below).
+    ...photoAps.filter(a => a.shape.kind === "circle").map(a => ({ ra: a.ra, dec: a.dec, radiusArcsec: a.radiusArcsec, color: a.color })),
     ...(draw ? [{ ra: draw.ra, dec: draw.dec, radiusArcsec: draw.radiusArcsec, color: CYAN }] : []),
+  ];
+  // The polygon apertures to draw this frame — every accumulated polygon (its sky vertices +
+  // palette colour, drawn closed) plus the in-progress polygon (drawn open, CYAN, with its
+  // live cursor for the rubber-band edge). In a ref so the stable per-frame project() reads
+  // the latest without re-subscribing.
+  const photoPolyRef = useRef<{ verts: [number, number][]; color: string; closed: boolean; cursor: { ra: number; dec: number } | null }[]>([]);
+  photoPolyRef.current = [
+    ...photoAps
+      .filter(a => a.shape.kind === "polygon")
+      .map(a => ({ verts: (a.shape as { vertices: [number, number][] }).vertices, color: a.color, closed: true, cursor: null })),
+    ...(polyDraw ? [{ verts: polyDraw.verts, color: CYAN, closed: false, cursor: polyDraw.cursor }] : []),
   ];
 
   // Re-derive + apply the trilogy stretch on the LIVE viewer from the given params. This
@@ -733,6 +758,50 @@ export default function MapViewer({
         setPhotoCircles([]);
       }
 
+      // Custom-aperture photometry POLYGONS. Same welding recipe as the circles: each sky
+      // vertex → world px via the viewer WCS, then world → screen via the SAME +0.5 /
+      // rect-relative imageToScreen the ellipses use, so the polygon stays pinned under
+      // pan/zoom. Accumulated polygons are drawn closed; the in-progress one is drawn open
+      // with a rubber-band edge from the last vertex to the live cursor + vertex dots.
+      const pps = photoPolyRef.current;
+      if (pps.length) {
+        const wcs = h.getViewer()?.getWcs();
+        if (wcs) {
+          const toScreen = (ra: number, dec: number): { x: number; y: number } | null => {
+            const w = skyToPix(wcs, ra, dec);
+            const p = h.imageToScreen(w.x + 0.5, w.y + 0.5);
+            return p ? { x: p.x - rect.left, y: p.y - rect.top } : null;
+          };
+          const polys: { points: string; color: string; closed: boolean; dots: { x: number; y: number }[]; rubber: string | null }[] = [];
+          for (const pp of pps) {
+            const dots: { x: number; y: number }[] = [];
+            let bad = false;
+            for (const [ra, dec] of pp.verts) {
+              const s = toScreen(ra, dec);
+              if (!s) { bad = true; break; }
+              dots.push(s);
+            }
+            if (bad || dots.length === 0) continue;
+            const points = dots.map(d => `${d.x.toFixed(1)},${d.y.toFixed(1)}`).join(" ");
+            // Rubber-band edge (in-progress only): last vertex → cursor → first vertex.
+            let rubber: string | null = null;
+            if (!pp.closed && pp.cursor) {
+              const c = toScreen(pp.cursor.ra, pp.cursor.dec);
+              if (c) {
+                const last = dots[dots.length - 1], first = dots[0];
+                rubber = `${last.x.toFixed(1)},${last.y.toFixed(1)} ${c.x.toFixed(1)},${c.y.toFixed(1)} ${first.x.toFixed(1)},${first.y.toFixed(1)}`;
+              }
+            }
+            polys.push({ points, color: pp.color, closed: pp.closed, dots: pp.closed ? [] : dots, rubber });
+          }
+          setPhotoPolys(polys);
+        } else {
+          setPhotoPolys([]);
+        }
+      } else {
+        setPhotoPolys([]);
+      }
+
       // Picked catalog-object markers — one small outline per pick in its series colour, so the
       // user sees which objects are on the SED. Pinned to each pick's sky position via the same
       // +0.5 / rect-relative imageToScreen the ellipses use, so they stay welded on pan/zoom.
@@ -834,8 +903,9 @@ export default function MapViewer({
   useEffect(() => { project(); }, [msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, project]);
 
   // Re-project when the drawn photometry apertures change (drag / commit / clear) — no
-  // camera move, so onFrame won't fire on its own.
-  useEffect(() => { project(); }, [draw, photoAps, project]);
+  // camera move, so onFrame won't fire on its own. Includes the in-progress polygon so its
+  // edges + rubber-band edge track each new vertex / cursor move immediately.
+  useEffect(() => { project(); }, [draw, polyDraw, photoAps, project]);
 
   // Re-project when the picked catalog objects change (pick / remove / clear) so their map
   // markers appear/disappear immediately — no camera move to trigger onFrame otherwise.
@@ -919,6 +989,12 @@ export default function MapViewer({
   // tool is active and a draw is in progress, so with the tool off the map pans exactly as
   // before. Uses capture + stopPropagation so the viewer's own drag-pan never sees the drag.
   const drawingRef = useRef<{ ra: number; dec: number } | null>(null);
+  // shape + in-progress polygon in refs, so the stable-deps pointer/key handlers read the
+  // latest without re-subscribing (same live-ref pattern the projector uses).
+  const photoShapeRef = useRef(photoShape);
+  photoShapeRef.current = photoShape;
+  const polyDrawRef = useRef(polyDraw);
+  polyDrawRef.current = polyDraw;
 
   const skyAt = useCallback((clientX: number, clientY: number): { ra: number; dec: number } | null => {
     const h = handleRef.current;
@@ -933,6 +1009,7 @@ export default function MapViewer({
 
   const onPhotoDown = useCallback((e: React.PointerEvent) => {
     if (!photoTool) return;                 // tool off → let the map pan as usual
+    if (photoShapeRef.current !== "circle") return;  // polygon mode draws on click, not drag
     if (e.button !== 0) return;             // left-drag only
     const c = skyAt(e.clientX, e.clientY);
     if (!c) return;
@@ -945,6 +1022,14 @@ export default function MapViewer({
   }, [photoTool, skyAt]);
 
   const onPhotoMove = useCallback((e: React.PointerEvent) => {
+    // Polygon mode: track the cursor sky position for the rubber-band edge to the first
+    // vertex once at least one vertex is down. No drag capture — the map still pans between.
+    if (photoShapeRef.current === "polygon") {
+      if (!polyDrawRef.current) return;
+      const cur = skyAt(e.clientX, e.clientY);
+      if (cur) setPolyDraw(p => (p ? { ...p, cursor: cur } : p));
+      return;
+    }
     const start = drawingRef.current;
     if (!start) return;                     // not drawing → ignore (map handles its own moves)
     e.stopPropagation();
@@ -972,7 +1057,7 @@ export default function MapViewer({
     setPhotoPanelOpen(true);
     const n = (photoSeqRef.current += 1);
     const color = PHOTO_PALETTE[(n - 1) % PHOTO_PALETTE.length];
-    setPhotoAps(prev => [...prev, { n, color, ra, dec, radiusArcsec, state: { kind: "measuring" } }]);
+    setPhotoAps(prev => [...prev, { n, color, ra, dec, radiusArcsec, shape: { kind: "circle", radiusArcsec }, state: { kind: "measuring" } }]);
     // When the request settles, patch ONLY this aperture's state (matched by its index n),
     // leaving the rest of the accumulated set untouched.
     void measureAperture(ra, dec, { type: "circle", radius_arcsec: radiusArcsec })
@@ -982,14 +1067,80 @@ export default function MapViewer({
         : a)));
   }, [skyAt]);
 
+  // ---- Polygon draw: click a vertex, double-click / Enter to close, Esc to cancel --------
+  // Drop a polygon vertex at the click. Guarded to polygon mode (the capture layer's onClick
+  // fires for both shapes, but circle mode already handled its drag on down/up). Vertices are
+  // sky [ra,dec] degrees, converted the same way the circle centre is (screenToImage→pixToSky).
+  const onPhotoClick = useCallback((e: React.MouseEvent) => {
+    if (!photoTool || photoShapeRef.current !== "polygon") return;
+    if (e.button !== 0) return;
+    const c = skyAt(e.clientX, e.clientY);
+    if (!c) return;
+    e.stopPropagation();
+    setPolyDraw(p => {
+      const verts = p ? [...p.verts, [c.ra, c.dec] as [number, number]] : [[c.ra, c.dec] as [number, number]];
+      return { verts, cursor: c };
+    });
+  }, [photoTool, skyAt]);
+
+  // Finalise the in-progress polygon (double-click / Enter): needs ≥3 vertices. Appends a new
+  // accumulated aperture in the "measuring" state (its ra/dec = the vertex centroid, for the
+  // panel label + map marker) and fires measureAperture with the polygon shape. Same monotonic
+  // index / palette / async-patch pattern as the circle path. No-op with <3 vertices.
+  const finishPolygon = useCallback(() => {
+    const p = polyDrawRef.current;
+    if (!p || p.verts.length < 3) return;
+    const vertices = p.verts;
+    setPolyDraw(null);
+    // Vertex centroid — a representative ra/dec for the panel/legend + map marker only (the
+    // Worker photometry rides on the vertices themselves, not this centre).
+    const cRa = vertices.reduce((s, v) => s + v[0], 0) / vertices.length;
+    const cDec = vertices.reduce((s, v) => s + v[1], 0) / vertices.length;
+    setPhotoPanelOpen(true);
+    const n = (photoSeqRef.current += 1);
+    const color = PHOTO_PALETTE[(n - 1) % PHOTO_PALETTE.length];
+    setPhotoAps(prev => [...prev, {
+      n, color, ra: cRa, dec: cDec, radiusArcsec: 0,
+      shape: { kind: "polygon", vertices }, state: { kind: "measuring" },
+    }]);
+    void measureAperture(cRa, cDec, { type: "polygon", vertices })
+      .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
+      .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
+        ? { ...a, state: { kind: "error", message: err instanceof Error ? err.message : String(err) } }
+        : a)));
+  }, []);
+
+  const cancelPolygon = useCallback(() => { setPolyDraw(null); }, []);
+
+  // Double-click on the capture layer closes the polygon (browsers may also fire the two
+  // clicks that added the last vertices first — that's fine, they just land on the same spot).
+  const onPhotoDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (!photoTool || photoShapeRef.current !== "polygon") return;
+    e.stopPropagation();
+    e.preventDefault();
+    finishPolygon();
+  }, [photoTool, finishPolygon]);
+
+  // Keyboard: Enter closes the in-progress polygon, Esc cancels it. Bound at the window while
+  // the tool is on + shape=polygon + a polygon is being drawn; torn down otherwise.
+  useEffect(() => {
+    if (!photoTool || photoShape !== "polygon") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter") { e.preventDefault(); finishPolygon(); }
+      else if (e.key === "Escape") { e.preventDefault(); cancelPolygon(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [photoTool, photoShape, finishPolygon, cancelPolygon]);
+
   // Adjust an already-drawn aperture's radius (± from the panel) and re-measure it in place,
   // keeping the same centre + colour + index. The circle re-projects immediately (photoAps
   // change → project()); the new flux lands when the request settles.
   const adjustAperture = useCallback((n: number, newRadiusArcsec: number) => {
     const r = Math.max(0.03, Math.round(newRadiusArcsec * 1000) / 1000);
     const ap = photoAps.find(a => a.n === n);
-    if (!ap) return;
-    setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, radiusArcsec: r, state: { kind: "measuring" } } : a));
+    if (!ap || ap.shape.kind !== "circle") return;   // radius adjust is circles-only
+    setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, radiusArcsec: r, shape: { kind: "circle", radiusArcsec: r }, state: { kind: "measuring" } } : a));
     void measureAperture(ap.ra, ap.dec, { type: "circle", radius_arcsec: r })
       .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
       .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
@@ -1015,6 +1166,7 @@ export default function MapViewer({
   const clearPhoto = useCallback(() => {
     drawingRef.current = null;
     setDraw(null);
+    setPolyDraw(null);
     setPhotoAps([]);
     photoSeqRef.current = 0;
     // Wipe picked catalog objects too, and reset their palette counter.
@@ -1074,10 +1226,16 @@ export default function MapViewer({
     URL.revokeObjectURL(url);
   }, [photoAps, catalogPicks]);
 
-  // Turning the tool off (or the enabling conditions lapsing) clears any in-progress draw.
+  // Turning the tool off (or the enabling conditions lapsing) clears any in-progress draw
+  // (both the drag circle and the in-progress polygon).
   useEffect(() => {
-    if (!photoTool) { drawingRef.current = null; setDraw(null); }
+    if (!photoTool) { drawingRef.current = null; setDraw(null); setPolyDraw(null); }
   }, [photoTool]);
+  // Switching shape mid-draw abandons the in-progress polygon (and any drag circle), so the
+  // two shapes never bleed into each other.
+  useEffect(() => {
+    drawingRef.current = null; setDraw(null); setPolyDraw(null);
+  }, [photoShape]);
   useEffect(() => {
     if (!photoEnabled && photoTool) setPhotoTool(false);
   }, [photoEnabled, photoTool]);
@@ -1175,13 +1333,17 @@ export default function MapViewer({
 
       {/* Photometry draw-capture layer. Only mounted (and only pointer-eventful) while the
           tool is active, so it intercepts the drag BEFORE the viewer's own pan; with the
-          tool off it isn't in the tree and the map pans/zooms/clicks exactly as before. */}
+          tool off it isn't in the tree and the map pans/zooms/clicks exactly as before. In
+          CIRCLE mode the pointer down/move/up draws the drag circle; in POLYGON mode a click
+          drops a vertex and a double-click closes it (Enter/Esc are handled at the window). */}
       {photoTool && (
         <div
           data-overlay="photo-capture"
           onPointerDown={onPhotoDown}
           onPointerMove={onPhotoMove}
           onPointerUp={onPhotoUp}
+          onClick={onPhotoClick}
+          onDoubleClick={onPhotoDoubleClick}
           onWheel={forwardWheel}
           style={{ position: "absolute", inset: 0, zIndex: 18, cursor: "crosshair", touchAction: "none" }}
         />
@@ -1265,6 +1427,39 @@ export default function MapViewer({
             <g key={k}>
               <circle cx={c.cx} cy={c.cy} r={c.r} fill="none" stroke={c.color} strokeWidth={1.6} />
               <circle cx={c.cx} cy={c.cy} r={1.5} fill={c.color} />
+            </g>
+          ))}
+        </svg>
+      )}
+
+      {/* Custom-aperture photometry polygons — every accumulated polygon in its own palette
+          colour (drawn closed/filled-faint), plus the in-progress polygon (cyan, open, with a
+          dashed rubber-band edge to the cursor + vertex dots). Each vertex is pinned to its sky
+          position via the same +0.5 / rect-relative imageToScreen the ellipses use, so they
+          stay welded on pan/zoom. Non-interactive; the capture layer above handles the drawing. */}
+      {photoPolys.length > 0 && (
+        <svg
+          data-overlay="photometry-polygon"
+          width="100%" height="100%"
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
+        >
+          {photoPolys.map((p, k) => (
+            <g key={k}>
+              {p.closed ? (
+                <polygon points={p.points} fill={`${p.color}22`} stroke={p.color} strokeWidth={1.6} />
+              ) : (
+                <>
+                  {/* In-progress: the drawn edges so far (open polyline), the rubber-band edge to
+                      the cursor (dashed), and a dot on each dropped vertex. */}
+                  <polyline points={p.points} fill="none" stroke={p.color} strokeWidth={1.6} />
+                  {p.rubber && (
+                    <polyline points={p.rubber} fill="none" stroke={p.color} strokeWidth={1.2} strokeDasharray="4 3" opacity={0.8} />
+                  )}
+                  {p.dots.map((d, j) => (
+                    <circle key={j} cx={d.x} cy={d.y} r={2.5} fill={p.color} />
+                  ))}
+                </>
+              )}
             </g>
           ))}
         </svg>
@@ -1366,10 +1561,12 @@ export default function MapViewer({
           catalogPicks={catalogPicks}
           catalogMode={catalogMode}
           photoTool={photoTool}
+          photoShape={photoShape}
           photoEnabled={photoEnabled}
           photoHint={session == null ? "sign in on /data/review to measure" : !isCeers ? "CEERS only for now" : ""}
           onToggleOpen={() => setPhotoPanelOpen(o => !o)}
           onPhotoTool={togglePhotoTool}
+          onPhotoShape={setPhotoShape}
           onCatalogMode={toggleCatalogMode}
           onRemovePick={removePick}
           onClear={clearPhoto}

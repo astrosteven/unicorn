@@ -14,12 +14,21 @@ import PhotometrySED, { type SEDSeries, type CatalogBand, sedPointsFromBands, se
 // One measured (or measuring) aperture in the accumulated list. `n` is its 1-based index
 // (shown in the legend + map), `color` its palette colour (shared with its map circle and
 // SED series). `state` tracks the in-flight request → result / error.
+//
+// `shape` carries the aperture geometry so project() can re-pin it every frame and the
+// legend/CSV can describe it: a circle (its ra/dec centre + radiusArcsec) or a hand-drawn
+// polygon (its sky vertices [[ra,dec],…] degrees; ra/dec is the vertex centroid, used only
+// for the panel label/marker). Circles keep radiusArcsec at the top level for the ± steppers;
+// polygons set radiusArcsec to 0 (meaningless for a polygon, so their steppers are hidden).
 export type MeasuredAperture = {
   n: number;
   color: string;
   ra: number;
   dec: number;
   radiusArcsec: number;
+  shape:
+    | { kind: "circle"; radiusArcsec: number }
+    | { kind: "polygon"; vertices: [number, number][] };
   state:
     | { kind: "measuring" }
     | { kind: "done"; result: PhotometryResult }
@@ -47,10 +56,12 @@ export default function PhotometryPanel({
   catalogPicks,
   catalogMode,
   photoTool,
+  photoShape,
   photoEnabled,
   photoHint,
   onToggleOpen,
   onPhotoTool,
+  onPhotoShape,
   onCatalogMode,
   onRemovePick,
   onClear,
@@ -66,16 +77,20 @@ export default function PhotometryPanel({
   catalogMode: boolean;
   /** Custom-aperture draw tool: current on/off, whether it's usable, and a muted reason. */
   photoTool: boolean;
+  /** Which shape the Measure tool draws while ON: a drag circle or a hand-drawn polygon. */
+  photoShape: "circle" | "polygon";
   photoEnabled: boolean;
   photoHint: string;
   onToggleOpen: () => void;
   onPhotoTool: () => void;
+  /** Pick the shape the Measure tool draws (circle vs polygon). */
+  onPhotoShape: (shape: "circle" | "polygon") => void;
   onCatalogMode: () => void;
   /** Remove a single picked catalog object (by id). */
   onRemovePick: (id: number) => void;
   onClear: () => void;
   onDownload: () => void;
-  /** Re-measure aperture #n at a new radius (arcsec) — for the ± steppers. */
+  /** Re-measure aperture #n at a new radius (arcsec) — for the ± steppers (circles only). */
   onAdjust: (n: number, radiusArcsec: number) => void;
 }) {
   const hasAny = apertures.length > 0 || catalogPicks.length > 0;
@@ -149,12 +164,44 @@ export default function PhotometryPanel({
           >
             ⬤ Measure photometry{photoTool ? " · ON" : ""}
           </button>
+
+          {/* Shape selector — picks whether the Measure tool draws a drag circle or a
+              hand-drawn polygon while it's ON. Only meaningful (and only shown) once the tool
+              is usable; the segmented pair sets the shape without touching the on/off toggle. */}
+          {photoEnabled && (
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              {(["circle", "polygon"] as const).map(sh => {
+                const on = photoShape === sh;
+                return (
+                  <button
+                    key={sh}
+                    onClick={() => onPhotoShape(sh)}
+                    className="mono"
+                    aria-pressed={on}
+                    style={{
+                      flex: 1,
+                      background: on ? "rgba(56,208,240,0.16)" : "none",
+                      border: `1px solid ${on ? "rgba(56,208,240,0.5)" : "var(--border-bright)"}`,
+                      borderRadius: 5,
+                      color: on ? "#38d0f0" : "var(--text-muted)", cursor: "pointer",
+                      fontSize: "0.66rem", padding: "5px 8px",
+                    }}
+                  >
+                    {sh === "circle" ? "⬤ circle" : "⬠ polygon"}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 4, lineHeight: 1.5 }}>
             {!photoEnabled
               ? photoHint
               : photoTool
-                ? "drag on the map to draw a circular aperture · they accumulate"
-                : "custom circular-aperture flux (CEERS)"}
+                ? photoShape === "polygon"
+                  ? "click to add vertices · double-click / Enter to close · Esc to cancel · they accumulate"
+                  : "drag on the map to draw a circular aperture · they accumulate"
+                : "custom circular / polygon-aperture flux (CEERS)"}
           </div>
 
           {/* "Show catalog objects" toggle. Mutually exclusive with the draw tool (turning this
@@ -221,22 +268,30 @@ export default function PhotometryPanel({
 
               {/* Legend: colour → aperture (index · radius · centre). */}
               <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-                {apertures.map(a => (
+                {apertures.map(a => {
+                  const isPoly = a.shape.kind === "polygon";
+                  return (
                   <div key={a.n} className="mono" style={{ display: "flex", alignItems: "center", gap: 7, fontSize: "0.62rem", color: "var(--text-muted)" }}>
-                    <span style={{ width: 11, height: 11, borderRadius: "50%", background: a.color, flex: "0 0 auto", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }} />
+                    <span style={{ width: 11, height: 11, borderRadius: isPoly ? 2 : "50%", background: a.color, flex: "0 0 auto", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }} />
                     <span style={{ whiteSpace: "nowrap" }}>
-                      #{a.n}&nbsp; {a.ra.toFixed(3)},{a.dec.toFixed(3)}
+                      #{a.n}
+                      {isPoly ? ` polygon (${(a.shape as { vertices: [number, number][] }).vertices.length} verts)` : ""}
+                      &nbsp; {a.ra.toFixed(3)},{a.dec.toFixed(3)}
                       {a.state.kind === "measuring" && " · …"}
                       {a.state.kind === "error" && " · failed"}
                     </span>
-                    {/* radius stepper — re-measures this aperture at ±0.05″ */}
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, marginLeft: "auto" }}>
-                      <button title="shrink 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec - 0.05)} style={STEP_BTN}>−</button>
-                      <span style={{ minWidth: 42, textAlign: "center" }}>{a.radiusArcsec.toFixed(2)}″</span>
-                      <button title="grow 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec + 0.05)} style={STEP_BTN}>+</button>
-                    </span>
+                    {/* radius stepper — re-measures this aperture at ±0.05″. Circles only:
+                        adjust-by-radius is meaningless for a polygon, so it's hidden for them. */}
+                    {!isPoly && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, marginLeft: "auto" }}>
+                        <button title="shrink 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec - 0.05)} style={STEP_BTN}>−</button>
+                        <span style={{ minWidth: 42, textAlign: "center" }}>{a.radiusArcsec.toFixed(2)}″</span>
+                        <button title="grow 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec + 0.05)} style={STEP_BTN}>+</button>
+                      </span>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
                 {/* Picked catalog objects: hollow ring swatch (matches the SED's hollow/dashed
                     style) → cat <id> (+ z_a / M_UV when the index carried them), each with a ✕
                     to remove that one pick. */}
@@ -265,7 +320,9 @@ export default function PhotometryPanel({
                 return (
                   <div key={a.n} style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
                     <div className="mono" style={{ fontSize: "0.64rem", color: a.color, marginBottom: 5 }}>
-                      #{a.n} · r = {a.radiusArcsec.toFixed(3)}″ · {a.ra.toFixed(6)}, {a.dec.toFixed(6)}
+                      #{a.n} · {a.shape.kind === "polygon"
+                        ? `polygon (${(a.shape as { vertices: [number, number][] }).vertices.length} verts)`
+                        : `r = ${a.radiusArcsec.toFixed(3)}″`} · {a.ra.toFixed(6)}, {a.dec.toFixed(6)}
                     </div>
                     {a.state.kind === "error" ? (
                       <div className="mono" style={{ fontSize: "0.7rem", color: "var(--red)", lineHeight: 1.6 }}>{a.state.message}</div>
