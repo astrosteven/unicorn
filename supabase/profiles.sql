@@ -1,4 +1,4 @@
--- UNICORN accounts + roles. Run in Supabase → SQL Editor.
+-- UNICORN accounts + roles. Run in Supabase → SQL Editor. SAFE TO RE-RUN (idempotent).
 -- Tiers:  public (no login) → Fields only · pending (registered, awaiting approval)
 --         general (approved) → query/explore/downloads · key → everything · admin → + approve users.
 
@@ -9,10 +9,16 @@ create table if not exists public.profiles (
   justification text,                           -- why they want access (registration form)
   created_at timestamptz not null default now()
 );
+-- Bring an older/partial profiles table up to spec (no-ops if already correct):
+alter table public.profiles add column if not exists justification text;
+alter table public.profiles add column if not exists email text;
+alter table public.profiles alter column role set default 'pending';
 alter table public.profiles enable row level security;
 
 -- A user reads/inserts their OWN profile (the registration form inserts role=pending + justification).
+drop policy if exists profiles_read_self   on public.profiles;
 create policy profiles_read_self   on public.profiles for select using (user_id = auth.uid());
+drop policy if exists profiles_insert_self on public.profiles;
 create policy profiles_insert_self on public.profiles for insert to authenticated with check (user_id = auth.uid());
 
 -- is_admin(): SECURITY DEFINER so it bypasses RLS (avoids a recursive policy on profiles).
@@ -22,6 +28,7 @@ create or replace function public.is_admin() returns boolean
 $$;
 
 -- Admins can read every profile (for the admin page's pending list).
+drop policy if exists profiles_read_admin on public.profiles;
 create policy profiles_read_admin on public.profiles for select using (public.is_admin());
 
 -- approve_user(): the admin page calls this to set someone's role. Admin-only, validated.
@@ -38,5 +45,5 @@ grant execute on function public.approve_user(uuid, text) to authenticated;
 
 -- Seed yourself as admin from your existing auth account (run AFTER the block above):
 --   insert into public.profiles (user_id, email, role)
---   select id, email, 'admin' from auth.users where email = 'sf8542@eid.utexas.edu'
+--   select id, email, 'admin' from auth.users where email = 'slfinkel@gmail.com'
 --   on conflict (user_id) do update set role = 'admin';
