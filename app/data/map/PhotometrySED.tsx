@@ -12,11 +12,15 @@
 // upper-limit glyph), the same convention the card SED uses for its non-detections.
 import { FILTER_WAVES } from "@/app/data/_card/objectCard";
 
-// One aperture's SED: its legend/stroke colour plus the measured per-band fluxes. Each
+// One SED series on the overplot: its legend/stroke colour plus the per-band fluxes. Each
 // point already carries the pivot wavelength (µm) resolved from FILTER_WAVES by the caller.
+// `style` distinguishes a measured aperture (filled markers + solid line — the default) from
+// a picked catalog object (hollow markers + dashed line) so the two read as distinct on one
+// set of axes.
 export type SEDSeries = {
   color: string;
   points: { wav: number; flux: number; err: number }[];
+  style?: "measured" | "catalog";
 };
 
 export default function PhotometrySED({ series }: { series: SEDSeries[] }) {
@@ -67,18 +71,28 @@ export default function PhotometrySED({ series }: { series: SEDSeries[] }) {
         {/* Each aperture's SED: connected polyline through its detections + per-point error
             bars; non-positive fluxes clamp to the floor and get a down-arrow (upper limit). */}
         {series.map((s, si) => {
+          // Catalog series are drawn hollow + dashed to set them apart from the filled/solid
+          // measured apertures overplotted on the same axes.
+          const isCat = s.style === "catalog";
           const dets = s.points.filter(p => p.flux > 0).sort((a, b) => a.wav - b.wav);
           const poly = dets.map(p => `${cx(p.wav).toFixed(1)},${cy(p.flux).toFixed(1)}`).join(" ");
           return (
             <g key={si}>
-              {poly && <polyline points={poly} fill="none" stroke={s.color} strokeWidth={1.3} opacity={0.9} />}
+              {poly && (
+                <polyline
+                  points={poly} fill="none" stroke={s.color} strokeWidth={1.3} opacity={0.9}
+                  strokeDasharray={isCat ? "4 3" : undefined}
+                />
+              )}
               {s.points.map((p, i) => {
                 if (p.flux > 0) {
                   const x = cx(p.wav), y = cy(p.flux);
                   return (
                     <g key={i}>
                       <line x1={x} x2={x} y1={cy(p.flux + p.err)} y2={cy(Math.max(p.flux - p.err, yBot * 0.7))} stroke={s.color} strokeWidth={1.1} />
-                      <circle cx={x} cy={y} r={3} fill={s.color} />
+                      {isCat
+                        ? <circle cx={x} cy={y} r={3} fill="none" stroke={s.color} strokeWidth={1.4} />
+                        : <circle cx={x} cy={y} r={3} fill={s.color} />}
                     </g>
                   );
                 }
@@ -127,4 +141,41 @@ export function sedPointsFromBands(
     out.push({ wav, flux: b.flux_nJy, err: Number.isFinite(b.err_nJy) ? b.err_nJy : 0 });
   }
   return out;
+}
+
+// One picked catalog object's native per-band flux, resolved for both the SED and the CSV.
+// `band` is the FILTER_WAVES key (uppercase), `wav` its pivot wavelength (µm), `flux` the
+// native aperture flux (nJy) from loadFilters at the object's catalog position.
+export type CatalogBand = { band: string; wav: number; flux: number };
+
+// Build a catalog object's per-band native fluxes from a loadFilters() record indexed at the
+// object's catalog position `pos`. loadFilters keys are `flux_<band>` (lowercase); we map
+// each to its FILTER_WAVES pivot wavelength (uppercase), skipping bands missing from the
+// table or from FILTER_WAVES, or whose flux is non-finite. Non-positive fluxes are KEPT so
+// PhotometrySED can render them as its upper-limit convention (no per-band err is available,
+// so those points get err=0 and are simply omitted from the plot as non-detections). Sorted
+// by wavelength so the connecting line reads left→right.
+export function catalogBandsFromFilters(
+  filters: Record<string, (number | null)[] | null>,
+  pos: number,
+): CatalogBand[] {
+  const out: CatalogBand[] = [];
+  for (const key of Object.keys(filters)) {
+    if (!key.startsWith("flux_")) continue;               // skip fluxerr_* and any non-flux cols
+    const band = key.slice("flux_".length).toUpperCase();
+    const wav = FILTER_WAVES[band];
+    if (wav === undefined) continue;
+    const col = filters[key];
+    const v = col?.[pos];
+    if (v == null || !Number.isFinite(v)) continue;
+    out.push({ band, wav, flux: v });
+  }
+  out.sort((a, b) => a.wav - b.wav);
+  return out;
+}
+
+// A picked catalog object's SED points (no per-band errors available → err=0, so PhotometrySED
+// plots detections without error bars and drops non-detections). Built from catalogBandsFromFilters.
+export function sedPointsFromCatalog(bands: CatalogBand[]): { wav: number; flux: number; err: number }[] {
+  return bands.map(b => ({ wav: b.wav, flux: b.flux, err: 0 }));
 }

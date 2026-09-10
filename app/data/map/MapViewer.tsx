@@ -45,7 +45,8 @@ import {
 } from "@/app/data/_card/objectCard";
 import { supabase } from "@/lib/supabase";
 import { measureAperture, abMagFromNJy } from "@/lib/photometry";
-import PhotometryPanel, { type MeasuredAperture } from "./PhotometryPanel";
+import PhotometryPanel, { type MeasuredAperture, type PickedCatalog } from "./PhotometryPanel";
+import { catalogBandsFromFilters } from "./PhotometrySED";
 import { FILTER_WAVES } from "@/app/data/_card/objectCard";
 
 type LoadState = "loading" | "ready" | "error";
@@ -401,11 +402,30 @@ export default function MapViewer({
   // Screen-space projections of ALL accumulated apertures' circles (centre px + radius px +
   // colour), rebuilt each frame in project() from each sky centre — plus the in-progress drag.
   const [photoCircles, setPhotoCircles] = useState<{ cx: number; cy: number; r: number; color: string }[]>([]);
+  // Screen-space markers for the picked catalog objects (centre px + colour), rebuilt each
+  // frame in project() from each pick's sky position so they stay welded on pan/zoom.
+  const [catalogMarks, setCatalogMarks] = useState<{ cx: number; cy: number; color: string }[]>([]);
   // PHOTOMETRY panel expand/collapse (its own section beside SCALING / NIRSpec).
   const [photoPanelOpen, setPhotoPanelOpen] = useState(false);
   // Monotonic aperture index; assigned on each measurement so its async result patch can
   // match the exact entry. Reset to 0 by Clear so the legend re-numbers from #1.
   const photoSeqRef = useRef(0);
+
+  // ---- "Show catalog objects" mode ------------------------------------------
+  // A separate mode (mutually exclusive with the draw tool) that turns every catalog ellipse
+  // into a picker: while ON, a click overlays that object's NATIVE catalog photometry (from
+  // loadFilters) on the SED as a distinct hollow/dashed "catalog" series instead of opening
+  // the ResultCard. Not gated on sign-in/CEERS — any field with per-band flux data works.
+  const [catalogMode, setCatalogMode] = useState(false);
+  // The picked catalog objects, in pick order, each carrying its id + palette colour + native
+  // per-band fluxes (+ z_a / M_UV for the legend). Cleared by Clear (and per-object by the ✕).
+  const [catalogPicks, setCatalogPicks] = useState<PickedCatalog[]>([]);
+  // Monotonic index used only to cycle the palette across catalog picks (independent of the
+  // measured-aperture counter so the two never collide on a colour). Reset to 0 by Clear.
+  const catalogSeqRef = useRef(0);
+  // The per-band native flux table for this field (loadFilters), fetched lazily the first time
+  // a catalog object is picked and cached for the session. null until loaded / if unavailable.
+  const filtersTableRef = useRef<Record<string, NumCol> | null>(null);
 
   // Track the Supabase session (same pattern as /data/review) so the tool button gates on
   // sign-in and re-enables/disables live on login/logout.
@@ -617,7 +637,10 @@ export default function MapViewer({
     // Search → map handoff: draw ONLY the queried objects when a queued id set is present;
     // otherwise the full filtered list. Filtered here (not in filterSources) so toggling
     // the queue on/off — or switching fields — needs no source-list rebuild.
-    const qids = queuedIdsRef.current;
+    // EXCEPTION: while "Show catalog objects" mode is ON, ignore the queued subset so EVERY
+    // source is shown + pickable (the queued narrowing can otherwise hide objects the user
+    // wants to pick — "sometimes they're not all highlighted").
+    const qids = catalogModeRef.current ? null : queuedIdsRef.current;
     const list = qids ? sourcesRef.current.filter(s => qids.has(s.id)) : sourcesRef.current;
     const zids = zspecIdsRef.current;
     const asDot = zoom < DOT_ZOOM;
@@ -709,6 +732,28 @@ export default function MapViewer({
       } else {
         setPhotoCircles([]);
       }
+
+      // Picked catalog-object markers — one small outline per pick in its series colour, so the
+      // user sees which objects are on the SED. Pinned to each pick's sky position via the same
+      // +0.5 / rect-relative imageToScreen the ellipses use, so they stay welded on pan/zoom.
+      const picks = catalogPicksRef.current;
+      if (picks.length) {
+        const wcs = h.getViewer()?.getWcs();
+        if (wcs) {
+          const marks: { cx: number; cy: number; color: string }[] = [];
+          for (const p of picks) {
+            if (!Number.isFinite(p.ra) || !Number.isFinite(p.dec)) continue;
+            const cWorld = skyToPix(wcs, p.ra, p.dec);
+            const cScreen = h.imageToScreen(cWorld.x + 0.5, cWorld.y + 0.5);
+            if (cScreen) marks.push({ cx: cScreen.x - rect.left, cy: cScreen.y - rect.top, color: p.color });
+          }
+          setCatalogMarks(marks);
+        } else {
+          setCatalogMarks([]);
+        }
+      } else {
+        setCatalogMarks([]);
+      }
     }
 
     // Tiled fields: the catalog x,y are per-tile and don't line up with the fitsgl virtual
@@ -791,6 +836,81 @@ export default function MapViewer({
   // Re-project when the drawn photometry apertures change (drag / commit / clear) — no
   // camera move, so onFrame won't fire on its own.
   useEffect(() => { project(); }, [draw, photoAps, project]);
+
+  // Re-project when the picked catalog objects change (pick / remove / clear) so their map
+  // markers appear/disappear immediately — no camera move to trigger onFrame otherwise.
+  useEffect(() => { project(); }, [catalogPicks, project]);
+  // Re-project when catalog mode toggles: entering it reveals ALL sources (bypasses the queued
+  // subset, read live from catalogModeRef in project), so the ellipses redraw immediately.
+  useEffect(() => { project(); }, [catalogMode, project]);
+
+  // catalog mode + picks in refs so the stable per-frame project()/click path reads them live.
+  const catalogModeRef = useRef(catalogMode);
+  catalogModeRef.current = catalogMode;
+  const catalogPicksRef = useRef<PickedCatalog[]>(catalogPicks);
+  catalogPicksRef.current = catalogPicks;
+
+  // id → catalog position lookup for the active index, so a picked ellipse's id resolves to
+  // its row in loadFilters / the index property columns. Rebuilt only when the index changes.
+  const idToPos = useMemo(() => {
+    const m = new Map<number, number>();
+    if (idx) for (let i = 0; i < idx.id.length; i++) m.set(idx.id[i], i);
+    return m;
+  }, [idx]);
+  const idToPosRef = useRef(idToPos);
+  idToPosRef.current = idToPos;
+
+  // Pick a catalog object (called from an ellipse click while catalog mode is ON): resolve its
+  // catalog position, pull its native per-band flux from loadFilters at that position, and append
+  // a "catalog" SED series. Toggling an already-picked id off removes it. The filters table is
+  // fetched lazily on the first pick and cached. Also opens the results panel so it's visible.
+  const pickCatalog = useCallback(async (id: number) => {
+    // Toggle off if already picked.
+    if (catalogPicksRef.current.some(p => p.id === id)) {
+      setCatalogPicks(prev => prev.filter(p => p.id !== id));
+      return;
+    }
+    const pos = idToPosRef.current.get(id);
+    if (pos == null) return;
+    let fx = filtersTableRef.current;
+    if (!fx) {
+      fx = await loadFilters(field);
+      if (!fx) return;                 // no per-band flux table for this field
+      filtersTableRef.current = fx;
+    }
+    const bands = catalogBandsFromFilters(fx, pos);
+    if (bands.length === 0) return;    // nothing plottable for this object
+    const n = (catalogSeqRef.current += 1);
+    const color = PHOTO_PALETTE[(n - 1) % PHOTO_PALETTE.length];
+    const i = idx;
+    const ra = i?.ra[pos] ?? NaN, dec = i?.dec[pos] ?? NaN;
+    const za = i?.za?.[pos] ?? null;
+    const mabs = i?.mabs?.[pos] ?? null;
+    setPhotoPanelOpen(true);
+    setCatalogPicks(prev => [...prev, { id, color, ra, dec, bands, za, mabs }]);
+  }, [field, idx]);
+
+  // Remove a single picked catalog object (its legend ✕).
+  const removePick = useCallback((id: number) => {
+    setCatalogPicks(prev => prev.filter(p => p.id !== id));
+  }, []);
+
+  // Field switch: the picked objects + cached flux table belong to the previous field's
+  // catalog, so drop them (their ids/positions don't carry over).
+  useEffect(() => {
+    filtersTableRef.current = null;
+    setCatalogPicks([]);
+    catalogSeqRef.current = 0;
+  }, [field.field]);
+
+  // Entering catalog mode turns the draw tool OFF (mutually exclusive so the draw-capture layer
+  // never intercepts the picking clicks); entering the draw tool turns catalog mode OFF.
+  const toggleCatalogMode = useCallback(() => {
+    setCatalogMode(v => { if (!v) setPhotoTool(false); return !v; });
+  }, []);
+  const togglePhotoTool = useCallback(() => {
+    setPhotoTool(v => { if (!v) setCatalogMode(false); return !v; });
+  }, []);
 
   // ---- Photometry draw tool: pointer handlers -------------------------------
   // With the tool active, a drag on the map draws the aperture (NOT a pan): mousedown sets
@@ -897,13 +1017,19 @@ export default function MapViewer({
     setDraw(null);
     setPhotoAps([]);
     photoSeqRef.current = 0;
+    // Wipe picked catalog objects too, and reset their palette counter.
+    setCatalogPicks([]);
+    catalogSeqRef.current = 0;
   }, []);
 
   // Export the accumulated photometry as CSV — one row per (aperture, band). Columns:
   // aperture,ra,dec,radius_arcsec,band,wavelength_um,flux_nJy,err_nJy,snr,ab_mag. Client-side
   // via a Blob + object URL (no deps). Only finished apertures contribute rows.
   const downloadPhoto = useCallback(() => {
-    const header = ["aperture", "ra", "dec", "radius_arcsec", "band", "wavelength_um", "flux_nJy", "err_nJy", "snr", "ab_mag"];
+    // `source` distinguishes drawn measured apertures from picked catalog objects. For catalog
+    // rows `aperture` carries the catalog id, `radius_arcsec` is blank (not an aperture), and
+    // err/snr are blank (native catalog fluxes carry no per-band error here).
+    const header = ["source", "aperture", "ra", "dec", "radius_arcsec", "band", "wavelength_um", "flux_nJy", "err_nJy", "snr", "ab_mag"];
     const rows: string[] = [header.join(",")];
     for (const a of photoAps) {
       if (a.state.kind !== "done") continue;
@@ -912,6 +1038,7 @@ export default function MapViewer({
         const snr = b.err_nJy > 0 ? b.flux_nJy / b.err_nJy : null;
         const ab = abMagFromNJy(b.flux_nJy);
         rows.push([
+          "measured",
           a.n, a.ra.toFixed(6), a.dec.toFixed(6), a.radiusArcsec.toFixed(4),
           b.band, wav != null ? wav : "",
           Number.isFinite(b.flux_nJy) ? b.flux_nJy : "",
@@ -921,7 +1048,21 @@ export default function MapViewer({
         ].join(","));
       }
     }
-    if (rows.length <= 1) return;   // nothing finished to export
+    // Picked catalog objects — one row per (object, band). native flux only (no err/snr).
+    for (const p of catalogPicks) {
+      for (const b of p.bands) {
+        const ab = abMagFromNJy(b.flux);
+        rows.push([
+          "catalog",
+          p.id, Number.isFinite(p.ra) ? p.ra.toFixed(6) : "", Number.isFinite(p.dec) ? p.dec.toFixed(6) : "", "",
+          b.band, b.wav,
+          Number.isFinite(b.flux) ? b.flux : "",
+          "", "",
+          ab != null ? ab.toFixed(3) : "",
+        ].join(","));
+      }
+    }
+    if (rows.length <= 1) return;   // nothing to export
     const blob = new Blob([rows.join("\n") + "\n"], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -931,7 +1072,7 @@ export default function MapViewer({
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  }, [photoAps]);
+  }, [photoAps, catalogPicks]);
 
   // Turning the tool off (or the enabling conditions lapsing) clears any in-progress draw.
   useEffect(() => {
@@ -1054,8 +1195,16 @@ export default function MapViewer({
         style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
       >
         {glyphs.map((g, k) => {
-          const color = g.zspec ? GREEN : g.sel ? YELLOW : RED;
-          const onClick = (e: React.MouseEvent) => { e.stopPropagation(); clickRef.current(g.id); };
+          const picked = catalogMode && catalogPicks.some(p => p.id === g.id);
+          const color = picked ? catalogPicks.find(p => p.id === g.id)!.color
+            : g.zspec ? GREEN : g.sel ? YELLOW : RED;
+          // In catalog mode a click PICKS the object (overlays its photometry) instead of
+          // opening the card; otherwise it opens the ResultCard exactly as before.
+          const onClick = (e: React.MouseEvent) => {
+            e.stopPropagation();
+            if (catalogModeRef.current) void pickCatalog(g.id);
+            else clickRef.current(g.id);
+          };
           if (g.poly) {
             return (
               <polygon
@@ -1117,6 +1266,22 @@ export default function MapViewer({
               <circle cx={c.cx} cy={c.cy} r={c.r} fill="none" stroke={c.color} strokeWidth={1.6} />
               <circle cx={c.cx} cy={c.cy} r={1.5} fill={c.color} />
             </g>
+          ))}
+        </svg>
+      )}
+
+      {/* Picked catalog-object markers — a small hollow ring in each pick's series colour,
+          welded to its sky position, so the user sees which objects are on the SED. The
+          hollow ring mirrors the catalog series' hollow/dashed SED style. Non-interactive
+          (the ellipse beneath handles the toggle-off click). */}
+      {catalogMarks.length > 0 && (
+        <svg
+          data-overlay="catalog-marks"
+          width="100%" height="100%"
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
+        >
+          {catalogMarks.map((m, k) => (
+            <circle key={k} cx={m.cx} cy={m.cy} r={7} fill="none" stroke={m.color} strokeWidth={2} />
           ))}
         </svg>
       )}
@@ -1198,11 +1363,15 @@ export default function MapViewer({
         <PhotometryPanel
           open={photoPanelOpen}
           apertures={photoAps}
+          catalogPicks={catalogPicks}
+          catalogMode={catalogMode}
           photoTool={photoTool}
           photoEnabled={photoEnabled}
           photoHint={session == null ? "sign in on /data/review to measure" : !isCeers ? "CEERS only for now" : ""}
           onToggleOpen={() => setPhotoPanelOpen(o => !o)}
-          onPhotoTool={() => setPhotoTool(v => !v)}
+          onPhotoTool={togglePhotoTool}
+          onCatalogMode={toggleCatalogMode}
+          onRemovePick={removePick}
           onClear={clearPhoto}
           onDownload={downloadPhoto}
           onAdjust={adjustAperture}

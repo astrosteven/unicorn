@@ -9,7 +9,7 @@
 // is presentational — MapViewer owns the aperture list, the draw tool, and the map circles;
 // it passes the list + colours here and gets toggle/clear/download callbacks back.
 import { abMagFromNJy, type PhotometryResult } from "@/lib/photometry";
-import PhotometrySED, { type SEDSeries, sedPointsFromBands } from "./PhotometrySED";
+import PhotometrySED, { type SEDSeries, type CatalogBand, sedPointsFromBands, sedPointsFromCatalog } from "./PhotometrySED";
 
 // One measured (or measuring) aperture in the accumulated list. `n` is its 1-based index
 // (shown in the legend + map), `color` its palette colour (shared with its map circle and
@@ -26,14 +26,33 @@ export type MeasuredAperture = {
     | { kind: "error"; message: string };
 };
 
+// One picked catalog object whose native catalog photometry is overplotted on the SED as a
+// distinct (hollow + dashed) "catalog" series. `id` is the catalog id (from the field index),
+// `color` its palette colour (shared with its SED series + map marker), `bands` its native
+// per-band fluxes (nJy, from loadFilters at the object's position). `za`/`mabs` are shown in
+// the legend when readily available from the index.
+export type PickedCatalog = {
+  id: number;
+  color: string;
+  ra: number;
+  dec: number;
+  bands: CatalogBand[];
+  za?: number | null;
+  mabs?: number | null;
+};
+
 export default function PhotometryPanel({
   open,
   apertures,
+  catalogPicks,
+  catalogMode,
   photoTool,
   photoEnabled,
   photoHint,
   onToggleOpen,
   onPhotoTool,
+  onCatalogMode,
+  onRemovePick,
   onClear,
   onDownload,
   onAdjust,
@@ -41,18 +60,25 @@ export default function PhotometryPanel({
   open: boolean;
   /** The accumulated apertures (measuring / done / error), each with its palette colour. */
   apertures: MeasuredAperture[];
+  /** The picked catalog objects whose native photometry is overplotted (catalog style). */
+  catalogPicks: PickedCatalog[];
+  /** "Show catalog objects" mode: while ON, ellipse clicks pick objects instead of opening the card. */
+  catalogMode: boolean;
   /** Custom-aperture draw tool: current on/off, whether it's usable, and a muted reason. */
   photoTool: boolean;
   photoEnabled: boolean;
   photoHint: string;
   onToggleOpen: () => void;
   onPhotoTool: () => void;
+  onCatalogMode: () => void;
+  /** Remove a single picked catalog object (by id). */
+  onRemovePick: (id: number) => void;
   onClear: () => void;
   onDownload: () => void;
   /** Re-measure aperture #n at a new radius (arcsec) — for the ± steppers. */
   onAdjust: (n: number, radiusArcsec: number) => void;
 }) {
-  const hasAny = apertures.length > 0;
+  const hasAny = apertures.length > 0 || catalogPicks.length > 0;
   // Compact ± stepper button (adjust an aperture's radius by 0.05″ and re-measure).
   const STEP_BTN: React.CSSProperties = {
     width: 16, height: 16, lineHeight: "14px", textAlign: "center", padding: 0,
@@ -60,13 +86,22 @@ export default function PhotometryPanel({
     color: "var(--text-muted)", cursor: "pointer", fontSize: "0.72rem",
   };
   // Only finished measurements contribute a plotted SED series; measuring/errored ones still
-  // show in the legend + tables so the user sees them accumulate.
-  const series: SEDSeries[] = apertures
-    .filter(a => a.state.kind === "done")
-    .map(a => ({
-      color: a.color,
-      points: sedPointsFromBands((a.state as { result: PhotometryResult }).result.results),
-    }));
+  // show in the legend + tables so the user sees them accumulate. Picked catalog objects add
+  // their own "catalog"-style (hollow + dashed) series on the same axes.
+  const series: SEDSeries[] = [
+    ...apertures
+      .filter(a => a.state.kind === "done")
+      .map(a => ({
+        color: a.color,
+        points: sedPointsFromBands((a.state as { result: PhotometryResult }).result.results),
+        style: "measured" as const,
+      })),
+    ...catalogPicks.map(p => ({
+      color: p.color,
+      points: sedPointsFromCatalog(p.bands),
+      style: "catalog" as const,
+    })),
+  ];
 
   return (
     <div
@@ -85,12 +120,12 @@ export default function PhotometryPanel({
         style={{
           display: "flex", alignItems: "center", gap: 8, width: "100%",
           background: "none", border: "none", cursor: "pointer",
-          color: photoTool ? "#38d0f0" : hasAny ? "#38d0f0" : "var(--accent)",
+          color: photoTool || catalogMode ? "#38d0f0" : hasAny ? "#38d0f0" : "var(--accent)",
           fontSize: "0.72rem", letterSpacing: "0.08em", padding: "9px 11px",
         }}
       >
         <span style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s", display: "inline-block", fontSize: "0.7rem" }}>▸</span>
-        PHOTOMETRY{photoTool ? " ●" : hasAny ? ` · ${apertures.length}` : ""}
+        PHOTOMETRY{photoTool || catalogMode ? " ●" : hasAny ? ` · ${apertures.length + catalogPicks.length}` : ""}
       </button>
 
       {open && (
@@ -120,6 +155,33 @@ export default function PhotometryPanel({
               : photoTool
                 ? "drag on the map to draw a circular aperture · they accumulate"
                 : "custom circular-aperture flux (CEERS)"}
+          </div>
+
+          {/* "Show catalog objects" toggle. Mutually exclusive with the draw tool (turning this
+              ON turns Measure OFF and vice-versa, handled by the parent). While ON, ALL catalog
+              ellipses are shown + clickable, and a click overlays that object's NATIVE catalog
+              photometry on the SED as a distinct (hollow + dashed) series instead of opening the
+              card. Not gated on sign-in/CEERS — works on any field with per-band flux data. */}
+          <button
+            onClick={onCatalogMode}
+            className="mono"
+            aria-pressed={catalogMode}
+            style={{
+              width: "100%", marginTop: 8,
+              background: catalogMode ? "rgba(56,208,240,0.16)" : "none",
+              border: `1px solid ${catalogMode ? "rgba(56,208,240,0.5)" : "var(--border-bright)"}`,
+              borderRadius: 5,
+              color: catalogMode ? "#38d0f0" : "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: "0.7rem", padding: "6px 10px",
+            }}
+          >
+            ◯ Show catalog objects{catalogMode ? " · ON" : ""}
+          </button>
+          <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 4, lineHeight: 1.5 }}>
+            {catalogMode
+              ? "click any object to overlay its catalog photometry on the SED"
+              : "overlay catalog objects' measured photometry"}
           </div>
 
           {/* Clear + Download — act on the whole accumulated set. */}
@@ -173,6 +235,26 @@ export default function PhotometryPanel({
                       <span style={{ minWidth: 42, textAlign: "center" }}>{a.radiusArcsec.toFixed(2)}″</span>
                       <button title="grow 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec + 0.05)} style={STEP_BTN}>+</button>
                     </span>
+                  </div>
+                ))}
+                {/* Picked catalog objects: hollow ring swatch (matches the SED's hollow/dashed
+                    style) → cat <id> (+ z_a / M_UV when the index carried them), each with a ✕
+                    to remove that one pick. */}
+                {catalogPicks.map(p => (
+                  <div key={`c${p.id}`} className="mono" style={{ display: "flex", alignItems: "center", gap: 7, fontSize: "0.62rem", color: "var(--text-muted)" }}>
+                    <span style={{ width: 11, height: 11, borderRadius: "50%", background: "transparent", border: `2px solid ${p.color}`, flex: "0 0 auto", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }} />
+                    <span style={{ whiteSpace: "nowrap" }}>
+                      cat {p.id}
+                      {p.za != null && Number.isFinite(p.za) ? ` · z${p.za.toFixed(2)}` : ""}
+                      {p.mabs != null && Number.isFinite(p.mabs) ? ` · M${p.mabs.toFixed(1)}` : ""}
+                    </span>
+                    <button
+                      title="remove this catalog object"
+                      onClick={() => onRemovePick(p.id)}
+                      style={{ ...STEP_BTN, marginLeft: "auto" }}
+                    >
+                      ✕
+                    </button>
                   </div>
                 ))}
               </div>
