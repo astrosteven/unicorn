@@ -734,6 +734,9 @@ export default function SearchPage() {
   const [status, setStatus] = useState<ResultState>("idle");
   const [results, setResults] = useState<SourceResult[]>([]);
   const [matchSummary, setMatchSummary] = useState("");
+  const [autoRun, setAutoRun] = useState(false);      // set by the ?q= init effect → runs doSearch once state has settled
+  const [linkCopied, setLinkCopied] = useState(false); // "🔗 Copy link" → "copied!" flash
+  const didInitRef = useRef(false);                    // guards the ?q= init effect so it fires once
   const fileRef = useRef<HTMLInputElement>(null);
   const cardRef = useRef<HTMLTableRowElement>(null);
   // Every matched object (index row + campfire match), retained for the FULL-list
@@ -812,6 +815,38 @@ export default function SearchPage() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ---- Shareable query links: consume ?q= on load ---------------------------
+  // A query run writes ?q=<expr>[&cols=<extra>] into the URL (see doSearch's query
+  // branch). On a fresh load, if ?q= is present, switch to query mode, seed the box
+  // (OVERRIDING the localStorage["unicorn_lastQuery"] preload), and auto-run once state
+  // has settled (setState is async, so we flag autoRun and fire from the effect below).
+  // Coexists with the ?queue=1 MSA handoff: queue wins if both are present (its own effect
+  // already renders a table), so we skip ?q= in that case to avoid a double search.
+  useEffect(() => {
+    if (didInitRef.current) return;   // once only
+    didInitRef.current = true;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("queue") === "1") return;   // let the MSA handoff take precedence
+    const q = params.get("q");
+    if (!q) return;
+    setMode("query");
+    setQueryInput(q);
+    const cols = params.get("cols");
+    if (cols) setViewColsInput(cols);
+    setAutoRun(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fire the ?q= search once mode + queryInput have actually settled to the URL values.
+  useEffect(() => {
+    if (autoRun && mode === "query" && queryInput === new URLSearchParams(window.location.search).get("q")) {
+      setAutoRun(false);
+      doSearch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, mode, queryInput]);
 
   // Hand the current query's matched objects to the visual inspector (via sessionStorage).
   const INSPECT_HANDOFF_CAP = 10000;
@@ -1036,6 +1071,15 @@ export default function SearchPage() {
         if ("error" in pred) { setStatus("notfound"); setMatchSummary(pred.error); return; }
         // Persist the query so the box comes back pre-filled next visit (user request).
         try { localStorage.setItem("unicorn_lastQuery", queryInput); } catch {}
+        // Reflect the query in the URL so it's shareable (colleague opens the link → same
+        // table auto-runs; see the ?q= init effect). Query-mode only — leave id/name/radec/
+        // upload/queue URLs untouched. replaceState (not push) so it doesn't spam history.
+        try {
+          const sp = new URLSearchParams();
+          sp.set("q", queryInput);
+          if (viewColsInput.trim()) sp.set("cols", viewColsInput.trim());
+          window.history.replaceState(null, "", `${window.location.pathname}?${sp.toString()}`);
+        } catch {}
         // Columns to SHOW without filtering on them (e.g. flux/mag values a colleague
         // wants to eyeball). Same tokens as query fields; unioned into the table columns.
         const viewCols = viewColsInput.split(/[,\s]+/).map(s => s.trim().toLowerCase())
@@ -1685,6 +1729,21 @@ export default function SearchPage() {
               style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--green)", border: "1px solid rgba(126,207,176,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer" }}>
               ⬡ region file (.reg) ({Math.min(queryTotal, 100000).toLocaleString()})
             </button>
+            {/* Shareable link — the URL already carries ?q= (see doSearch). Query mode only. */}
+            {mode === "query" && (
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(window.location.href).then(() => {
+                    setLinkCopied(true);
+                    setTimeout(() => setLinkCopied(false), 1500);
+                  }).catch(() => {});
+                }}
+                className="mono"
+                title="Copy a shareable link to this query — a colleague opens it to the same table"
+                style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer" }}>
+                {linkCopied ? "✓ copied!" : "🔗 Copy link"}
+              </button>
+            )}
             {mappableCount > 0 && (
               <button onClick={viewOnMap} className="mono"
                 title="Open the color map in a new tab showing ONLY these matched objects' Kron ellipses, auto-fit to them"
