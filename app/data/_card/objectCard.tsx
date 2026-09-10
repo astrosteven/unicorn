@@ -4,8 +4,9 @@
 // montages, ResultCard). Imported by BOTH the Search page and the Explore/Map page
 // so a source looks identical however you reach it. Extracted verbatim from the
 // original app/data/search/page.tsx — behavior is unchanged.
-import { useState, type ReactNode, type CSSProperties } from "react";
+import { useState, useEffect, type ReactNode, type CSSProperties } from "react";
 import dynamic from "next/dynamic";
+import { supabase } from "@/lib/supabase";
 
 // On-the-fly WebGL color cutout (window + WebGL2), loaded client-only via next/dynamic
 // with { ssr: false } — required by this static export, same pattern as the /data/map
@@ -78,6 +79,7 @@ export interface SourceResult {
 export type LabelRec = {
   name: string; aka?: string[]; field: string; id: number;
   ra?: number; dec?: number; z?: number; z_type?: string; ref?: string; note?: string;
+  reference?: string;  // free-form citation (paper / arXiv id / URL) for user-submitted labels
 };
 
 // Build the "why not selected" breakdown for object at index position `pos`.
@@ -393,22 +395,40 @@ export async function loadInspect(fc: FieldConfig): Promise<{ removed: Set<numbe
   return res;
 }
 
-// Named-object labels (searchindex/labels.json): loaded once, cached. Empty if absent.
+// Named-object labels: the curated static list (searchindex/labels.json) merged with the
+// community-submitted names in Supabase (public.object_labels — anyone can read; logged-in
+// users add rows via the card's "Add name" form). Loaded once, cached. Empty if both absent.
 let _labelsCache: LabelRec[] | null = null;
 let _labelsPromise: Promise<LabelRec[]> | null = null;
 export async function loadLabels(): Promise<LabelRec[]> {
   if (_labelsCache) return _labelsCache;
   if (_labelsPromise) return _labelsPromise;
   _labelsPromise = (async () => {
+    // Static curated labels first (never let a Supabase hiccup drop them).
+    let statics: LabelRec[] = [];
     try {
       const data = await fetchJsonMaybeGz(`${INDEX_BASE}/labels.json`);
-      return (Array.isArray(data) ? data : data?.labels ?? []) as LabelRec[];
-    } catch {
-      return [];
-    }
+      statics = (Array.isArray(data) ? data : data?.labels ?? []) as LabelRec[];
+    } catch { /* static labels absent — carry on with just the Supabase ones */ }
+    // Community submissions from Supabase (public SELECT). Map each row to LabelRec shape.
+    let submitted: LabelRec[] = [];
+    try {
+      const { data } = await supabase
+        .from("object_labels").select("field, obj_id, ra, dec, name, reference");
+      submitted = (data ?? []).map((r: any): LabelRec => ({
+        name: r.name, field: r.field, id: Number(r.obj_id),
+        ra: r.ra ?? undefined, dec: r.dec ?? undefined, reference: r.reference ?? undefined,
+      }));
+    } catch { /* Supabase unreachable — serve just the static labels */ }
+    return [...statics, ...submitted];
   })();
   _labelsCache = await _labelsPromise;
   return _labelsCache;
+}
+// Push a freshly-submitted label into the module cache so an immediate re-search sees it
+// without a round-trip (the card also updates its own local state — see AddNameControl).
+export function addLabelToCache(rec: LabelRec) {
+  if (_labelsCache) _labelsCache.push(rec);
 }
 // Synchronous lookup once labels are loaded (used to tag a freshly-fetched object).
 export function labelFor(field: string, id: number): LabelRec | undefined {
@@ -692,6 +712,9 @@ function flux2mag(f: number): string {
 }
 
 export function ResultCard({ src }: { src: SourceResult }) {
+  // Local nickname override so a name the user submits from this card shows instantly
+  // (as a ★ label) without a full reload. Falls back to the fetched famous-object label.
+  const [nickname, setNickname] = useState<LabelRec | undefined>(src.nickname);
   const pz = src.pz;
   const za = pz["ZA"] ?? 0;
   const zl68 = pz["ZL68"] ?? 0;
@@ -721,19 +744,22 @@ export function ResultCard({ src }: { src: SourceResult }) {
       {/* Header row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem", flexWrap: "wrap", gap: "8px" }}>
         <div>
-          {/* Famous-object label (e.g. "Maisie's Galaxy") */}
-          {src.nickname && (
+          {/* Famous-object label (e.g. "Maisie's Galaxy"), plus any user-submitted name */}
+          {nickname && (
             <div className="mono" style={{ marginBottom: "6px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <span title={[src.nickname.ref, src.nickname.z != null ? `z=${src.nickname.z}` : "", src.nickname.note].filter(Boolean).join(" · ")}
+              <span title={[nickname.ref, nickname.reference ? `ref: ${nickname.reference}` : "", nickname.z != null ? `z=${nickname.z}` : "", nickname.note].filter(Boolean).join(" · ")}
                 style={{
                   fontSize: "0.9rem", fontWeight: 700, padding: "3px 11px", borderRadius: "999px",
                   background: "linear-gradient(135deg, var(--lavender), var(--pink))", color: "#1a0f2e", letterSpacing: "0.02em",
                 }}>
-                ★ {src.nickname.name}
+                ★ {nickname.name}
               </span>
-              {src.nickname.ref && <span style={{ fontSize: "0.68rem", color: "var(--text-dim)" }}>{src.nickname.ref}</span>}
+              {nickname.ref && <span style={{ fontSize: "0.68rem", color: "var(--text-dim)" }}>{nickname.ref}</span>}
+              {nickname.reference && <span style={{ fontSize: "0.68rem", color: "var(--text-dim)" }}>ref: {nickname.reference}</span>}
             </div>
           )}
+          {/* Add-a-name control — shown only to logged-in users (see AddNameControl). */}
+          <AddNameControl src={src} onAdded={setNickname} />
           {src.interestLabel && (
             <span className="mono" style={{ fontSize: "1rem", fontWeight: 700, color: "var(--accent-bright)", marginRight: "10px" }}>
               {src.interestLabel}
@@ -866,6 +892,85 @@ export function ResultCard({ src }: { src: SourceResult }) {
           ⚑ flag as spurious
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---- "Add name" control ----------------------------------------------------
+// Logged-in users can attach a name + reference to an object, straight from its card.
+// The row goes into Supabase public.object_labels (RLS: public SELECT, authenticated
+// INSERT — the anon client's session JWT satisfies the policy). On success the label
+// merges into the By-Name search (loadLabels) and shows immediately as a ★ on the card.
+// Hidden entirely when signed out (mirrors the /data/review auth pattern).
+function AddNameControl({ src, onAdded }: { src: SourceResult; onAdded: (rec: LabelRec) => void }) {
+  const [email, setEmail] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [reference, setReference] = useState("");
+  const [state, setState] = useState<"idle" | "saving" | "done">("idle");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setEmail(s?.user.email ?? null));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  if (!email) return null;  // signed out — no control at all
+
+  const save = async () => {
+    const nm = name.trim();
+    if (!nm) { setErr("A name is required."); return; }
+    setErr(""); setState("saving");
+    const field = src.field;
+    const obj_id = Number(src.row["ID"]);
+    const ra = src.row["RA"] != null ? Number(src.row["RA"]) : null;
+    const dec = src.row["DEC"] != null ? Number(src.row["DEC"]) : null;
+    const ref = reference.trim() || null;
+    const { error } = await supabase.from("object_labels").insert({
+      field, obj_id, ra, dec, name: nm, reference: ref, submitted_by: email,
+    });
+    if (error) { setErr(error.message); setState("idle"); return; }
+    // Reflect it locally: ★ on this card + into the search-label cache for immediate re-search.
+    const rec: LabelRec = { name: nm, field, id: obj_id, ra: ra ?? undefined, dec: dec ?? undefined, reference: ref ?? undefined };
+    onAdded(rec);
+    addLabelToCache(rec);
+    setState("done"); setOpen(false); setName(""); setReference("");
+  };
+
+  const inputStyle: CSSProperties = {
+    background: "var(--bg)", border: "1px solid var(--border-bright)", borderRadius: "4px",
+    color: "var(--text)", fontFamily: "'Space Mono', monospace", fontSize: "0.72rem", padding: "5px 8px",
+  };
+
+  if (!open) {
+    return (
+      <div style={{ marginBottom: "6px" }}>
+        <button onClick={() => { setOpen(true); setState("idle"); }} className="mono"
+          title="Attach a name + reference to this object (visible to everyone, searchable by name)"
+          style={{ background: "none", border: "1px solid var(--border-bright)", borderRadius: "4px", color: "var(--accent2)", fontSize: "0.68rem", cursor: "pointer", padding: "3px 9px", letterSpacing: "0.03em" }}>
+          ＋ Add name
+        </button>
+        {state === "done" && <span className="mono" style={{ marginLeft: "8px", fontSize: "0.68rem", color: "var(--green)" }}>name added ✓</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mono" style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px" }}>
+      <input style={{ ...inputStyle, width: "160px" }} type="text" placeholder="name (required)" value={name}
+        onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && save()} autoFocus />
+      <input style={{ ...inputStyle, width: "190px" }} type="text" placeholder="reference (paper / arXiv / URL)" value={reference}
+        onChange={e => setReference(e.target.value)} onKeyDown={e => e.key === "Enter" && save()} />
+      <button onClick={save} disabled={state === "saving"} className="mono"
+        style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.35)", borderRadius: "4px", padding: "5px 11px", cursor: state === "saving" ? "wait" : "pointer", fontSize: "0.7rem" }}>
+        {state === "saving" ? "saving…" : "Save"}
+      </button>
+      <button onClick={() => { setOpen(false); setErr(""); }} className="mono"
+        style={{ background: "none", color: "var(--text-muted)", border: "1px solid var(--border-bright)", borderRadius: "4px", padding: "5px 11px", cursor: "pointer", fontSize: "0.7rem" }}>
+        Cancel
+      </button>
+      {err && <span style={{ color: "var(--red)", fontSize: "0.68rem" }}>{err}</span>}
     </div>
   );
 }
