@@ -1172,11 +1172,13 @@ export default function MapViewer({
           }}
         />
       </div>
+      </div>
 
-      {/* PHOTOMETRY panel — LEFT side of the viewer, its own container. Its accumulated SED +
-          per-aperture tables get tall, so keep it off the right control column and cap its
-          height with an INTERNAL scroll (pointer-events:auto here so the wheel scrolls it);
-          the container shrink-wraps to the panel so it never blocks map panning elsewhere. */}
+      {/* PHOTOMETRY panel — LEFT edge of the viewer. It MUST be a SIBLING of the right control
+          column (positioned against the map wrapper), NOT nested inside it — otherwise left:14
+          is measured from the right column's box and the panel lands on the right, clipped.
+          Its SED + tables get tall, so cap height with an INTERNAL scroll (pointer-events:auto
+          so the wheel scrolls it); the container shrink-wraps so it never blocks map panning. */}
       <div style={{ position: "absolute", top: 12, left: 14, zIndex: 16, maxHeight: "calc(100% - 64px)", overflowY: "auto", pointerEvents: "auto" }}>
         <PhotometryPanel
           open={photoPanelOpen}
@@ -1189,7 +1191,6 @@ export default function MapViewer({
           onClear={clearPhoto}
           onDownload={downloadPhoto}
         />
-      </div>
       </div>
     </div>
   );
