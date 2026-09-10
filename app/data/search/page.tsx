@@ -1017,6 +1017,8 @@ export default function SearchPage() {
           }
         }
       } else if (mode === "radec") {
+        // Cone search → the SAME sortable results table Query/Upload use (map↗, inspect,
+        // downloads, click-a-row bio plot), rows ordered by separation (closest first).
         const ra = parseFloat(raInput);
         const dec = parseFloat(decInput);
         const radius = parseFloat(radiusInput) || 0.2;
@@ -1025,19 +1027,41 @@ export default function SearchPage() {
           setMatchSummary("Enter numeric RA and Dec in degrees.");
           return;
         }
-        const cand: { fc: typeof fields[0]; id: number; sep: number; zg: ZGrid }[] = [];
-        for (const fc of fields) {
-          const { idx, zg } = await loadField(fc);
-          for (let i = 0; i < idx.n; i++) {
-            const sep = angSep(ra, dec, idx.ra[i], idx.dec[i]);
-            if (sep <= radius) cand.push({ fc, id: idx.id[i], sep, zg });
+        const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadField(fc)) })));
+        const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
+        for (const L of loaded) speczByField.set(L.fc.field, await loadSpecz(L.fc));
+        const hits: { L: typeof loaded[0]; i: number; sep: number }[] = [];
+        for (const L of loaded) {
+          for (let i = 0; i < L.idx.n; i++) {
+            const sep = angSep(ra, dec, L.idx.ra[i], L.idx.dec[i]);
+            if (sep <= radius) hits.push({ L, i, sep });
           }
         }
-        cand.sort((a, b) => a.sep - b.sep);
-        for (const c of cand.slice(0, 50)) {
-          const src = await fetchObject(c.fc, c.id, c.zg);
-          if (src) found.push(src);
+        hits.sort((a, b) => a.sep - b.sep);
+        if (hits.length === 0) {
+          setStatus("notfound");
+          setMatchSummary(`No sources within ${radius}" of ${ra.toFixed(5)}, ${dec.toFixed(5)}.`);
+          return;
         }
+        const CAP = TABLE_CAP;
+        const rows: QueryRow[] = [];
+        const all: MatchEntry[] = [];
+        let total = 0;
+        for (const h of hits) {
+          const id = h.L.idx.id[h.i];
+          const cz = speczByField.get(h.L.fc.field)?.[String(id)] ?? null;
+          const r = indexRowAt(h.L.idx, h.i, cz);
+          total++;
+          if (rows.length < CAP) rows.push(toQueryRow(h.L.fc, id, r, cz, []));
+          all.push({ fc: h.L.fc, id, r, cz });
+        }
+        queryAllRef.current = all;
+        setSort({ col: null, dir: "asc" });   // fresh search: separation order (closest first)
+        setResults([]); setQueryCard(null); setQueryCardId(null);
+        setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
+        setStatus("table");
+        setMatchSummary(`${total.toLocaleString()} match${total === 1 ? "" : "es"} within ${radius}" of ${ra.toFixed(5)}, ${dec.toFixed(5)}${total > CAP ? ` — showing first ${CAP}` : ""}.`);
+        return;
       } else {
         // upload: one entry per line, either "ID" or "RA Dec". Resolve each entry to a
         // matched (field, index-position) pair, then render the SAME sortable results
