@@ -531,7 +531,16 @@ function InspectCard({ src }: { src: SourceResult }) {
           {src.beta != null && <span style={{ color: "var(--text-muted)" }}> · β={src.beta.toFixed(2)}</span>}
           {src.selected === 1 && <span style={{ color: "var(--amber)" }}> · ★selected</span>}
         </span>
-        <span style={{ color: "var(--text-muted)" }}>{ra != null ? Number(ra).toFixed(5) : "—"}, {dec != null ? Number(dec).toFixed(5) : "—"}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
+          <span style={{ color: "var(--text-muted)" }}>{ra != null ? Number(ra).toFixed(5) : "—"}, {dec != null ? Number(dec).toFixed(5) : "—"}</span>
+          {/* Open the full fitsgl map, zoomed to a 5" region around this source, in a new tab. */}
+          <a
+            href={`/unicorn/data/map?field=${encodeURIComponent(src.field ?? "")}&id=${src.row["ID"]}&fov=5`}
+            target="_blank" rel="noopener"
+            style={{ color: "var(--accent)", textDecoration: "none", whiteSpace: "nowrap" }}
+            title="Open the full fitsgl map here (5″ view) in a new tab"
+          >map ↗</a>
+        </span>
       </div>
       {fails.length > 0 && (
         <div className="mono" style={{ fontSize: "0.72rem", color: "var(--text-muted)", marginBottom: "8px" }}>

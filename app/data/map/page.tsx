@@ -75,6 +75,15 @@ function initialField(): FieldConfig {
 function initialGotoId(): string | null {
   return typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("id") : null;
 }
+// Optional ?fov=<arcsec> on a deep-link overrides the zoom region (e.g. the inspector opens
+// a 5" view). Falls back to DEEPLINK_FOV_ARCSEC; clamped to a sane range.
+function initialFov(): number {
+  if (typeof window !== "undefined") {
+    const f = parseFloat(new URLSearchParams(window.location.search).get("fov") || "");
+    if (Number.isFinite(f) && f > 0 && f <= 120) return f;
+  }
+  return DEEPLINK_FOV_ARCSEC;
+}
 
 // ---- Search → map handoff ("view N on map") --------------------------------
 // The Search page stashes the matched objects in localStorage["mapQueue"] (localStorage,
@@ -177,6 +186,7 @@ export default function MapPage() {
 
   const configUrl = useMemo(() => `${tileBase(activeField)}/fitsgl.json`, [activeField]);
   const pendingGotoRef = useRef<string | null>(initialGotoId());
+  const deeplinkFov = initialFov();   // ?fov= override (e.g. inspector's 5" link), else default
   const [ready, setReady] = useState(false);
   const [panel, setPanel] = useState<PanelState>({ kind: "hidden" });
   const [filters, setFilters] = useState<MapFilters>(DEFAULT_FILTERS);
@@ -271,13 +281,13 @@ export default function MapPage() {
     const tick = () => {
       const g = pendingGotoRef.current;
       if (!g) return;
-      if (handleGoto(g, DEEPLINK_FOV_ARCSEC)) { pendingGotoRef.current = null; return; }
+      if (handleGoto(g, deeplinkFov)) { pendingGotoRef.current = null; return; }
       if (++tries < 30) timer = setTimeout(tick, 200);   // up to ~6 s for tiles/WCS
       else pendingGotoRef.current = null;
     };
     timer = setTimeout(tick, 150);
     return () => clearTimeout(timer);
-  }, [ready, handleGoto]);
+  }, [ready, handleGoto, deeplinkFov]);
 
   // Auto-fit the view to the bounding box of the ACTIVE field's queued objects (the
   // search → map handoff). Runs once the viewer/WCS are up; re-runs when the active field
