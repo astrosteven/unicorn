@@ -977,7 +977,21 @@ export default function SearchPage() {
         const rows: QueryRow[] = [];
         const all: { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null }[] = [];
         let total = 0;
-        for (const fc of fields) {
+        // Fast path: if the query pins ONE field (e.g. `field = ceers`) as a pure-AND term,
+        // only load THAT index instead of all 9 — avoids fetching the big COSMOS/EGS indices
+        // for a single-field query. Skipped if the query has any `or` (then the field clause
+        // may not be a global constraint), so correctness is never traded for speed.
+        let qFields = fields;
+        if (!/\bor\b/i.test(queryInput)) {
+          const fm = queryInput.match(/\bfield\s*==?\s*["']?([A-Za-z0-9_-]+)["']?/i);
+          if (fm) {
+            const tok = fm[1].toLowerCase().replace(/[\s_-]/g, "");
+            const only = fields.find(f =>
+              f.field.toLowerCase().replace(/[\s_-]/g, "") === tok || f.prefix.toLowerCase() === tok);
+            if (only) qFields = [only];
+          }
+        }
+        for (const fc of qFields) {
           const { idx } = await loadField(fc);
           // Only fetch the (larger) per-filter flux table when the query needs it.
           const fx = need.length ? await loadFilters(fc) : null;
