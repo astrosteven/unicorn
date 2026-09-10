@@ -1,34 +1,48 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { checkAuth, logout } from "@/lib/auth";
+import { supabase } from "@/lib/supabase";
+import { useProfile, routeAllowed, type Role } from "@/lib/roles";
 
-const NAV_LINKS = [
-  { href: "/data",          label: "Overview" },
-  { href: "/data/catalogs", label: "Catalogs" },
-  { href: "/data/fields",   label: "Fields" },
-  { href: "/data/map",      label: "Explore" },
-  { href: "/data/search",   label: "Search" },
-  { href: "/data/review",   label: "Review (admin only)" },
-  { href: "/data/inspect",  label: "Inspect (admin only)" },
+// Nav links + the minimum role that may see each. `null` → visible to everyone
+// (including logged-out public viewers). Overview/Fields are always public.
+const NAV_LINKS: { href: string; label: string; min: Role | null }[] = [
+  { href: "/data",          label: "Overview", min: null },
+  { href: "/data/fields",   label: "Fields",   min: null },
+  { href: "/data/catalogs", label: "Catalogs", min: "general" },
+  { href: "/data/map",      label: "Explore",  min: "general" },
+  { href: "/data/search",   label: "Search",   min: "general" },
+  { href: "/data/review",   label: "Review",   min: "key" },
+  { href: "/data/inspect",  label: "Inspect",  min: "key" },
+  { href: "/data/admin",    label: "Admin",    min: "admin" },
 ];
+
+// Rank roles so a nav link shows when the user's role meets the link's minimum.
+const RANK: Record<Role, number> = { pending: 0, general: 1, key: 2, admin: 3 };
+function meets(role: Role | null, min: Role | null): boolean {
+  if (min == null) return true;             // public link
+  if (role == null) return false;           // not logged in
+  return RANK[role] >= RANK[min];
+}
 
 export default function DataLayout({ children }: { children: React.ReactNode }) {
   const router   = useRouter();
   const pathname = usePathname();
-  const [ready, setReady] = useState(false);
+  const { session, role, loading } = useProfile();
 
+  const allowed = routeAllowed(pathname, role);
+
+  // Not logged in and on a gated route → send to the sign-in / register page.
+  // (Public routes render for anon with no redirect.)
   useEffect(() => {
-    if (!checkAuth()) {
+    if (!loading && !session && !allowed) {
       router.replace("/login");
-    } else {
-      setReady(true);
     }
-  }, []);
+  }, [loading, session, allowed, router]);
 
-  if (!ready) return (
+  if (loading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <span className="mono" style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>Authenticating...</span>
     </div>
@@ -64,7 +78,7 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
             </span>
           </Link>
           <div style={{ display: "flex", gap: "4px" }}>
-            {NAV_LINKS.map(link => {
+            {NAV_LINKS.filter(link => meets(role, link.min)).map(link => {
               const active = pathname === link.href ||
                 (link.href !== "/data" && pathname.startsWith(link.href));
               return (
@@ -75,9 +89,15 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
             })}
           </div>
         </div>
-        <button className="signout" onClick={() => { logout(); router.push("/"); }}>
-          Sign out
-        </button>
+        {session ? (
+          <button className="signout" onClick={async () => { await supabase.auth.signOut(); router.push("/"); }}>
+            Sign out
+          </button>
+        ) : (
+          <Link href="/login" className="signout" style={{ textDecoration: "none" }}>
+            Sign in
+          </Link>
+        )}
       </nav>
 
       {/* Persistent development / authorized-use disclaimer for the protected area */}
@@ -96,7 +116,16 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
         </span>
       </div>
 
-      <div style={{ flex: 1 }}>{children}</div>
+      <div style={{ flex: 1 }}>
+        {allowed
+          ? children
+          : session
+            ? (role === "pending"
+                ? <AwaitingApproval />
+                : <NeedsKeyAccess pathname={pathname} />)
+            /* not logged in + gated route: redirect is firing above; show the splash */
+            : <RedirectSplash />}
+      </div>
 
       <footer style={{ borderTop: "1px solid var(--border)", padding: "1.5rem 2rem", textAlign: "center" }}>
         <p style={{ fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace" }}>
@@ -106,6 +135,61 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
              style={{ color: "var(--accent2)", textDecoration: "none" }}>Feedback</a>
         </p>
       </footer>
+    </div>
+  );
+}
+
+// ---- Gate panels -----------------------------------------------------------
+
+function Panel({ children }: { children: React.ReactNode }) {
+  return (
+    <main style={{ maxWidth: "560px", margin: "0 auto", padding: "5rem 2rem", textAlign: "center" }}>
+      <div className="card-bright" style={{ padding: "2.5rem 2rem" }}>{children}</div>
+    </main>
+  );
+}
+
+// Logged in but role is still `pending` — friendly "we'll review it" screen.
+function AwaitingApproval() {
+  return (
+    <Panel>
+      <div style={{ fontSize: "2rem", marginBottom: "0.75rem" }} aria-hidden>⏳</div>
+      <h1 className="page-title" style={{ fontSize: "1.5rem", color: "var(--text)", marginBottom: "0.75rem" }}>
+        Access requested — awaiting approval
+      </h1>
+      <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", lineHeight: 1.6, marginBottom: "1.5rem" }}>
+        Thanks for registering. Your request has been received and Steven Finkelstein will review it
+        shortly. You&rsquo;ll get access to the catalogs and tools once it&rsquo;s approved — no need
+        to sign up again.
+      </p>
+      <button className="signout" onClick={() => supabase.auth.signOut()}>Sign out</button>
+    </Panel>
+  );
+}
+
+// Logged in with a valid but insufficient role (e.g. general on /data/inspect).
+function NeedsKeyAccess({ pathname }: { pathname: string }) {
+  return (
+    <Panel>
+      <div style={{ fontSize: "2rem", marginBottom: "0.75rem" }} aria-hidden>🔑</div>
+      <h1 className="page-title" style={{ fontSize: "1.5rem", color: "var(--text)", marginBottom: "0.75rem" }}>
+        This needs key access
+      </h1>
+      <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", lineHeight: 1.6, marginBottom: "1.5rem" }}>
+        <span className="mono" style={{ color: "var(--text-dim)" }}>{pathname}</span> is limited to key
+        collaborators. Your account doesn&rsquo;t have that level yet — contact Steven Finkelstein if you
+        believe you should.
+      </p>
+      <Link href="/data" className="signout" style={{ textDecoration: "none" }}>← Back to Overview</Link>
+    </Panel>
+  );
+}
+
+// Brief placeholder while the redirect-to-login effect runs (anon on a gated route).
+function RedirectSplash() {
+  return (
+    <div style={{ minHeight: "40vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <span className="mono" style={{ color: "var(--text-dim)", fontSize: "0.85rem" }}>Redirecting to sign in…</span>
     </div>
   );
 }
