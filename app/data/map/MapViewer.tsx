@@ -541,6 +541,11 @@ export default function MapViewer({
 
   const handleRef = useRef<FitsViewerHandle | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // The last freely-viewed camera (centre + zoom), captured each frame in project() while no
+  // goto/deep-link target is pending. Used to restore the view after the browser tab is
+  // backgrounded and refocused — browsers can drop the WebGL context (or zero the drawing
+  // buffer) while hidden, and fitsgl then re-fits the whole mosaic on return.
+  const lastCamRef = useRef<{ cx: number; cy: number; zoom: number } | null>(null);
   // The current filtered source list, held in a ref so the per-frame projector reads
   // the latest without being a hook dependency (projection must not re-subscribe onFrame).
   const sourcesRef = useRef<Src[]>([]);
@@ -735,6 +740,12 @@ export default function MapViewer({
     if (!h || !wrap) return;
     const cam = h.getCameraState();
     if (!cam) return;
+    // Remember the current view whenever the user is freely panning/zooming (no goto or
+    // deep-link target in flight) so a tab-switch context loss can be undone (see the
+    // visibilitychange effect). Guard on a positive, finite zoom to skip transient states.
+    if (!cameraTargetRef?.current && Number.isFinite(cam.zoom) && cam.zoom > 0) {
+      lastCamRef.current = { cx: cam.centerX, cy: cam.centerY, zoom: cam.zoom };
+    }
     const rect = wrap.getBoundingClientRect();
     const W = rect.width, H = rect.height;
     const zoom = cam.zoom;
@@ -1472,6 +1483,23 @@ export default function MapViewer({
   useEffect(() => {
     if (idx && handleRef.current) readyHandleRef.current?.(handleRef.current, idx);
   }, [idx]);
+
+  // Preserve the view across a browser tab-switch. When the tab is hidden the browser may
+  // drop the WebGL context (or resize the drawing buffer to 0); on return fitsgl re-fits the
+  // whole mosaic — the "it zooms out when I come back" bug. On refocus we re-assert the last
+  // freely-viewed camera through the same adopt-and-hold path the deep-link uses (enforceCamera
+  // re-applies it every frame until the viewer settles, then releases so pan/zoom is free).
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      const last = lastCamRef.current;
+      if (!last || !cameraTargetRef) return;
+      cameraTargetRef.current = { cx: last.cx, cy: last.cy, zoom: last.zoom, until: Date.now() + 4000 };
+      pokeProject();   // actively re-assert + reproject through the settle window
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [cameraTargetRef, pokeProject]);
 
   if (state === "error") {
     return (
