@@ -209,8 +209,11 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
     <div className="card" style={{ padding: "1.25rem" }}>
       {/* Axis controls */}
       <div style={{ display: "flex", flexDirection: "column", gap: "14px", marginBottom: "1rem" }}>
-        <AxisControls tag="X" ax={xa} set={setXa} />
-        <AxisControls tag="Y" ax={ya} set={setYa} />
+        {/* Called as a function (not <AxisControls/>) so the inputs are part of THIS
+            component's tree — a nested component would get a new identity each keystroke
+            and remount, dropping input focus after the first character. */}
+        {AxisControls({ tag: "X", ax: xa, set: setXa })}
+        {AxisControls({ tag: "Y", ax: ya, set: setYa })}
       </div>
 
       {/* Point-count / cap / drop summary */}
@@ -256,7 +259,8 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
           })}
           {/* Points (accent, slight transparency so density reads) */}
           {pts.map((p, i) => (
-            <circle key={i} cx={tx(p.x)} cy={ty(p.y)} r={2} fill="var(--accent)" fillOpacity={0.5}
+            <circle key={i} cx={tx(p.x)} cy={ty(p.y)} r={3.5} fill="var(--accent)" fillOpacity={0.85}
+              stroke="var(--bg)" strokeWidth={0.8}
               onMouseEnter={() => setHover({ px: tx(p.x), py: ty(p.y), label: `${p.field} ${p.id}` })} />
           ))}
           {/* Hover marker */}
