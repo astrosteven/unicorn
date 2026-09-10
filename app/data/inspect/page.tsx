@@ -109,7 +109,7 @@ const DECISIONS: { key: InspectDecision; label: string; color: string; hot: stri
   { key: "not_inspected", label: "Not Inspected", color: "var(--text-dim)", hot: "n" },
   { key: "keep",          label: "Keep",          color: "var(--green)",    hot: "k" },
   { key: "undecided",     label: "Undecided",     color: "var(--amber)",    hot: "u" },
-  { key: "remove",        label: "Remove",        color: "var(--red)",      hot: "r" },
+  { key: "remove",        label: "Remove from Selected", color: "var(--red)", hot: "r" },
 ];
 function decColor(d: InspectDecision): string {
   return DECISIONS.find(x => x.key === d)?.color ?? "var(--text-dim)";
