@@ -7,6 +7,7 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabase";
+import { Comments } from "./Comments";
 
 // On-the-fly WebGL color cutout (window + WebGL2), loaded client-only via next/dynamic
 // with { ssr: false } — required by this static export, same pattern as the /data/map
@@ -858,6 +859,17 @@ export function ResultCard({ src }: { src: SourceResult }) {
         />
       )}
       {src.stampUrl && <StampMontage url={src.stampUrl} />}
+
+      {/* Per-object comments — private by default, optional public. Only when we have a
+          field + id to key on (RLS scopes reads to the user's own + public rows). */}
+      {src.field && src.row["ID"] != null && (
+        <Comments
+          field={src.field}
+          objId={src.row["ID"]}
+          ra={Number(src.row["RA"])}
+          dec={Number(src.row["DEC"])}
+        />
+      )}
 
       {/* Properties — slim multi-column strip */}
       <div style={{ marginTop: "1.25rem" }}>
