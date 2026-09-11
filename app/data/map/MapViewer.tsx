@@ -507,6 +507,13 @@ export default function MapViewer({
   const [msaFieldOn, setMsaFieldOn] = useState(false);
   const [paDeg, setPaDeg] = useState(0);
   const [apertureSky, setApertureSky] = useState<{ ra: number; dec: number } | null>(null);
+  // NIRSpec aperture is now always PLACED at a sky position (apertureSky, set to the view
+  // centre when first enabled) rather than following the view. `apLocked` (the pin button)
+  // just hides the drag handle so the map pans freely — it never moves the aperture. The
+  // aperture's screen centre (from project()) drives the drag handle; apDragRef = mid-drag.
+  const [apLocked, setApLocked] = useState(false);
+  const [apCenterScreen, setApCenterScreen] = useState<{ cx: number; cy: number } | null>(null);
+  const apDragRef = useRef(false);
   // Screen-space polygons for the active apertures, recomputed each frame in project().
   const [apertures, setApertures] = useState<{
     msa: string[]; ifu: string | null; field: string[];
@@ -689,6 +696,39 @@ export default function MapViewer({
   // Aperture-overlay settings, in a ref for the same reason (project runs per frame).
   const apRef = useRef({ msaOn, ifuOn, msaFieldOn, paDeg, apertureSky });
   apRef.current = { msaOn, ifuOn, msaFieldOn, paDeg, apertureSky };
+
+  // When an aperture is first switched on, PLACE it at the current view centre (a sky pos) so
+  // it's a positioned, draggable object — not something that follows the view. Once set it
+  // stays put (drag the handle to move it; pin/unpin never moves it).
+  useEffect(() => {
+    if (!(msaOn || ifuOn || msaFieldOn) || apertureSky) return;
+    const h = handleRef.current;
+    const cam = h?.getCameraState();
+    const wcs = h?.getViewer()?.getWcs();
+    if (cam && wcs) {
+      const s = pixToSky(wcs, cam.centerX, cam.centerY);
+      if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
+    }
+  }, [msaOn, ifuOn, msaFieldOn, apertureSky]);
+
+  // Drag-to-move: while the handle is grabbed, map the cursor to a sky position and move the
+  // aperture there live. Window listeners so the drag survives leaving the small handle.
+  useEffect(() => {
+    const move = (e: PointerEvent) => {
+      if (!apDragRef.current) return;
+      const h = handleRef.current;
+      const wcs = h?.getViewer()?.getWcs();
+      if (!h || !wcs) return;
+      const w = h.screenToImage(e.clientX, e.clientY);
+      if (!w) return;
+      const s = pixToSky(wcs, w.x, w.y);
+      if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
+    };
+    const up = () => { apDragRef.current = false; };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+  }, []);
   // The photometry circles to draw this frame — every accumulated aperture (each with its
   // palette colour) plus the in-progress drag (drawn in CYAN). In a ref so the stable
   // per-frame project() reads the latest without re-subscribing.
@@ -902,6 +942,7 @@ export default function MapViewer({
               })()
             : null;
           setApertures({ msa, ifu, field, slits, fieldIfu });
+          setApCenterScreen({ cx: frame.cx, cy: frame.cy });   // drives the drag handle
 
           // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
           // EVERY source is tested (not just the on-screen ones the screen `field` polygons
@@ -959,6 +1000,7 @@ export default function MapViewer({
       } else if (!anyAperture) {
         // Toggles all off — clear. (A toggle on but arcsecPerCssPx transiently 0 keeps the last.)
         setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
+        setApCenterScreen(null);
         setMsaSources(prev => (prev.length ? [] : prev));
       }
 
@@ -1784,6 +1826,24 @@ export default function MapViewer({
         </svg>
       )}
 
+      {/* Drag handle at the aperture centre — grab it to move the whole NIRSpec assembly to a
+          new sky position. Only the handle is pointer-eventful (the rest of the overlay lets
+          the map pan through). Hidden when the aperture is pinned/locked. */}
+      {apCenterScreen && !apLocked && (msaOn || ifuOn || msaFieldOn) && (
+        <svg width="100%" height="100%" data-overlay="aperture-handle"
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }}>
+          <circle
+            cx={apCenterScreen.cx} cy={apCenterScreen.cy} r={9}
+            fill="rgba(0,0,0,0.35)" stroke="#ffffff" strokeWidth={2}
+            style={{ pointerEvents: "auto", cursor: "move" }}
+            onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); apDragRef.current = true; }}
+          >
+            <title>Drag to move the NIRSpec aperture</title>
+          </circle>
+          <circle cx={apCenterScreen.cx} cy={apCenterScreen.cy} r={1.8} fill="#ffffff" style={{ pointerEvents: "none" }} />
+        </svg>
+      )}
+
       {/* Custom-aperture photometry circles — every accumulated aperture in its own palette
           colour, plus the in-progress drag (cyan). Each is pinned to its sky centre via the
           same rect-relative imageToScreen the ellipses use, so they stay welded on
@@ -1916,24 +1976,13 @@ export default function MapViewer({
           onReset={() => { setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE); }}
         />
         <NIRSpecPanel
-          msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apertureSky != null}
+          msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
           msaCount={msaSources.length}
           onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={setPaDeg}
-          onTogglePin={() => {
-            setApertureSky(prev => {
-              if (prev) return null;   // unpin → follow view centre
-              // Pin to the CURRENT view centre's sky position.
-              const h = handleRef.current;
-              const cam = h?.getCameraState();
-              const wcs = h?.getViewer()?.getWcs();
-              if (cam && wcs) {
-                const s = pixToSky(wcs, cam.centerX, cam.centerY);
-                if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) return { ra: s.ra, dec: s.dec };
-              }
-              return prev;
-            });
-          }}
+          // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
+          // so pinning/unpinning leaves it exactly where you left it.
+          onTogglePin={() => setApLocked(l => !l)}
         />
       </div>
       </div>
@@ -2231,6 +2280,9 @@ function NIRSpecPanel({
           <button
             onClick={onTogglePin}
             className="mono"
+            title={pinned
+              ? "Locked in place — click to unlock, then drag the white handle to move the aperture"
+              : "Drag the white handle to move the aperture. Click here to lock it so the map pans without moving it."}
             style={{
               width: "100%", background: pinned ? "var(--accent-dim)" : "none",
               border: "1px solid var(--border-bright)", borderRadius: 5,
@@ -2238,7 +2290,7 @@ function NIRSpecPanel({
               fontSize: "0.68rem", padding: "6px 10px",
             }}
           >
-            {pinned ? "Pinned · click to follow view" : "Pin to view centre"}
+            {pinned ? "🔒 Locked · click to move" : "⠿ Drag to move · click to lock"}
           </button>
         </div>
       )}
