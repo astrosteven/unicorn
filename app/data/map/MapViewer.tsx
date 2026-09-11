@@ -609,6 +609,12 @@ export default function MapViewer({
   // backgrounded and refocused — browsers can drop the WebGL context (or zero the drawing
   // buffer) while hidden, and fitsgl then re-fits the whole mosaic on return.
   const lastCamRef = useRef<{ cx: number; cy: number; zoom: number } | null>(null);
+  // WebGL context-loss recovery. @fitsgl/core doesn't handle context loss, so a backgrounded
+  // tab that loses the GL context comes back broken. We detect the loss and, on return, remount
+  // the <FitsViewer> (bump viewerKey) for a clean re-init — overlays/filters are React state and
+  // survive; the camera restores through cameraTargetRef's adopt-and-hold on the new onReady.
+  const [viewerKey, setViewerKey] = useState(0);
+  const contextLostRef = useRef(false);
   // The current filtered source list, held in a ref so the per-frame projector reads
   // the latest without being a hook dependency (projection must not re-subscribe onFrame).
   const sourcesRef = useRef<Src[]>([]);
@@ -1581,29 +1587,48 @@ export default function MapViewer({
     if (idx && handleRef.current) readyHandleRef.current?.(handleRef.current, idx);
   }, [idx]);
 
-  // Preserve the view across a browser tab-switch. When the tab is hidden the browser may
-  // drop the WebGL context (or resize the drawing buffer to 0); on return fitsgl re-fits the
-  // whole mosaic — the "it zooms out when I come back" bug. On refocus we re-assert the last
-  // freely-viewed camera through the same adopt-and-hold path the deep-link uses (enforceCamera
-  // re-applies it every frame until the viewer settles, then releases so pan/zoom is free).
+  // Detect WebGL context loss on the live canvas (fitsgl doesn't). preventDefault keeps the
+  // element reusable; we flag it so the tab-return handler can remount for a clean re-init.
+  // Re-runs after every remount (viewerKey) since a fresh canvas needs the listener re-attached.
+  useEffect(() => {
+    let canvas: HTMLCanvasElement | null = null;
+    const onLost = (e: Event) => { e.preventDefault(); contextLostRef.current = true; };
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const attach = () => {
+      canvas = wrapRef.current?.querySelector("canvas") ?? null;
+      if (canvas) { canvas.addEventListener("webglcontextlost", onLost); return; }
+      if (++tries < 50) timer = setTimeout(attach, 100);   // canvas appears shortly after mount
+    };
+    attach();
+    return () => { clearTimeout(timer); if (canvas) canvas.removeEventListener("webglcontextlost", onLost); };
+  }, [viewerKey]);
+
+  // Keep the map in its last state across a browser tab-switch. On leave we snapshot the exact
+  // camera; on return we restore it. If the GL context was DROPPED while hidden (fitsgl can't
+  // recover on its own → a broken map), we remount the viewer for a clean re-init — the saved
+  // camera is re-adopted on the new onReady, and overlays/filters (React state) are untouched.
   useEffect(() => {
     const onVis = () => {
       const h = handleRef.current;
       if (document.visibilityState === "hidden") {
-        // Snapshot the EXACT current camera as we leave — authoritative, so the restore below
-        // can't fall back to a stale value (e.g. the initial deep-link zoom on the primary).
         const cam = h?.getCameraState();
         if (cam && Number.isFinite(cam.zoom) && cam.zoom > 0) {
           lastCamRef.current = { cx: cam.centerX, cy: cam.centerY, zoom: cam.zoom };
         }
         return;
       }
-      // Back on the tab: re-assert the snapshot through the adopt-and-hold path so the
-      // context-restore auto-fit can't win. Leaves the view exactly as you left it.
+      // Back on the tab. Pre-arm the saved camera so whatever re-init happens adopts it.
       const last = lastCamRef.current;
-      if (!last || !cameraTargetRef) return;
-      cameraTargetRef.current = { cx: last.cx, cy: last.cy, zoom: last.zoom, until: Date.now() + 4000 };
-      pokeProject();
+      if (last && cameraTargetRef) {
+        cameraTargetRef.current = { cx: last.cx, cy: last.cy, zoom: last.zoom, until: Date.now() + 6000 };
+      }
+      if (contextLostRef.current) {
+        contextLostRef.current = false;
+        setViewerKey(k => k + 1);   // remount for a clean GL context; onReady restores everything
+      } else {
+        pokeProject();              // context intact — just re-assert camera + re-project overlays
+      }
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
@@ -1635,6 +1660,7 @@ export default function MapViewer({
   return (
     <div ref={wrapRef} style={{ width: "100%", height: "100%", position: "relative" }}>
       <FitsViewer
+        key={viewerKey}
         config={viewerConfig}
         onReady={onReady}
         onFrame={() => { enforceCamera(); project(); }}
