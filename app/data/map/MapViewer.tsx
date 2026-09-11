@@ -163,17 +163,28 @@ const MSA_SHUTTER_SPAT = 0.46;   // arcsec, spatial (long) axis of one shutter
 const MSA_BAR = 0.07;            // arcsec, opaque bar between shutters
 const IFU_SIDE = 3.0;            // arcsec, NIRSpec IFU field of view (3"×3")
 
-// Full NIRSpec MSA field: 4 quadrants in a 2×2 arrangement, each 365 shutters
-// (dispersion/X) × 171 shutters (spatial/Y) at a shutter pitch of 0.267" (dispersion) ×
-// 0.528" (spatial) — pitch includes the bar. ⇒ each quadrant ≈ 365×0.267 = 97.5" (disp)
-// × 171×0.528 = 90.3" (spat). The full field is ≈ 3.6′×3.4′ (≈208"×199") including the
-// inter-quadrant gaps, so the gap between the two quadrant COLUMNS ≈ 208 − 2×97.5 ≈ 13"
-// (dispersion) and between the two ROWS ≈ 199 − 2×90.3 ≈ 18" (spatial). Same PA/centre as
-// the slitlet: the spatial axis points along PA, the dispersion axis along PA+90°.
-const MSA_QUAD_DISP = 365 * 0.267;   // arcsec, one quadrant along dispersion (≈97.5")
-const MSA_QUAD_SPAT = 171 * 0.528;   // arcsec, one quadrant along spatial (≈90.3")
-const MSA_GAP_DISP = 13.0;           // arcsec, inter-quadrant gap between columns (dispersion)
-const MSA_GAP_SPAT = 18.0;           // arcsec, inter-quadrant gap between rows (spatial)
+// Full NIRSpec focal plane, SIAF-exact (pysiaf NIRSpec PRD, extracted in the MSA ideal frame
+// and mapped to our (dispersion d, spatial s) arcsec axes via d = −Xidl, s = +Yidl — the
+// handedness calibrated against pysiaf's Idl→sky transform: at aperture PA=0, +s is North and
+// +d is West). All positions are relative to the NRS_FULL_MSA reference, so the whole assembly
+// pins to one sky point + PA. The 4 MSA quadrants (2×2, each ≈98″×92″, in the corners), the
+// central band of fixed slits, and the 3″×3″ IFU all sit in fixed relative positions.
+const MSA_QUADS_DS: [number, number][][] = [
+  [[-109.898, 110.378], [-109.168, 18.91], [-11.304, 18.527], [-11.39, 109.951]],
+  [[-109.194, -18.13], [-108.652, -107.731], [-11.527, -107.988], [-11.586, -18.484]],
+  [[11.667, 109.931], [11.598, 18.525], [109.436, 18.814], [110.158, 110.256]],
+  [[11.595, -18.469], [11.533, -107.965], [108.638, -107.798], [109.19, -18.208]],
+];
+// Fixed slits (S200A1/A2, S400A1, S1600A1 on one side; S200B1 on the other).
+const MSA_SLITS_DS: { label: string; ds: [number, number][] }[] = [
+  { label: "S200A1",  ds: [[68.678, 8.891], [68.663, 5.61], [68.855, 5.61], [68.871, 8.892]] },
+  { label: "S200A2",  ds: [[88.3, 5.19], [88.28, 1.88], [88.474, 1.881], [88.494, 5.191]] },
+  { label: "S400A1",  ds: [[75.417, 1.352], [75.398, -2.416], [75.793, -2.414], [75.812, 1.353]] },
+  { label: "S1600A1", ds: [[72.24, -3.034], [72.232, -4.641], [73.831, -4.635], [73.839, -3.028]] },
+  { label: "S200B1",  ds: [[-88.512, -5.166], [-88.493, -8.475], [-88.291, -8.476], [-88.311, -5.167]] },
+];
+// NIRSpec IFU 3″×3″ aperture (NRS_FULL_IFU), in its true position beyond the A slits.
+const MSA_IFU_DS: [number, number][] = [[103.527, 1.916], [103.506, -1.284], [106.603, -1.268], [106.625, 1.932]];
 // NIRSpec MSA V3IdlYAngle from pysiaf (NRS_FULL_MSA) — the angle between the aperture's ideal
 // Y axis and the telescope V3 axis. APT's aperture PA relates to the observatory V3PA by
 // APA = V3PA + V3IdlYAngle, so V3PA = (aperture PA) − 138.5746°. Our PA slider IS the aperture
@@ -250,11 +261,21 @@ function apertureFrame(
 }
 
 // Map an aperture-frame point (dArcsec along dispersion, sArcsec along spatial) to a
-// screen "x,y" string for an SVG polygon.
+// screen {x,y}.
+function apXY(f: ApFrame, dArcsec: number, sArcsec: number): { x: number; y: number } {
+  return {
+    x: f.cx + f.disp.x * dArcsec + f.spat.x * sArcsec,
+    y: f.cy + f.disp.y * dArcsec + f.spat.y * sArcsec,
+  };
+}
+// …as an SVG-polygon "x,y" string.
 function apPt(f: ApFrame, dArcsec: number, sArcsec: number): string {
-  const x = f.cx + f.disp.x * dArcsec + f.spat.x * sArcsec;
-  const y = f.cy + f.disp.y * dArcsec + f.spat.y * sArcsec;
-  return `${x.toFixed(1)},${y.toFixed(1)}`;
+  const p = apXY(f, dArcsec, sArcsec);
+  return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+}
+// A polygon from explicit (d,s) corners (arcsec in the aperture frame) → "x,y x,y …".
+function apPoly(f: ApFrame, corners: readonly (readonly [number, number])[]): string {
+  return corners.map(([d, s]) => apPt(f, d, s)).join(" ");
 }
 
 // One rectangle (2·halfDisp × 2·halfSpat about a spatial offset), as a 4-point polygon.
@@ -328,6 +349,15 @@ function quadCornersWorld(f: ApFrameWorld, dCenter: number, halfDisp: number, sC
     at(dCenter + halfDisp, sCenter + halfSpat),
     at(dCenter - halfDisp, sCenter + halfSpat),
   ];
+}
+
+// World-pixel corners from explicit (d,s) arcsec corners — the world-px analogue of apPoly,
+// used to point-in-poly the SIAF-exact MSA quadrants against every catalog source.
+function polyCornersWorld(f: ApFrameWorld, corners: readonly (readonly [number, number])[]): Vec2[] {
+  return corners.map(([d, s]) => ({
+    x: f.cx + f.disp.x * d + f.spat.x * s,
+    y: f.cy + f.disp.y * d + f.spat.y * s,
+  }));
 }
 
 // Standard ray-cast point-in-polygon (works for any simple polygon; each quadrant is a
@@ -455,7 +485,11 @@ export default function MapViewer({
   const [paDeg, setPaDeg] = useState(0);
   const [apertureSky, setApertureSky] = useState<{ ra: number; dec: number } | null>(null);
   // Screen-space polygons for the active apertures, recomputed each frame in project().
-  const [apertures, setApertures] = useState<{ msa: string[]; ifu: string | null; field: string[] }>({ msa: [], ifu: null, field: [] });
+  const [apertures, setApertures] = useState<{
+    msa: string[]; ifu: string | null; field: string[];
+    slits: { label: string; pts: string; lx: number; ly: number }[];
+    fieldIfu: { pts: string; lx: number; ly: number } | null;
+  }>({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
   // Catalog sources whose world-px position falls inside any of the 4 MSA quadrants at the
   // current centre + PA. Collected in WORLD/pixel space (ALL sources tested, not just the
   // on-screen ones) whenever the MSA-field overlay is on; drives the "N in MSA" readout +
@@ -803,17 +837,26 @@ export default function MapViewer({
             ? [-1, 0, 1].map(k => apRect(frame, hd, k * pitch, hs))
             : [];
           const ifu = ap.ifuOn ? apRect(frame, IFU_SIDE / 2, 0, IFU_SIDE / 2) : null;
-          // Full MSA field: 4 quadrants (2×2). Each quadrant's centre is offset by half a
-          // quadrant + half a gap along both axes; ± that offset gives the four corners.
-          const hqd = MSA_QUAD_DISP / 2, hqs = MSA_QUAD_SPAT / 2;
-          const offD = hqd + MSA_GAP_DISP / 2;   // quadrant-centre offset along dispersion
-          const offS = hqs + MSA_GAP_SPAT / 2;   // quadrant-centre offset along spatial
-          const field = ap.msaFieldOn
-            ? [[-offD, -offS], [offD, -offS], [-offD, offS], [offD, offS]].map(
-                ([cd, cs]) => apRectAt(frame, cd, hqd, cs, hqs),
-              )
+          // Full MSA field (SIAF-exact): the 4 quadrants + the fixed slits + the IFU, each at
+          // its true relative position (MSA_QUADS_DS / MSA_SLITS_DS / MSA_IFU_DS).
+          const field = ap.msaFieldOn ? MSA_QUADS_DS.map(c => apPoly(frame, c)) : [];
+          const slits = ap.msaFieldOn
+            ? MSA_SLITS_DS.map(sl => {
+                let md = 0, ms = 0;
+                for (const [d, s] of sl.ds) { md += d; ms += s; }
+                const c = apXY(frame, md / sl.ds.length, ms / sl.ds.length);
+                return { label: sl.label, pts: apPoly(frame, sl.ds), lx: c.x, ly: c.y };
+              })
             : [];
-          setApertures({ msa, ifu, field });
+          const fieldIfu = ap.msaFieldOn
+            ? (() => {
+                let md = 0, ms = 0;
+                for (const [d, s] of MSA_IFU_DS) { md += d; ms += s; }
+                const c = apXY(frame, md / MSA_IFU_DS.length, ms / MSA_IFU_DS.length);
+                return { pts: apPoly(frame, MSA_IFU_DS), lx: c.x, ly: c.y };
+              })()
+            : null;
+          setApertures({ msa, ifu, field, slits, fieldIfu });
 
           // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
           // EVERY source is tested (not just the on-screen ones the screen `field` polygons
@@ -833,9 +876,7 @@ export default function MapViewer({
             }
             const fw = wcs && centerSky ? apertureFrameWorld(wcs, centerSky, ap.paDeg) : null;
             if (fw) {
-              const quads = [[-offD, -offS], [offD, -offS], [-offD, offS], [offD, offS]].map(
-                ([cd, cs]) => quadCornersWorld(fw, cd, hqd, cs, hqs),
-              );
+              const quads = MSA_QUADS_DS.map(c => polyCornersWorld(fw, c));
               // A generous world-px bounding box over all 4 quadrants → cheap reject before the
               // per-quadrant ray-cast (the quadrant span is ~100″/0.03 ≈ few thousand px).
               let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
@@ -868,11 +909,11 @@ export default function MapViewer({
             setMsaSources(prev => (prev.length ? [] : prev));
           }
         } else {
-          setApertures({ msa: [], ifu: null, field: [] });
+          setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
           setMsaSources(prev => (prev.length ? [] : prev));
         }
       } else {
-        setApertures({ msa: [], ifu: null, field: [] });
+        setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
         setMsaSources(prev => (prev.length ? [] : prev));
       }
 
@@ -1604,7 +1645,8 @@ export default function MapViewer({
       {/* NIRSpec aperture overlays — MSA 3-shutter slitlet (cyan) + IFU 3"×3" (magenta) +
           full MSA 4-quadrant field (amber), centred on the view (or pinned sky pos),
           rotated by PA. Non-interactive. */}
-      {(apertures.msa.length > 0 || apertures.ifu || apertures.field.length > 0) && (
+      {(apertures.msa.length > 0 || apertures.ifu || apertures.field.length > 0 ||
+        apertures.fieldIfu || apertures.slits.length > 0) && (
         <svg
           data-overlay="apertures"
           width="100%" height="100%"
@@ -1612,6 +1654,24 @@ export default function MapViewer({
         >
           {apertures.field.map((pts, k) => (
             <polygon key={`f${k}`} points={pts} fill="rgba(240,176,80,0.06)" stroke="#f0b050" strokeWidth={1.4} />
+          ))}
+          {/* NIRSpec IFU in its true focal-plane position (part of the MSA-field assembly). */}
+          {apertures.fieldIfu && (
+            <g>
+              <polygon points={apertures.fieldIfu.pts} fill="rgba(224,120,224,0.12)" stroke="#e078e0" strokeWidth={1.6} />
+              <text x={apertures.fieldIfu.lx + 5} y={apertures.fieldIfu.ly - 5} fill="#e078e0" fontSize={9}
+                fontFamily="'Space Mono', monospace" style={{ userSelect: "none" }}>IFU</text>
+            </g>
+          )}
+          {/* Fixed slits — true footprint (tiny) + a locator ring + label, so they're findable
+              at the field scale and exact when zoomed in. */}
+          {apertures.slits.map((sl, k) => (
+            <g key={`sl${k}`}>
+              <polygon points={sl.pts} fill="rgba(94,224,138,0.55)" stroke="#43d17a" strokeWidth={1.2} />
+              <circle cx={sl.lx} cy={sl.ly} r={3.5} fill="none" stroke="#43d17a" strokeWidth={1.2} />
+              <text x={sl.lx + 5} y={sl.ly - 4} fill="#43d17a" fontSize={8.5}
+                fontFamily="'Space Mono', monospace" style={{ userSelect: "none" }}>{sl.label}</text>
+            </g>
           ))}
           {apertures.ifu && (
             <polygon points={apertures.ifu} fill="rgba(224,120,224,0.08)" stroke="#e078e0" strokeWidth={1.6} />
