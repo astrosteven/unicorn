@@ -187,6 +187,13 @@ export default function MapPage() {
 
   const configUrl = useMemo(() => `${tileBase(activeField)}/fitsgl.json`, [activeField]);
   const pendingGotoRef = useRef<string | null>(initialGotoId());
+  // The deep-linked object (?id=) is the "primary" — MapViewer boxes it in white so it stays
+  // identifiable at any zoom. Only when arriving with a numeric ?id= (a map↗ from a source).
+  const primaryId = useMemo(() => {
+    const g = initialGotoId();
+    const n = g ? parseInt(g, 10) : NaN;
+    return Number.isFinite(n) ? n : null;
+  }, []);
   const deeplinkFov = initialFov();   // ?fov= override (e.g. inspector's 5" link), else default
   const [ready, setReady] = useState(false);
   const [panel, setPanel] = useState<PanelState>({ kind: "hidden" });
@@ -442,6 +449,7 @@ export default function MapPage() {
             onCount={setShown}
             onReadyHandle={onReadyHandle}
             cameraTargetRef={cameraTargetRef}
+            primaryId={primaryId}
           />
         </div>
 

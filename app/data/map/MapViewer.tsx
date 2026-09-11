@@ -469,11 +469,15 @@ export default function MapViewer({
   onCount,
   onReadyHandle,
   cameraTargetRef,
+  primaryId,
 }: {
   /** The active field's config — drives which search index the overlay loads. */
   field: FieldConfig;
   configUrl: string;
   filters: MapFilters;
+  /** The object a search deep-linked to (?id=): drawn with a persistent white box so it
+   *  stays identifiable at any zoom. null when the map wasn't opened for a specific object. */
+  primaryId?: number | null;
   /** Search → map handoff: when non-null, draw ONLY sources whose id ∈ this set (the
    *  queried objects for the active field). When null, draw every source (default). */
   queuedIds?: Set<number> | null;
@@ -549,6 +553,10 @@ export default function MapViewer({
   // Screen-space markers for the picked catalog objects (centre px + colour), rebuilt each
   // frame in project() from each pick's sky position so they stay welded on pan/zoom.
   const [catalogMarks, setCatalogMarks] = useState<{ cx: number; cy: number; color: string }[]>([]);
+  // The deep-linked "primary" object's screen position — a persistent white box (see project()).
+  const [primaryMark, setPrimaryMark] = useState<{ cx: number; cy: number } | null>(null);
+  const primaryIdRef = useRef<number | null>(primaryId ?? null);
+  useEffect(() => { primaryIdRef.current = primaryId ?? null; setPrimaryMark(null); }, [primaryId]);
   // PHOTOMETRY panel expand/collapse (its own section beside SCALING / NIRSpec).
   const [photoPanelOpen, setPhotoPanelOpen] = useState(false);
   // Monotonic aperture index; assigned on each measurement so its async result patch can
@@ -846,7 +854,8 @@ export default function MapViewer({
       // 3-shutter slitlet (3 open shutters along the spatial axis, ~0.07" bars between)
       // and/or the 3"×3" IFU square. All in arcsec, so they scale with zoom.
       const ap = apRef.current;
-      if ((ap.msaOn || ap.ifuOn || ap.msaFieldOn) && arcsecPerCssPx > 0) {
+      const anyAperture = ap.msaOn || ap.ifuOn || ap.msaFieldOn;
+      if (anyAperture && arcsecPerCssPx > 0) {
         // Aperture centre world pixel: the pinned sky position (locked under pan/zoom) if
         // set, else the live view centre. apertureFrame anchors on this exact pixel via the
         // same rect-relative imageToScreen the ellipses use, so a pinned aperture
@@ -938,11 +947,11 @@ export default function MapViewer({
           } else {
             setMsaSources(prev => (prev.length ? [] : prev));
           }
-        } else {
-          setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
-          setMsaSources(prev => (prev.length ? [] : prev));
         }
-      } else {
+        // else: the aperture centre didn't project this frame (transient, near an edge) —
+        // keep the last-good overlay so the slits/quads/IFU stay persistent (no blink).
+      } else if (!anyAperture) {
+        // Toggles all off — clear. (A toggle on but arcsecPerCssPx transiently 0 keeps the last.)
         setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
         setMsaSources(prev => (prev.length ? [] : prev));
       }
@@ -1114,6 +1123,21 @@ export default function MapViewer({
       out.push({ id: s.id, sel: s.sel, zspec, poly: pts.join(" ") });
     }
     setGlyphs(out);
+
+    // Primary (deep-linked) object: project its sky position to a persistent white box each
+    // frame, so it stays welded to the object and visible at any zoom (find your target after
+    // zooming out). Resolved from the index by id → ra/dec → screen (no +0.5, like the glyphs).
+    const pid = primaryIdRef.current;
+    const ixp = idxRef.current;
+    const pos = pid != null && ixp ? idToPosRef.current.get(pid) : undefined;
+    const wcsP = pos != null ? h.getViewer()?.getWcs() : null;
+    if (ixp && pos != null && wcsP) {
+      const pw = skyToPix(wcsP, ixp.ra[pos], ixp.dec[pos]);
+      const ps = h.imageToScreen(pw.x, pw.y);
+      setPrimaryMark(ps ? { cx: ps.x - rect.left, cy: ps.y - rect.top } : null);
+    } else {
+      setPrimaryMark(prev => (prev ? null : prev));
+    }
   }, []);
 
   // Re-project when aperture settings change — toggling/PA don't move the camera, so
@@ -1777,6 +1801,22 @@ export default function MapViewer({
           {catalogMarks.map((m, k) => (
             <circle key={k} cx={m.cx} cy={m.cy} r={7} fill="none" stroke={m.color} strokeWidth={2} />
           ))}
+        </svg>
+      )}
+
+      {/* Primary (deep-linked) object — a persistent white reticle box, fixed on-screen size so
+          it stays clearly visible as you zoom out. Welded to the object's sky position. */}
+      {primaryMark && (
+        <svg
+          data-overlay="primary-mark"
+          width="100%" height="100%"
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
+        >
+          <rect
+            x={primaryMark.cx - 13} y={primaryMark.cy - 13} width={26} height={26}
+            rx={2} fill="none" stroke="#ffffff" strokeWidth={2}
+            style={{ filter: "drop-shadow(0 0 2px rgba(0,0,0,0.9))" }}
+          />
         </svg>
       )}
 
