@@ -37,10 +37,17 @@ export default function Home() {
         top: 0,
         zIndex: 10,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <span className="mono" style={{ color: "var(--accent)", fontSize: "1rem", fontWeight: 700, letterSpacing: "0.1em" }}>
-            UNICORN
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "1.75rem" }}>
+          <Link href="/data" style={{ textDecoration: "none" }}>
+            <span className="mono" style={{ color: "var(--accent)", fontSize: "1rem", fontWeight: 700, letterSpacing: "0.1em" }}>
+              UNICORN
+            </span>
+          </Link>
+          {/* Public pages (no login needed) — reachable from the landing page too. */}
+          <div style={{ display: "flex", gap: "4px" }}>
+            <Link href="/data" className="navlink">Overview</Link>
+            <Link href="/data/fields" className="navlink">Fields</Link>
+          </div>
         </div>
         <Link href="/login" className="btn btn-primary" style={{ padding: "7px 18px", fontSize: "0.78rem" }}>
           Access Data →
