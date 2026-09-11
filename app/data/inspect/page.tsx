@@ -15,7 +15,7 @@ import {
   SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot,
   type SourceResult, type FieldConfig, type FieldIndex,
 } from "@/app/data/_card/objectCard";
-import { prefetchStamp } from "@/lib/photometry";
+import { fetchStamp } from "@/lib/photometry";
 import { LiveStampMontage } from "@/app/data/inspect/LiveStampMontage";
 
 // On-the-fly WebGL color cutout (client-only), same as the card uses.
@@ -241,26 +241,38 @@ function Inspector({ email }: { email: string }) {
     return p;
   }, []);
 
-  // -- prefetch the next N rows (cards + stamp images) so advancing is instant --
+  // -- prefetch the next N rows (cards + live stamps) so advancing is instant. Warms a deeper
+  // look-ahead window, but with BOUNDED concurrency: a live stamp is a ~10 s Worker+Corral job
+  // the first time (then edge-cached 24 h), so firing them all at once overloads Corral and the
+  // precaches fail. We run a few workers that each AWAIT one stamp before taking the next, in
+  // queue order (nearest-ahead first), and a generation ref cancels the walk when you advance. --
+  const PRECACHE_AHEAD = 10;
+  const PRECACHE_CONCURRENCY = 3;
+  const precacheGen = useRef(0);
   const prefetchAround = useCallback((key: string) => {
+    const gen = ++precacheGen.current;   // invalidate any in-progress walk from a prior selection
     const v = viewRef.current;
     const pos = v.findIndex(r => rowKey(r) === key);
     if (pos < 0) return;
-    for (let k = 1; k <= 3; k++) {
-      const nxt = v[pos + k];
-      if (!nxt) break;
-      getCard(nxt).then(src => {
-        // Warm the pre-baked montage PNG (fallback) so it paints instantly if the live
-        // endpoint is down.
-        if (src?.stampUrl && typeof Image !== "undefined") { const im = new Image(); im.src = src.stampUrl; }
-        // Warm the LIVE stamp's raw pixels via the Worker (module-cached in lib/photometry),
-        // so the next object's grayscale montage renders instantly on open.
-        if (src) {
-          const pra = Number(src.row["RA"]), pdec = Number(src.row["DEC"]);
-          if (Number.isFinite(pra) && Number.isFinite(pdec)) prefetchStamp(src.field, pra, pdec, undefined, INSPECT_STAMP_BANDS);
+    const rows: QueueRow[] = [];
+    for (let k = 1; k <= PRECACHE_AHEAD; k++) { const nxt = v[pos + k]; if (nxt) rows.push(nxt); }
+    let i = 0;
+    const worker = async () => {
+      while (i < rows.length && precacheGen.current === gen) {
+        const row = rows[i++];
+        const src = await getCard(row).catch(() => null);
+        if (precacheGen.current !== gen) return;   // a newer selection took over — stop warming
+        if (!src) continue;
+        // Warm the pre-baked PNG fallback (instant paint if the live endpoint is down).
+        if (src.stampUrl && typeof Image !== "undefined") { const im = new Image(); im.src = src.stampUrl; }
+        const pra = Number(src.row["RA"]), pdec = Number(src.row["DEC"]);
+        if (Number.isFinite(pra) && Number.isFinite(pdec)) {
+          // AWAIT so this worker holds one slot until the stamp is warm (bounds concurrency).
+          try { await fetchStamp(src.field, pra, pdec, undefined, INSPECT_STAMP_BANDS); } catch { /* best-effort */ }
         }
-      });
-    }
+      }
+    };
+    for (let w = 0; w < PRECACHE_CONCURRENCY; w++) worker();
   }, [getCard]);
 
   // -- select a row: show its card (from cache if warm), then prefetch ahead --
