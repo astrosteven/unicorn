@@ -24,6 +24,11 @@ const FitsglCutout = dynamic(() => import("@/app/data/_card/FitsglCutout").then(
 // works as a quick "is this real?" check. Tunable.
 const INSPECT_FOV = 1.5;
 const INSPECT_TRILOGY = { noiselum: 0.32, noisesig: 1.0, noisesig0: 1.0 };
+// Bands shown in the live grayscale montage. A curated ACS + NIRCam-wide set (NOT all ~23
+// bands) — the Worker fetches each over Digest+byte-range, so the full set was slow enough
+// to hang on "loading cutouts…". The Worker filters to whatever exists per field, so bands a
+// field lacks are simply skipped. Prefetch + fetch MUST use the same list (shared cache key).
+const INSPECT_STAMP_BANDS = ["f606w", "f814w", "f115w", "f150w", "f200w", "f277w", "f356w", "f444w"];
 
 // ---------------------------------------------------------------------------
 export default function InspectPage() {
@@ -252,7 +257,7 @@ function Inspector({ email }: { email: string }) {
         // so the next object's grayscale montage renders instantly on open.
         if (src) {
           const pra = Number(src.row["RA"]), pdec = Number(src.row["DEC"]);
-          if (Number.isFinite(pra) && Number.isFinite(pdec)) prefetchStamp(src.field, pra, pdec);
+          if (Number.isFinite(pra) && Number.isFinite(pdec)) prefetchStamp(src.field, pra, pdec, undefined, INSPECT_STAMP_BANDS);
         }
       });
     }
@@ -568,7 +573,7 @@ function InspectCard({ src }: { src: SourceResult }) {
         )}
       </div>
       {ra != null && dec != null && Number.isFinite(Number(ra)) && Number.isFinite(Number(dec)) && (
-        <LiveStampMontage field={src.field} ra={Number(ra)} dec={Number(dec)} fallbackUrl={src.stampUrl} />
+        <LiveStampMontage field={src.field} ra={Number(ra)} dec={Number(dec)} bands={INSPECT_STAMP_BANDS} fallbackUrl={src.stampUrl} />
       )}
     </div>
   );

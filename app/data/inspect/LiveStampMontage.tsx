@@ -28,8 +28,8 @@ function loadK(): number {
 }
 
 export function LiveStampMontage({
-  field, ra, dec, fallbackUrl,
-}: { field: string; ra: number; dec: number; fallbackUrl?: string }) {
+  field, ra, dec, bands, fallbackUrl,
+}: { field: string; ra: number; dec: number; bands?: string[]; fallbackUrl?: string }) {
   const [stamp, setStamp] = useState<StampResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [k, setK] = useState<number>(DEFAULT_K);
@@ -38,15 +38,20 @@ export function LiveStampMontage({
   useEffect(() => { setK(loadK()); }, []);
 
   // Fetch raw pixels whenever the object changes. Cached in the fetchStamp module cache, so
-  // a precached (or re-opened) object resolves instantly. Errors → PNG fallback.
+  // a precached (or re-opened) object resolves instantly. Errors OR a >20s stall → PNG fallback
+  // (the Worker fetches each band over Digest+byte-range; a slow/hung request shouldn't leave
+  // the montage stuck on "loading cutouts…" forever).
   useEffect(() => {
     let live = true;
     setStamp(null); setFailed(false);
-    fetchStamp(field, ra, dec)
-      .then(s => { if (live) setStamp(s); })
-      .catch(() => { if (live) setFailed(true); });
-    return () => { live = false; };
-  }, [field, ra, dec]);
+    const timer = setTimeout(() => { if (live) setFailed(true); }, 20000);
+    fetchStamp(field, ra, dec, undefined, bands)
+      .then(s => { if (live) { clearTimeout(timer); setStamp(s); } })
+      .catch(() => { if (live) { clearTimeout(timer); setFailed(true); } });
+    return () => { live = false; clearTimeout(timer); };
+    // bandKey in deps so a band-list change refetches; field/ra/dec identify the object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [field, ra, dec, bands ? bands.join(",") : ""]);
 
   const onK = (v: number) => {
     setK(v);
