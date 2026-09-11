@@ -755,8 +755,11 @@ export default function SearchPage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (new URLSearchParams(window.location.search).get("queue") !== "1") return;
+    // Read but do NOT remove yet: the auth layout can remount this page as the profile
+    // resolves, and removing on read would let the second mount find nothing → a blank page.
+    // We clear searchQueue only after the table is successfully built (below).
     let raw: string | null = null;
-    try { raw = localStorage.getItem("searchQueue"); localStorage.removeItem("searchQueue"); } catch { return; }
+    try { raw = localStorage.getItem("searchQueue"); } catch { return; }
     if (!raw) return;
     let q: { label?: string; ts?: number; objects?: { field: string; id: number; ra: number | null; dec: number | null }[] };
     try { q = JSON.parse(raw); } catch { return; }
@@ -811,6 +814,8 @@ export default function SearchPage() {
         setStatus("table");
         setMatchSummary(`${total.toLocaleString()} source${total === 1 ? "" : "s"} in the MSA quadrants${total > CAP ? ` — showing first ${CAP}` : ""}.`);
       }
+      // Success — now it's safe to clear the handoff so a manual reload doesn't re-trigger it.
+      try { localStorage.removeItem("searchQueue"); } catch { /* ignore */ }
     })().catch(() => { if (!cancelled) setStatus("idle"); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1588,11 +1588,22 @@ export default function MapViewer({
   // re-applies it every frame until the viewer settles, then releases so pan/zoom is free).
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState !== "visible") return;
+      const h = handleRef.current;
+      if (document.visibilityState === "hidden") {
+        // Snapshot the EXACT current camera as we leave — authoritative, so the restore below
+        // can't fall back to a stale value (e.g. the initial deep-link zoom on the primary).
+        const cam = h?.getCameraState();
+        if (cam && Number.isFinite(cam.zoom) && cam.zoom > 0) {
+          lastCamRef.current = { cx: cam.centerX, cy: cam.centerY, zoom: cam.zoom };
+        }
+        return;
+      }
+      // Back on the tab: re-assert the snapshot through the adopt-and-hold path so the
+      // context-restore auto-fit can't win. Leaves the view exactly as you left it.
       const last = lastCamRef.current;
       if (!last || !cameraTargetRef) return;
       cameraTargetRef.current = { cx: last.cx, cy: last.cy, zoom: last.zoom, until: Date.now() + 4000 };
-      pokeProject();   // actively re-assert + reproject through the settle window
+      pokeProject();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
