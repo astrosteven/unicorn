@@ -1634,6 +1634,17 @@ export default function MapViewer({
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [cameraTargetRef, pokeProject]);
 
+  // After a recovery remount (viewerKey bumped), keep re-projecting for a while: the fresh
+  // viewer's WCS/tiles come up asynchronously, so the single onReady→pokeProject can fire too
+  // early and the NIRSpec aperture block (needs arcsecPerCssPx>0) no-ops. This sweep guarantees
+  // the overlays (glyphs + apertures) rebuild once the new viewer settles.
+  useEffect(() => {
+    if (viewerKey === 0) return;   // 0 = first mount, handled by the normal ready path
+    let n = 0;
+    const iv = setInterval(() => { enforceCamera(); project(); if (++n >= 40) clearInterval(iv); }, 200); // ~8s
+    return () => clearInterval(iv);
+  }, [viewerKey, project, enforceCamera]);
+
   if (state === "error") {
     return (
       <MapMessage
