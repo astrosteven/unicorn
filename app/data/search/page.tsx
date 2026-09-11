@@ -176,7 +176,7 @@ function sortMatches(all: MatchEntry[], col: string, dir: "asc" | "desc"): Match
 // numeric fields > < >= <= = != and `between a and b`; string fields (field, detectcat, tile)
 // = / !=; `= none` tests a missing value. Per-filter mag_/snr_/flux_ and colors <a>-<b>.
 type Pred = (r: IdxRow) => boolean;
-function makePredicate(query: string): { test: Pred; need: string[] } | { error: string } {
+export function makePredicate(query: string): { test: Pred; need: string[] } | { error: string } {
   let q = query.trim().toLowerCase();
   if (!q) return { error: "Type a condition, e.g.  za > 9 and m444 < 28" };
   // Protect the "and" inside `between a and b` so tokenizing on AND/OR won't split it.

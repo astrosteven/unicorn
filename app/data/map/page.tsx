@@ -22,6 +22,7 @@ import {
 import type { FitsViewerHandle } from "@fitsgl/core/react";
 import { skyToPix } from "@fitsgl/core";
 import { type MapFilters, DEFAULT_FILTERS, type CameraTarget } from "./MapViewer";
+import { makePredicate } from "@/app/data/search/page";   // validate the on-map query box
 
 // The viewer touches WebGL/window on import — must never render on the server.
 const MapViewer = dynamic(() => import("./MapViewer"), {
@@ -553,6 +554,28 @@ function FilterSidebar({
     }}>
       <div className="mono" style={{ fontSize: "0.72rem", color: "var(--accent)", letterSpacing: "0.08em", marginBottom: "1rem" }}>
         FILTERS
+      </div>
+
+      {/* Free-form query — same language as the Search page, applied live to the shown sources
+          AND the "sources in the MSA quadrants" list (for NIRSpec MSA planning). */}
+      <div style={{ marginBottom: "1.2rem" }}>
+        <div style={labelStyle}>Query <span style={{ textTransform: "none", letterSpacing: 0, color: "var(--text-dim)" }}>za · zspec · m444 · mabs…</span></div>
+        <textarea
+          defaultValue={filters.query}
+          onBlur={e => patch({ query: e.target.value })}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); patch({ query: (e.target as HTMLTextAreaElement).value }); } }}
+          placeholder="za > 8 and zspec = none"
+          rows={2}
+          style={{ ...inputStyle, resize: "vertical", minHeight: "42px", fontSize: "0.74rem" }}
+        />
+        {(() => {
+          const q = filters.query.trim();
+          if (!q) return <div style={{ fontSize: "0.63rem", color: "var(--text-dim)", marginTop: "3px", lineHeight: 1.45 }}>Filters the shown sources + the in-MSA list. Base columns only (za, zspec, m277/m444, mabs, beta, chia, selected).</div>;
+          const r = makePredicate(q);
+          return "error" in r
+            ? <div className="mono" style={{ fontSize: "0.66rem", color: "var(--red)", marginTop: "3px", lineHeight: 1.4 }}>{r.error}</div>
+            : <div className="mono" style={{ fontSize: "0.66rem", color: "#43d17a", marginTop: "3px" }}>✓ filtering</div>;
+        })()}
       </div>
 
       <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", marginBottom: "1.1rem" }}>

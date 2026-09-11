@@ -48,6 +48,7 @@ import { measureAperture, abMagFromNJy } from "@/lib/photometry";
 import PhotometryPanel, { type MeasuredAperture, type PickedCatalog } from "./PhotometryPanel";
 import { catalogBandsFromFilters } from "./PhotometrySED";
 import { FILTER_WAVES } from "@/app/data/_card/objectCard";
+import { makePredicate } from "@/app/data/search/page";   // reuse the Search query language on the map
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -380,10 +381,25 @@ export type MapFilters = {
   magMin: number | null;
   magMax: number | null;
   magFilter: string;
+  query: string;            // free-form Search-style query (za/zspec/m444/… — base index cols)
 };
 export const DEFAULT_FILTERS: MapFilters = {
-  selectedOnly: false, zMin: null, zMax: null, magMin: null, magMax: null, magFilter: "F277W",
+  selectedOnly: false, zMin: null, zMax: null, magMin: null, magMax: null, magFilter: "F277W", query: "",
 };
+
+// One query-evaluable row from the base index at position i (the numeric built-ins the query
+// language understands directly; per-band mag/snr/flux/colors need the lazy filters file and
+// aren't available here). Keys match the Search column names so makePredicate/colGetter read them.
+type QRow = Record<string, number | null>;
+function idxQueryRow(idx: FieldIndex, i: number): QRow {
+  const g = (c: NumCol | undefined) => (c ? (c[i] ?? null) : null);
+  return {
+    za: g(idx.za), zspec: g(idx.zspec), m277: g(idx.m277), m444: g(idx.m444),
+    m1500: g(idx.m1500), m1300: g(idx.m1300), mabs: g(idx.mabs), beta: g(idx.beta),
+    chia: g(idx.chia), z_lowz: g(idx.z_lowz), zl68: g(idx.zl68), zu68: g(idx.zu68),
+    selected: g(idx.selected), inspected: g(idx.inspected), sample: g(idx.sample),
+  };
+}
 
 // A source that passed the active filters, with the geometry needed to draw it.
 type Src = {
@@ -395,7 +411,7 @@ type Src = {
 
 // Precompute the filtered source list (positions + ellipse params). Recomputed only
 // when the index, mag column, or filters change — NOT per frame.
-function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters): Src[] {
+function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters, pred: ((r: QRow) => boolean) | null): Src[] {
   const n = idx.n;
   const sel = idx.selected, za = idx.za;
   const a = idx.a_image, b = idx.b_image, kr = idx.kron_radius, theta = idx.theta ?? null;
@@ -416,6 +432,9 @@ function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters): Src[] {
       if (mMin != null && m < mMin) continue;
       if (mMax != null && m > mMax) continue;
     }
+    // Free-form query (za/zspec/m444/… on the base index) — applied last so it only runs on
+    // sources that pass the cheap range filters.
+    if (pred && !pred(idxQueryRow(idx, i))) continue;
     const xi = x![i], yi = y![i];
     if (xi == null || yi == null) continue;
     // Ellipse params (Kron): semi-axes a*kron, b*kron; PA theta deg CCW from +x.
@@ -734,10 +753,21 @@ export default function MapViewer({
     return () => { cancelled = true; };
   }, [idx, magBand, magRangeActive]);
 
-  // Rebuild the filtered source list when index / mag column / filters change.
+  // Compile the free-form query once per keystroke; expose its error for the sidebar. A blank
+  // query is a no-op (pred = null). Reuses the exact Search query language.
+  const queryPred = useMemo(() => {
+    const q = filters.query.trim();
+    if (!q) return { test: null as ((r: Record<string, number | null>) => boolean) | null, error: "" };
+    const r = makePredicate(q);
+    return "error" in r
+      ? { test: null as ((r: Record<string, number | null>) => boolean) | null, error: r.error }
+      : { test: r.test as (r: Record<string, number | null>) => boolean, error: "" };
+  }, [filters.query]);
+
+  // Rebuild the filtered source list when index / mag column / filters / query change.
   const sources = useMemo(
-    () => (idx ? filterSources(idx, magRangeActive ? magCol : null, filters) : []),
-    [idx, magCol, filters, magRangeActive],
+    () => (idx ? filterSources(idx, magRangeActive ? magCol : null, filters, queryPred.test) : []),
+    [idx, magCol, filters, magRangeActive, queryPred],
   );
   // Count reported to the sidebar: the queued subset when a handoff is active, else all.
   const countShown = useCallback((list: Src[]) => {
