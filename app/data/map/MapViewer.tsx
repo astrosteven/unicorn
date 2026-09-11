@@ -186,6 +186,14 @@ const MSA_SLITS_DS: { label: string; ds: [number, number][] }[] = [
 ];
 // NIRSpec IFU 3″×3″ aperture (NRS_FULL_IFU), in its true position beyond the A slits.
 const MSA_IFU_DS: [number, number][] = [[103.527, 1.916], [103.506, -1.284], [106.603, -1.268], [106.625, 1.932]];
+// Centre (d,s arcsec) of a named fixed slit — used to place the map-centred galaxy in a slit.
+function slitCenterDS(label: string): [number, number] {
+  const sl = MSA_SLITS_DS.find((x) => x.label === label);
+  if (!sl) return [0, 0];
+  let md = 0, ms = 0;
+  for (const [d, s] of sl.ds) { md += d; ms += s; }
+  return [md / sl.ds.length, ms / sl.ds.length];
+}
 // NIRSpec MSA V3IdlYAngle from pysiaf (NRS_FULL_MSA) — the angle between the aperture's ideal
 // Y axis and the telescope V3 axis. APT's aperture PA relates to the observatory V3PA by
 // APA = V3PA + V3IdlYAngle, so V3PA = (aperture PA) − 138.5746°. Our PA slider IS the aperture
@@ -697,19 +705,53 @@ export default function MapViewer({
   const apRef = useRef({ msaOn, ifuOn, msaFieldOn, paDeg, apertureSky });
   apRef.current = { msaOn, ifuOn, msaFieldOn, paDeg, apertureSky };
 
-  // When an aperture is first switched on, PLACE it at the current view centre (a sky pos) so
-  // it's a positioned, draggable object — not something that follows the view. Once set it
-  // stays put (drag the handle to move it; pin/unpin never moves it).
+  // When an aperture is first switched on, PLACE it (a fixed sky pos) so it's a positioned,
+  // draggable object — not something that follows the view. For the MSA field, offset the
+  // reference so the S200A1 fixed slit lands on the view centre (the galaxy the map is centred
+  // on); otherwise centre the aperture itself. Once set it stays put.
   useEffect(() => {
     if (!(msaOn || ifuOn || msaFieldOn) || apertureSky) return;
     const h = handleRef.current;
     const cam = h?.getCameraState();
     const wcs = h?.getViewer()?.getWcs();
-    if (cam && wcs) {
-      const s = pixToSky(wcs, cam.centerX, cam.centerY);
-      if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
-    }
-  }, [msaOn, ifuOn, msaFieldOn, apertureSky]);
+    if (!cam || !wcs) return;
+    const vsky = pixToSky(wcs, cam.centerX, cam.centerY);
+    if (!Number.isFinite(vsky.ra) || !Number.isFinite(vsky.dec)) return;
+    if (!msaFieldOn) { setApertureSky({ ra: vsky.ra, dec: vsky.dec }); return; }
+    const [sd, ss] = slitCenterDS("S200A1");
+    const fr = apertureFrameWorld(wcs, vsky, paDeg);       // disp/spat directions at current PA
+    if (!fr) { setApertureSky({ ra: vsky.ra, dec: vsky.dec }); return; }
+    const cx = cam.centerX - (fr.disp.x * sd + fr.spat.x * ss);   // ref px s.t. S200A1 = view centre
+    const cy = cam.centerY - (fr.disp.y * sd + fr.spat.y * ss);
+    const s = pixToSky(wcs, cx, cy);
+    if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
+  }, [msaOn, ifuOn, msaFieldOn, apertureSky, paDeg]);
+
+  // Rotate ABOUT the view centre: on a PA change, keep whatever aperture point is currently at
+  // the view centre fixed there (so a galaxy aligned in a slit stays in the slit). Solve the
+  // (d,s) of the view centre in the old frame, then reposition the reference so that same (d,s)
+  // point lands on the view centre at the new PA.
+  const handlePaChange = useCallback((newPa: number) => {
+    const h = handleRef.current;
+    const wcs = h?.getViewer()?.getWcs();
+    const cam = h?.getCameraState();
+    const sky = apRef.current.apertureSky;
+    if (!h || !wcs || !cam || !sky) { setPaDeg(newPa); return; }
+    const oldF = apertureFrameWorld(wcs, sky, apRef.current.paDeg);
+    if (!oldF) { setPaDeg(newPa); return; }
+    const ox = cam.centerX - oldF.cx, oy = cam.centerY - oldF.cy;
+    const k2 = oldF.disp.x * oldF.disp.x + oldF.disp.y * oldF.disp.y;   // px²/arcsec² (disp⊥spat, equal scale)
+    if (!(k2 > 0)) { setPaDeg(newPa); return; }
+    const d = (ox * oldF.disp.x + oy * oldF.disp.y) / k2;
+    const s = (ox * oldF.spat.x + oy * oldF.spat.y) / k2;
+    const newF = apertureFrameWorld(wcs, sky, newPa);      // new-PA disp/spat directions
+    if (!newF) { setPaDeg(newPa); return; }
+    const cx = cam.centerX - (newF.disp.x * d + newF.spat.x * s);
+    const cy = cam.centerY - (newF.disp.y * d + newF.spat.y * s);
+    const ns = pixToSky(wcs, cx, cy);
+    if (Number.isFinite(ns.ra) && Number.isFinite(ns.dec)) setApertureSky({ ra: ns.ra, dec: ns.dec });
+    setPaDeg(newPa);
+  }, []);
 
   // Drag-to-move: while the handle is grabbed, map the cursor to a sky position and move the
   // aperture there live. Window listeners so the drag survives leaving the small handle.
@@ -1979,7 +2021,7 @@ export default function MapViewer({
           msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
           msaCount={msaSources.length}
           onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
-          onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={setPaDeg}
+          onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
           onTogglePin={() => setApLocked(l => !l)}
