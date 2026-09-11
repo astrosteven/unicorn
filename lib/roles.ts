@@ -76,8 +76,12 @@ export function useProfile(): { session: Session | null; role: Role | null; load
     }
 
     supabase.auth.getSession().then(({ data }) => resolve(data.session));
+    // Re-resolve on later auth events (e.g. the token refresh the browser fires when you
+    // return to a backgrounded tab) in the BACKGROUND — do NOT flip `loading`. The /data
+    // layout renders a full-page splash while loading, which unmounts its whole subtree; a
+    // remount on every tab-return wiped the map's camera + NIRSpec/filters state and blanked
+    // the Search page mid-load. `loading` is only ever true for the initial resolve.
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
-      setLoading(true);
       resolve(s);
     });
     return () => { alive = false; sub.subscription.unsubscribe(); };
