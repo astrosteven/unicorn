@@ -1,6 +1,13 @@
 "use client";
 import { useState } from "react";
-import AladinViewer from "./AladinViewer";
+import dynamic from "next/dynamic";
+
+// Bare pan/zoom fitsgl color viewer (replaces the DSS/Aladin preview). It touches WebGL on
+// import, so load it client-only (ssr:false) like the Explore map.
+const FieldFitsglViewer = dynamic(() => import("./FieldFitsglViewer"), {
+  ssr: false,
+  loading: () => <div style={{ width: "100%", height: "420px", background: "#0d0a1a", borderRadius: 6 }} />,
+});
 
 const FIELDS = [
   {
@@ -183,7 +190,7 @@ export default function FieldsPage() {
 
           {/* Sky viewer */}
           <div className="card" style={{ overflow: "hidden", borderRadius: "8px" }}>
-            <AladinViewer ra={field.ra} dec={field.dec} fov={field.fov} name={field.name} />
+            <FieldFitsglViewer prefix={field.id.replace(/-/g, "")} name={field.name} />
           </div>
 
           {/* Metadata grid */}
