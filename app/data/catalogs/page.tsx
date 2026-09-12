@@ -41,6 +41,7 @@ const FIELDS: Field[] = [
   { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.95", available: true, variants: BASE_PZ },
   { id: "a2744",         name: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.98", available: true, variants: NO_WFC3 },
   { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: true, variants: BASE_PZ },
+  { id: "as1063",        name: "AS1063",        dir: "AS1063",        prefix: "as1063",       version: "0.98", available: false, variants: NO_WFC3, programs: ["VENUS", "GLIMPSE"] },
 ];
 
 // Real file sizes for the live CEERS v0.98 release, keyed by row key.

@@ -200,6 +200,9 @@ export const SEARCH_FIELDS: { field: string; dir: string; prefix: string; versio
   { field: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.95", available: true },
   { field: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.95", available: true },
   { field: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: true },
+  // AS1063 (Abell S1063 lensing cluster; GLIMPSE GO 3293 + VENUS GO 6882). available:false
+  // until the web artifacts (as1063_search/zgrid/filters_v0.98 + web/cards) are uploaded.
+  { field: "AS1063",        dir: "AS1063",        prefix: "as1063",       version: "0.98", available: false },
 ];
 
 export type FieldConfig = typeof SEARCH_FIELDS[0];
