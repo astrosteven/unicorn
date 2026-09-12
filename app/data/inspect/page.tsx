@@ -24,11 +24,16 @@ const FitsglCutout = dynamic(() => import("@/app/data/_card/FitsglCutout").then(
 // works as a quick "is this real?" check. Tunable.
 const INSPECT_FOV = 1.5;
 const INSPECT_TRILOGY = { noiselum: 0.32, noisesig: 1.0, noisesig0: 1.0 };
-// Bands shown in the live grayscale montage. A curated ACS + NIRCam-wide set (NOT all ~23
-// bands) — the Worker fetches each over Digest+byte-range, so the full set was slow enough
-// to hang on "loading cutouts…". The Worker filters to whatever exists per field, so bands a
-// field lacks are simply skipped. Prefetch + fetch MUST use the same list (shared cache key).
-const INSPECT_STAMP_BANDS = ["f606w", "f814w", "f115w", "f150w", "f200w", "f277w", "f356w", "f444w"];
+// Bands shown in the live grayscale montage: ALL bands EXCEPT WFC3 (f105w/f125w/f140w/f160w),
+// in wavelength order. The Worker now reads each cutout as thin multipart row-slices (~10 KB),
+// so the full set loads fast; it also filters to whatever exists per field, so this union works
+// for every field (CEERS shows ~23, NGDEEP ~11). Prefetch + fetch MUST use the same list
+// (shared cache key). WFC3 is excluded (not uploaded, and would 403 per-band).
+const INSPECT_STAMP_BANDS = [
+  "f435w", "f606w", "f070w", "f775w", "f814w", "f090w", "f850l",
+  "f115w", "f140m", "f150w", "f162m", "f182m", "f200w", "f210m",
+  "f250m", "f277w", "f300m", "f335m", "f356w", "f360m", "f410m", "f430m", "f444w", "f460m", "f480m",
+];
 
 // ---------------------------------------------------------------------------
 export default function InspectPage() {
