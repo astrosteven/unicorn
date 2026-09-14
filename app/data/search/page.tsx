@@ -138,6 +138,41 @@ function fmtCell(v: number | string | null): string {
 // (Exported so the Plot view can scatter the full matched set.)
 export type MatchEntry = { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null };
 type SortState = { col: string | null; dir: "asc" | "desc" };
+
+// De-duplicate matches by sky position — the SAME object appears in overlapping fields (EGS↔CEERS,
+// COSMOS↔PRIMER-COSMOS). Two entries within `radiusArcsec` are treated as one; the first in list
+// order is kept (upstream order already prefers the primary field). A small angular grid keeps this
+// O(N): bins are sized to the match radius, in angular degrees (RA scaled by cos δ), so a true match
+// always lands in the 3×3 neighbourhood of a kept point.
+function dedupeByPosition(all: MatchEntry[], radiusArcsec: number): MatchEntry[] {
+  const cell = radiusArcsec / 3600;               // bin size in degrees (angular)
+  const r2 = radiusArcsec * radiusArcsec;
+  const grid = new Map<string, { ra: number; dec: number; cosd: number }[]>();
+  const out: MatchEntry[] = [];
+  for (const m of all) {
+    const ra = m.r.ra, dec = m.r.dec;
+    if (typeof ra !== "number" || typeof dec !== "number") { out.push(m); continue; }  // no position → can't dedupe
+    const cosd = Math.cos((dec * Math.PI) / 180) || 1e-6;
+    const gx = Math.floor((ra * cosd) / cell), gy = Math.floor(dec / cell);
+    let dup = false;
+    for (let ix = gx - 1; ix <= gx + 1 && !dup; ix++) {
+      for (let iy = gy - 1; iy <= gy + 1 && !dup; iy++) {
+        const bucket = grid.get(`${ix}:${iy}`);
+        if (!bucket) continue;
+        for (const p of bucket) {
+          const dRa = (ra - p.ra) * cosd * 3600, dDec = (dec - p.dec) * 3600;
+          if (dRa * dRa + dDec * dDec <= r2) { dup = true; break; }
+        }
+      }
+    }
+    if (dup) continue;
+    out.push(m);
+    const k = `${gx}:${gy}`;
+    let b = grid.get(k); if (!b) grid.set(k, b = []); b.push({ ra, dec, cosd });
+  }
+  return out;
+}
+const DEDUP_RADIUS_ARCSEC = 0.05;
 // Value-extractor for a sortable column, keyed by the header label / dynamic queryCol name.
 // Fixed columns read the fixed fields; dynamic queryCols use colGetter on the index row.
 function sortValueGetter(col: string): (m: MatchEntry) => number | string | null {
@@ -744,6 +779,18 @@ export default function SearchPage() {
   const queryAllRef = useRef<MatchEntry[]>([]);
   const router = useRouter();
 
+  // "Remove duplicates" toggle: collapse the same object seen in overlapping fields
+  // (EGS↔CEERS, COSMOS↔PRIMER-COSMOS) by sky position. queryRawRef holds the pre-dedup set so
+  // toggling re-derives the table/count/handoffs WITHOUT re-running the query. The last commit's
+  // display cols / getters / summary are stashed so a toggle can rebuild identically.
+  const [dedupe, setDedupe] = useState(false);
+  const dedupeRef = useRef(dedupe); dedupeRef.current = dedupe;
+  const queryRawRef = useRef<MatchEntry[]>([]);
+  const lastColsRef = useRef<string[]>([]);
+  const lastGettersRef = useRef<((r: IdxRow) => number | string | null)[]>([]);
+  const lastSummaryRef = useRef<(shown: number) => string>(() => "");
+  const lastRawTotalRef = useRef<number | undefined>(undefined);
+
   // ---- Map → Search handoff ("open in table") -------------------------------
   // The color map's MSA-quadrant tool stashes its matched objects in localStorage["searchQueue"]
   // ({ label, ts, objects:[{field,id,ra,dec}] }) and opens /data/search?queue=1 in a new tab —
@@ -803,17 +850,9 @@ export default function SearchPage() {
         }
       }
       if (cancelled) return;
-      queryAllRef.current = all;
-      setSort({ col: null, dir: "asc" });
-      setResults([]); setQueryCard(null); setQueryCardId(null);
-      setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
-      if (total === 0) {
-        setStatus("notfound");
-        setMatchSummary(`No matched sources for "${label}".`);
-      } else {
-        setStatus("table");
-        setMatchSummary(`${total.toLocaleString()} source${total === 1 ? "" : "s"} in the MSA quadrants${total > CAP ? ` — showing first ${CAP}` : ""}.`);
-      }
+      commitMatches(all, [], [], (n) => n === 0
+        ? `No matched sources for "${label}".`
+        : `${n.toLocaleString()} source${n === 1 ? "" : "s"} in the MSA quadrants${n > CAP ? ` — showing first ${CAP}` : ""}.`);
       // Success — now it's safe to clear the handoff so a manual reload doesn't re-trigger it.
       try { localStorage.removeItem("searchQueue"); } catch { /* ignore */ }
     })().catch(() => { if (!cancelled) setStatus("idle"); });
@@ -1053,6 +1092,50 @@ export default function SearchPage() {
     };
   }
 
+  // Single funnel every result-producing mode uses to publish its matched set: applies the
+  // de-dup toggle, retains the raw set for re-toggling, (re)builds the ≤500-row table, and sets
+  // count / status / summary. `summary(shown)` returns the header text for the effective count.
+  // `rawTotal` is the true match count when it can exceed the retained set (query mode caps the
+  // retained `all` at 100k for download); the header shows it when dedup is OFF. With dedup ON we
+  // can only collapse what we retained, so the shown count is the deduped retained length.
+  function commitMatches(
+    all: MatchEntry[],
+    cols: string[],
+    getters: ((r: IdxRow) => number | string | null)[],
+    summary: (shown: number) => string,
+    rawTotal?: number,
+  ): void {
+    queryRawRef.current = all;
+    lastColsRef.current = cols;
+    lastGettersRef.current = getters;
+    lastSummaryRef.current = summary;
+    lastRawTotalRef.current = rawTotal;
+    const eff = dedupeRef.current ? dedupeByPosition(all, DEDUP_RADIUS_ARCSEC) : all;
+    queryAllRef.current = eff;
+    const shown = dedupeRef.current ? eff.length : (rawTotal ?? all.length);
+    setSort({ col: null, dir: "asc" });
+    setResults([]); setQueryCard(null); setQueryCardId(null);
+    setQueryRows(eff.slice(0, TABLE_CAP).map(m => toQueryRow(m.fc, m.id, m.r, m.cz, getters)));
+    setQueryCols(cols);
+    setQueryTotal(shown);
+    setStatus(shown === 0 ? "notfound" : "table");
+    setMatchSummary(summary(shown));
+  }
+
+  // Re-derive the published set when the de-dup toggle flips — no re-query; reuse the raw set
+  // and the last commit's cols / getters / summary.
+  useEffect(() => {
+    if (!queryRawRef.current.length) return;
+    const eff = dedupe ? dedupeByPosition(queryRawRef.current, DEDUP_RADIUS_ARCSEC) : queryRawRef.current;
+    queryAllRef.current = eff;
+    const shown = dedupe ? eff.length : (lastRawTotalRef.current ?? queryRawRef.current.length);
+    setQueryRows(eff.slice(0, TABLE_CAP).map(m => toQueryRow(m.fc, m.id, m.r, m.cz, lastGettersRef.current)));
+    setQueryCols(lastColsRef.current);
+    setQueryTotal(shown);
+    setMatchSummary(lastSummaryRef.current(shown));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dedupe]);
+
   // Fetches the per-field search index (once, cached) from Corral, matches the
   // query, then pulls per-object detail JSON for each hit to build a SourceResult.
   async function doSearch() {
@@ -1091,12 +1174,7 @@ export default function SearchPage() {
         if (rows.length < CAP) rows.push(toQueryRow(m.fc, id, r, cz, []));
         all.push({ fc: m.fc, id, r, cz });
       }
-      queryAllRef.current = all;
-      setSort({ col: null, dir: "asc" });
-      setResults([]); setQueryCard(null); setQueryCardId(null);
-      setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
-      setStatus("table");
-      setMatchSummary(label(total) + (total > CAP ? ` — showing first ${CAP}` : "") + ".");
+      commitMatches(all, [], [], (n) => label(n) + (n > CAP ? ` — showing first ${CAP}` : "") + ".");
     };
     if (fields.length === 0) {
       setStatus("notfound");
@@ -1169,14 +1247,9 @@ export default function SearchPage() {
             }
           }
         }
-        queryAllRef.current = all;
-        setSort({ col: null, dir: "asc" });   // fresh search starts in match order
-        setResults([]); setQueryCard(null); setQueryRows(rows); setQueryCols(cols); setQueryTotal(total);
-        if (total === 0) { setStatus("notfound"); setMatchSummary("No sources match that query."); }
-        else {
-          setStatus("table");
-          setMatchSummary(`${total.toLocaleString()} source${total === 1 ? "" : "s"} match${total > CAP ? ` — showing first ${CAP}` : ""}.`);
-        }
+        commitMatches(all, cols, getters, (n) => n === 0
+          ? "No sources match that query."
+          : `${n.toLocaleString()} source${n === 1 ? "" : "s"} match${n > CAP ? ` — showing first ${CAP}` : ""}.`, total);
         return;
       }
 
@@ -1277,12 +1350,7 @@ export default function SearchPage() {
           if (rows.length < CAP) rows.push(toQueryRow(h.L.fc, id, r, cz, []));
           all.push({ fc: h.L.fc, id, r, cz });
         }
-        queryAllRef.current = all;
-        setSort({ col: null, dir: "asc" });   // fresh search: separation order (closest first)
-        setResults([]); setQueryCard(null); setQueryCardId(null);
-        setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
-        setStatus("table");
-        setMatchSummary(`${total.toLocaleString()} match${total === 1 ? "" : "es"} within ${radius}" of ${ra.toFixed(5)}, ${dec.toFixed(5)}${total > CAP ? ` — showing first ${CAP}` : ""}.`);
+        commitMatches(all, [], [], (n) => `${n.toLocaleString()} match${n === 1 ? "" : "es"} within ${radius}" of ${ra.toFixed(5)}, ${dec.toFixed(5)}${n > CAP ? ` — showing first ${CAP}` : ""}.`);
         return;
       } else {
         // upload: one entry per line, either "ID" or "RA Dec". Resolve each entry to a
@@ -1365,12 +1433,7 @@ export default function SearchPage() {
           setMatchSummary(`No matches among ${requested} entries.`);
           return;
         }
-        queryAllRef.current = all;
-        setSort({ col: null, dir: "asc" });   // fresh search starts in upload order
-        setResults([]); setQueryCard(null); setQueryCardId(null);
-        setQueryRows(rows); setQueryCols([]); setQueryTotal(total);
-        setStatus("table");
-        setMatchSummary(`${total.toLocaleString()} match${total === 1 ? "" : "es"} from ${requested} entr${requested === 1 ? "y" : "ies"}${total > CAP ? ` — showing first ${CAP}` : ""}.`);
+        commitMatches(all, [], [], (n) => `${n.toLocaleString()} match${n === 1 ? "" : "es"} from ${requested} entr${requested === 1 ? "y" : "ies"}${n > CAP ? ` — showing first ${CAP}` : ""}.`);
         return;
       }
 
@@ -1743,14 +1806,21 @@ export default function SearchPage() {
 
       {status === "table" && (
         <div>
-          <div className="card" style={{ padding: "1rem 1.25rem", marginBottom: "1rem", borderLeft: "3px solid var(--green)", background: "rgba(126,207,176,0.05)" }}>
-            <span className="mono" style={{ color: "var(--green)", fontSize: "0.75rem", marginRight: "10px" }}>QUERY</span>
-            <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
-              {sort.col
-                ? `${queryTotal.toLocaleString()} source${queryTotal === 1 ? "" : "s"} match — sorted by ${sort.col} ${sort.dir === "asc" ? "▲" : "▼"}${queryTotal > queryRows.length ? ` — showing top ${queryRows.length}` : ""}. `
-                : `${matchSummary} `}
-              Click a column header to sort; click a row to view its bio plot.
+          <div className="card" style={{ padding: "1rem 1.25rem", marginBottom: "1rem", borderLeft: "3px solid var(--green)", background: "rgba(126,207,176,0.05)", display: "flex", alignItems: "flex-start", gap: "14px", flexWrap: "wrap" }}>
+            <span style={{ flex: "1 1 320px" }}>
+              <span className="mono" style={{ color: "var(--green)", fontSize: "0.75rem", marginRight: "10px" }}>QUERY</span>
+              <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                {sort.col
+                  ? `${queryTotal.toLocaleString()} source${queryTotal === 1 ? "" : "s"} match — sorted by ${sort.col} ${sort.dir === "asc" ? "▲" : "▼"}${queryTotal > queryRows.length ? ` — showing top ${queryRows.length}` : ""}. `
+                  : `${matchSummary} `}
+                Click a column header to sort; click a row to view its bio plot.
+              </span>
             </span>
+            <label className="mono" title={`Collapse the same object seen in overlapping fields (EGS↔CEERS, COSMOS↔PRIMER-COSMOS) — sky matches within ${DEDUP_RADIUS_ARCSEC}″ count once`}
+              style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "0.72rem", color: "var(--text-muted)", cursor: "pointer", whiteSpace: "nowrap" }}>
+              <input type="checkbox" checked={dedupe} onChange={e => setDedupe(e.target.checked)} />
+              remove duplicates ({DEDUP_RADIUS_ARCSEC}″)
+            </label>
           </div>
 
           {/* Table ⇄ Plot view toggle — the Plot view scatters the FULL matched set. */}

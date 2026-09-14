@@ -77,11 +77,19 @@ export function LiveStampMontage({
       {stamp == null
         ? <div className="mono" style={{ fontSize: "0.72rem", color: "var(--text-dim)", padding: "1rem 0" }}>loading cutouts…</div>
         : (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-            {stamp.bands.map(b => (
-              <StampCell key={b.band} band={b.band} w={b.w} h={b.h} noise={b.noise} pixels={b.pixels} k={k} />
-            ))}
-          </div>
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+              {stamp.bands.map(b => (
+                <StampCell key={b.band} band={b.band} w={b.w} h={b.h} noise={b.noise} pixels={b.pixels} k={k} />
+              ))}
+            </div>
+            {stamp.errors && stamp.errors.length > 0 && (
+              <div className="mono" style={{ fontSize: "0.64rem", color: "var(--amber)", marginTop: "8px" }}
+                title={stamp.errors.map(e => `${e.band}: ${e.error}`).join("\n")}>
+                {stamp.errors.length} band{stamp.errors.length === 1 ? "" : "s"} unavailable: {stamp.errors.map(e => e.band).join(", ")}
+              </div>
+            )}
+          </>
         )}
     </div>
   );

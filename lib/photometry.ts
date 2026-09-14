@@ -88,7 +88,15 @@ export interface StampBand {
 export interface StampResult {
   size: number;          // 2*half+1 (each cell is size×size)
   bands: StampBand[];
+  errors?: { band: string; error: string }[];   // bands the Worker couldn't read (surfaced, not silently dropped)
 }
+
+// Each band costs the Worker ~3 subrequests (SCI header + SCI window + ERR window). Cloudflare
+// caps subrequests per invocation (50 on the bundled/free model), so a long band list (the
+// inspector requests ~23) silently truncates at ~band 16. Split the list into chunks that each
+// stay well under the cap and fetch them in parallel — each chunk is a separate invocation with
+// its own budget. Merged back into the requested order. (Bug: CEERS montage stopped at F335M.)
+const STAMP_BAND_CHUNK = 10;
 
 // Module-level cache so re-opening an object (or a precache followed by a real open) is
 // instant. Keyed by field:ra:dec:half:bands — same key precache and open both compute.
@@ -126,24 +134,48 @@ export async function fetchStamp(
     const token = data.session?.access_token;
     if (!token) throw new Error("Please sign in to load cutouts.");
 
-    const res = await fetch(STAMP_WORKER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ field, ra, dec, half: h, bands }),
-    });
-    if (!res.ok) {
-      const msg = (await res.json().catch(() => ({} as { error?: string }))).error;
-      throw new Error(msg ?? `HTTP ${res.status}`);
-    }
-    const json = (await res.json()) as {
-      size: number;
-      bands: { band: string; w: number; h: number; noise: number; data: string }[];
+    // One Worker call for a (chunk of) bands.
+    const fetchChunk = async (chunk?: string[]): Promise<StampResult> => {
+      const res = await fetch(STAMP_WORKER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ field, ra, dec, half: h, bands: chunk }),
+      });
+      if (!res.ok) {
+        const msg = (await res.json().catch(() => ({} as { error?: string }))).error;
+        throw new Error(msg ?? `HTTP ${res.status}`);
+      }
+      const json = (await res.json()) as {
+        size: number;
+        bands: { band: string; w: number; h: number; noise: number; data: string }[];
+        errors?: { band: string; error: string }[];
+      };
+      return {
+        size: json.size,
+        bands: json.bands.map(b => ({ band: b.band, w: b.w, h: b.h, noise: b.noise, pixels: decodeFloat32(b.data) })),
+        errors: json.errors,
+      };
     };
+
+    // Chunk the band list so no single invocation blows Cloudflare's subrequest cap. When bands
+    // is omitted (server default set), we can't chunk — one call, and let the server decide.
+    if (!bands || bands.length <= STAMP_BAND_CHUNK) return fetchChunk(bands);
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < bands.length; i += STAMP_BAND_CHUNK) chunks.push(bands.slice(i, i + STAMP_BAND_CHUNK));
+    const parts = await Promise.all(chunks.map(fetchChunk));
+
+    // Merge + restore the requested band order (chunks resolve out of order).
+    const byBand = new Map<string, StampBand>();
+    const errors: { band: string; error: string }[] = [];
+    for (const part of parts) {
+      for (const b of part.bands) byBand.set(b.band, b);
+      if (part.errors) errors.push(...part.errors);
+    }
     return {
-      size: json.size,
-      bands: json.bands.map(b => ({
-        band: b.band, w: b.w, h: b.h, noise: b.noise, pixels: decodeFloat32(b.data),
-      })),
+      size: parts[0]?.size ?? (2 * h + 1),
+      bands: bands.map(bk => byBand.get(bk)).filter((b): b is StampBand => b != null),
+      errors: errors.length ? errors : undefined,
     };
   })();
 
