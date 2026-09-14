@@ -139,19 +139,32 @@ function fmtCell(v: number | string | null): string {
 export type MatchEntry = { fc: typeof SEARCH_FIELDS[0]; id: number; r: IdxRow; cz: SpeczRec | null };
 type SortState = { col: string | null; dir: "asc" | "desc" };
 
+// When the SAME object appears in overlapping fields, keep the preferred field's copy: CEERS over
+// EGS, PRIMER-COSMOS over COSMOS. Higher number wins a positional collision; default 0 (fields that
+// don't overlap never collide, so their rank is irrelevant).
+const FIELD_PRIORITY: Record<string, number> = { "CEERS": 2, "EGS": 1, "PRIMER-COSMOS": 2, "COSMOS": 1 };
+const fieldRank = (f: string) => FIELD_PRIORITY[f] ?? 0;
+
 // De-duplicate matches by sky position — the SAME object appears in overlapping fields (EGS↔CEERS,
-// COSMOS↔PRIMER-COSMOS). Two entries within `radiusArcsec` are treated as one; the first in list
-// order is kept (upstream order already prefers the primary field). A small angular grid keeps this
-// O(N): bins are sized to the match radius, in angular degrees (RA scaled by cos δ), so a true match
-// always lands in the 3×3 neighbourhood of a kept point.
+// COSMOS↔PRIMER-COSMOS). Two entries within `radiusArcsec` are treated as one; the higher-priority
+// field wins (ties → first in list order). Implemented as: run the grid dedup over a copy ordered by
+// (priority desc, original index asc) so the winner is kept, then restore original list order for
+// display. A small angular grid keeps this O(N): bins are sized to the match radius in angular
+// degrees (RA scaled by cos δ), so a true match always lands in the 3×3 neighbourhood of a kept point.
 function dedupeByPosition(all: MatchEntry[], radiusArcsec: number): MatchEntry[] {
   const cell = radiusArcsec / 3600;               // bin size in degrees (angular)
   const r2 = radiusArcsec * radiusArcsec;
   const grid = new Map<string, { ra: number; dec: number; cosd: number }[]>();
-  const out: MatchEntry[] = [];
-  for (const m of all) {
+  // Process highest-priority first so it claims the position; ties keep original order.
+  const order = all.map((m, i) => i).sort((a, b) => {
+    const d = fieldRank(all[b].fc.field) - fieldRank(all[a].fc.field);
+    return d !== 0 ? d : a - b;
+  });
+  const keep = new Array<boolean>(all.length).fill(false);
+  for (const idx of order) {
+    const m = all[idx];
     const ra = m.r.ra, dec = m.r.dec;
-    if (typeof ra !== "number" || typeof dec !== "number") { out.push(m); continue; }  // no position → can't dedupe
+    if (typeof ra !== "number" || typeof dec !== "number") { keep[idx] = true; continue; }  // no position → can't dedupe
     const cosd = Math.cos((dec * Math.PI) / 180) || 1e-6;
     const gx = Math.floor((ra * cosd) / cell), gy = Math.floor(dec / cell);
     let dup = false;
@@ -166,11 +179,12 @@ function dedupeByPosition(all: MatchEntry[], radiusArcsec: number): MatchEntry[]
       }
     }
     if (dup) continue;
-    out.push(m);
+    keep[idx] = true;
     const k = `${gx}:${gy}`;
     let b = grid.get(k); if (!b) grid.set(k, b = []); b.push({ ra, dec, cosd });
   }
-  return out;
+  // Restore original list order for the kept entries.
+  return all.filter((_, i) => keep[i]);
 }
 const DEDUP_RADIUS_ARCSEC = 0.05;
 // Value-extractor for a sortable column, keyed by the header label / dynamic queryCol name.
