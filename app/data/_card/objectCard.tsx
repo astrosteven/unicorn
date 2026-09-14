@@ -527,16 +527,80 @@ export function cachedIndex(field: string): FieldIndex | undefined {
   return _indexCache[field];
 }
 
+// ---- packed cards -----------------------------------------------------------
+// Cards are packed ~1000/bucket (bucket = id // bucket-size) into one blob of independently
+// gzip'd cards + a small {id:[offset,length]} index, so we range-read a single card instead of
+// hitting one of millions of tiny files. A per-field manifest signals the layout; its absence
+// means a field still uses legacy per-object cards. All three are cached per session.
+const _cardMeta: Record<string, { bucket: number } | null> = {};
+const _cardMetaPromise: Record<string, Promise<{ bucket: number } | null>> = {};
+const _cardIdxCache: Record<string, Record<string, [number, number]> | null> = {};   // `${field}:${bucket}`
+const _cardIdxPromise: Record<string, Promise<Record<string, [number, number]> | null>> = {};
+
+async function cardMeta(objBase: string, fc: FieldConfig): Promise<{ bucket: number } | null> {
+  if (fc.field in _cardMeta) return _cardMeta[fc.field];
+  if (fc.field in _cardMetaPromise) return _cardMetaPromise[fc.field];
+  const p = (async () => {
+    try { return await fetchJsonMaybeGz(`${objBase}/cards/${fc.prefix}_cards.manifest.json`) as { bucket: number }; }
+    catch { return null; }   // no manifest → legacy per-object layout
+  })();
+  _cardMetaPromise[fc.field] = p;
+  const m = await p;
+  _cardMeta[fc.field] = m;
+  delete _cardMetaPromise[fc.field];
+  return m;
+}
+
+async function cardIdx(objBase: string, fc: FieldConfig, bucket: number): Promise<Record<string, [number, number]> | null> {
+  const key = `${fc.field}:${bucket}`;
+  if (key in _cardIdxCache) return _cardIdxCache[key];
+  if (key in _cardIdxPromise) return _cardIdxPromise[key];
+  const p = (async () => {
+    try { return await fetchJsonMaybeGz(`${objBase}/cards/${fc.prefix}_cards_${bucket}.idx.json`) as Record<string, [number, number]>; }
+    catch { return null; }   // bucket has no objects
+  })();
+  _cardIdxPromise[key] = p;
+  const idx = await p;
+  _cardIdxCache[key] = idx;
+  delete _cardIdxPromise[key];
+  return idx;
+}
+
+// Fetch one packed card by range-reading its gzip'd blob and inflating it. Returns null if the
+// object isn't present in its bucket (→ genuinely no card).
+async function fetchPackedCard(objBase: string, fc: FieldConfig, id: number, bucketSize: number): Promise<any | null> {
+  const bucket = Math.floor(id / bucketSize);
+  const idx = await cardIdx(objBase, fc, bucket);
+  const ent = idx?.[String(id)];
+  if (!ent) return null;
+  const [off, len] = ent;
+  const r = await fetch(`${objBase}/cards/${fc.prefix}_cards_${bucket}.bin`, {
+    headers: { Range: `bytes=${off}-${off + len - 1}` },
+  });
+  if (!r.ok) return null;
+  let bytes = new Uint8Array(await r.arrayBuffer());
+  // If the server ignored Range and sent the whole pack (200, not 206), slice to our card.
+  if (r.status === 200 && bytes.length > len) bytes = bytes.slice(off, off + len);
+  const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  return JSON.parse(text);
+}
+
 export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promise<SourceResult | null> {
   try {
-    // Per-object cards live under web/cards/; older uploads used web/objects/ — try
-    // the current path first, fall back to the legacy one so a field mid-migration
-    // (e.g. CEERS before its rename) keeps working.
     const objBase = `${corralBase()}/${fieldCatDir(fc)}/web`;
-    let r = await fetch(`${objBase}/cards/${fc.prefix}_${id}.json`);
-    if (!r.ok) r = await fetch(`${objBase}/objects/${fc.prefix}_${id}.json`);
-    if (!r.ok) return null;
-    const o = await r.json();
+    let o: any;
+    const meta = await cardMeta(objBase, fc);
+    if (meta && meta.bucket > 0) {
+      // Packed layout: range-read the single card. Absent from its bucket → no card.
+      o = await fetchPackedCard(objBase, fc, id, meta.bucket);
+      if (o == null) return null;
+    } else {
+      // Legacy per-object cards under web/cards/ (older uploads used web/objects/).
+      let r = await fetch(`${objBase}/cards/${fc.prefix}_${id}.json`);
+      if (!r.ok) r = await fetch(`${objBase}/objects/${fc.prefix}_${id}.json`);
+      if (!r.ok) return null;
+      o = await r.json();
+    }
     let selFail: SourceResult["selFail"] | undefined;
     const cIdx = cachedIndex(fc.field);
     if (cIdx) selFail = selFailFromIndex(cIdx, cIdx.id.indexOf(id));
