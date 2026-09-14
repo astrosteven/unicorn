@@ -224,6 +224,9 @@ export type ZGrid = { zgrid: number[]; zgridLowz: number[]; sedWave: number[] };
 const _indexCache: Record<string, FieldIndex> = {};
 const _zgridCache: Record<string, ZGrid> = {};
 const _indexPromise: Record<string, Promise<{ idx: FieldIndex; zg: ZGrid }>> = {};
+// Pristine (as-published) selected/inspected columns, snapshotted before the inspection overlay
+// mutates them — so refreshInspections() can re-apply a fresh overlay without re-downloading.
+const _selBase: Record<string, { sel: (number | null)[] | null; ins: (number | null)[] | null }> = {};
 // Per-filter flux table (native flux_<f>/fluxerr_<f>): lazy — fetched only when a query
 // references a mag/snr/flux/color term, and cached per field for the session.
 const _filtersCache: Record<string, Record<string, NumCol>> = {};
@@ -273,6 +276,9 @@ export async function loadField(fc: FieldConfig): Promise<{ idx: FieldIndex; zg:
     // Apply the visual-inspection override (removes from the SELECTED sample) before
     // caching, so the whole site — search `selected`, map colour, ★ badge, inspector —
     // reflects the latest inspection without re-uploading the published index. Absent = no-op.
+    // Snapshot the as-published columns so refreshInspections() can re-overlay live decisions
+    // later (e.g. after inspecting in another tab) without re-downloading the index.
+    _selBase[fc.field] = { sel: idx.selected ? idx.selected.slice() : null, ins: idx.inspected ? idx.inspected.slice() : null };
     try {
       const insp = await loadInspect(fc);
       if (insp && idx.id) {
@@ -435,6 +441,32 @@ export function clearInspectCaches(): void {
   for (const k of Object.keys(_indexCache)) delete _indexCache[k];
   for (const k of Object.keys(_zgridCache)) delete _zgridCache[k];
   for (const k of Object.keys(_indexPromise)) delete _indexPromise[k];
+  for (const k of Object.keys(_selBase)) delete _selBase[k];
+}
+
+// Re-read LIVE inspection decisions and re-apply them to already-loaded indices, in place, from
+// each field's pristine snapshot. Cheap (a Supabase read + one array pass — NO index re-download),
+// so a search/map can call it to pick up decisions made since load — including in another browser
+// tab, where that tab's clearInspectCaches() never touched THIS tab's module cache. Fields not yet
+// loaded are skipped (their next loadField reads live anyway).
+export async function refreshInspections(fields: FieldConfig[]): Promise<void> {
+  for (const k of Object.keys(_inspectCache)) delete _inspectCache[k];   // bust so loadInspect re-reads
+  await Promise.all(fields.map(async (fc) => {
+    const idx = _indexCache[fc.field];
+    const base = _selBase[fc.field];
+    if (!idx || !base) return;
+    const insp = await loadInspect(fc);
+    if (idx.selected && base.sel) {
+      const sel = idx.selected, b = base.sel;
+      for (let i = 0; i < sel.length; i++) sel[i] = b[i];               // restore as-published
+      if (insp?.removed.size) for (let i = 0; i < idx.id.length; i++) if (insp.removed.has(idx.id[i])) sel[i] = 0;
+    }
+    if (idx.inspected && base.ins) {
+      const ins = idx.inspected, b = base.ins;
+      for (let i = 0; i < ins.length; i++) ins[i] = b[i];
+      if (insp?.inspected.size) for (let i = 0; i < idx.id.length; i++) if (insp.inspected.has(idx.id[i])) ins[i] = 1;
+    }
+  }));
 }
 
 // Named-object labels: the curated static list (searchindex/labels.json) merged with the

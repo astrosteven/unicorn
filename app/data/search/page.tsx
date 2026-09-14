@@ -11,6 +11,7 @@ import {
   FILTER_WAVES,
   SEARCH_FIELDS,
   loadField,
+  refreshInspections,
   loadFilters,
   loadSpecz,
   loadDb,
@@ -783,6 +784,9 @@ export default function SearchPage() {
   const [status, setStatus] = useState<ResultState>("idle");
   const [results, setResults] = useState<SourceResult[]>([]);
   const [matchSummary, setMatchSummary] = useState("");
+  // Per-field search progress (drives the progress bar): how many field indices have loaded of
+  // the total this search will touch. null → indeterminate (single-field / instant searches).
+  const [searchProgress, setSearchProgress] = useState<{ done: number; total: number; label: string } | null>(null);
   const [autoRun, setAutoRun] = useState(false);      // set by the ?q= init effect → runs doSearch once state has settled
   const [linkCopied, setLinkCopied] = useState(false); // "🔗 Copy link" → "copied!" flash
   const didInitRef = useRef(false);                    // guards the ?q= init effect so it fires once
@@ -1152,8 +1156,21 @@ export default function SearchPage() {
 
   // Fetches the per-field search index (once, cached) from Corral, matches the
   // query, then pulls per-object detail JSON for each hit to build a SourceResult.
+  // Per-field progress helpers (drive the progress bar). tickField advances one field.
+  function beginProgress(total: number) { setSearchProgress({ done: 0, total, label: "" }); }
+  function tickField(label: string) {
+    setSearchProgress(p => (p ? { done: Math.min(p.done + 1, p.total), total: p.total, label } : p));
+  }
+  // loadField wrapper that advances the progress bar as each field's index resolves.
+  const loadFieldTracked = async (fc: typeof SEARCH_FIELDS[0]) => {
+    const r = await loadField(fc);
+    tickField(fc.field);
+    return r;
+  };
+
   async function doSearch() {
     setStatus("searching");
+    setSearchProgress(null);
     setResultView("table");   // a new search starts on the table; plot re-derives from queryAllRef
     setResults([]);
     setMatchSummary("");
@@ -1166,6 +1183,10 @@ export default function SearchPage() {
     } catch { /* quota — non-fatal */ }
     const avail = SEARCH_FIELDS.filter(f => f.available);
     const fields = searchField === "all" ? avail : avail.filter(f => f.field === searchField);
+    // Re-apply LIVE inspection decisions to any already-loaded indices so a fresh Search picks up
+    // classifications made since load — including in a separate inspector TAB, whose cache-clear
+    // never reached this tab. Cheap (Supabase read + array pass); no index re-download.
+    await refreshInspections(fields);
 
     // Every result-producing mode funnels its matched (field, index-position) pairs through
     // this so ID / Name / RA-Dec / Upload all render the SAME sortable, clickable table
@@ -1239,8 +1260,9 @@ export default function SearchPage() {
             if (only) qFields = [only];
           }
         }
+        beginProgress(qFields.length);
         for (const fc of qFields) {
-          const { idx } = await loadField(fc);
+          const { idx } = await loadFieldTracked(fc);
           // Only fetch the (larger) per-filter flux table when the query needs it.
           const fx = need.length ? await loadFilters(fc) : null;
           // campfire spec-z sidecar (small, cached) — so czspec/czqual are queryable and
@@ -1312,8 +1334,9 @@ export default function SearchPage() {
           return;
         }
         const matches: { fc: typeof SEARCH_FIELDS[0]; idx: Awaited<ReturnType<typeof loadField>>["idx"]; i: number }[] = [];
+        beginProgress(idFields.length);
         for (const fc of idFields) {
-          const { idx } = await loadField(fc);
+          const { idx } = await loadFieldTracked(fc);
           const i = idx.id.indexOf(id);
           if (i >= 0) matches.push({ fc, idx, i });
         }
@@ -1336,7 +1359,8 @@ export default function SearchPage() {
           setMatchSummary("Enter coordinates as 'RA, Dec' in degrees — e.g. 150.102626, 2.249597.");
           return;
         }
-        const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadField(fc)) })));
+        beginProgress(fields.length);
+        const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadFieldTracked(fc)) })));
         const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
         for (const L of loaded) speczByField.set(L.fc.field, await loadSpecz(L.fc));
         const hits: { L: typeof loaded[0]; i: number; sep: number }[] = [];
@@ -1399,7 +1423,8 @@ export default function SearchPage() {
         const dataLines = (headerConsumed ? rawLines.slice(1) : rawLines).filter(l => !l.startsWith("#"));
         requested = dataLines.length;
 
-        const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadField(fc)) })));
+        beginProgress(fields.length);
+        const loaded = await Promise.all(fields.map(async fc => ({ fc, ...(await loadFieldTracked(fc)) })));
         const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
         for (const L of loaded) speczByField.set(L.fc.field, await loadSpecz(L.fc));
 
@@ -1785,8 +1810,25 @@ export default function SearchPage() {
 
       {/* Results */}
       {status === "searching" && (
-        <div style={{ textAlign: "center", padding: "3rem", color: "var(--text-muted)", fontFamily: "'Space Mono', monospace", fontSize: "0.85rem" }}>
-          Searching all fields...
+        <div style={{ padding: "3rem", color: "var(--text-muted)", fontFamily: "'Space Mono', monospace", fontSize: "0.85rem" }}>
+          <div style={{ textAlign: "center", marginBottom: "0.9rem" }}>
+            {searchProgress
+              ? `Loading fields… ${searchProgress.done}/${searchProgress.total}${searchProgress.label ? `  (${searchProgress.label})` : ""}`
+              : "Searching…"}
+          </div>
+          {/* Determinate bar once we know the field count; before that a subtle indeterminate sweep. */}
+          <div style={{ maxWidth: "420px", margin: "0 auto", height: "8px", borderRadius: "5px", background: "var(--bg)", border: "1px solid var(--border)", overflow: "hidden" }}>
+            <div style={{
+              height: "100%", borderRadius: "5px",
+              background: "linear-gradient(90deg, var(--accent), var(--accent2))",
+              width: searchProgress && searchProgress.total
+                ? `${Math.round((searchProgress.done / searchProgress.total) * 100)}%`
+                : "35%",
+              transition: "width 220ms ease",
+              animation: searchProgress ? undefined : "unicornIndet 1.1s ease-in-out infinite alternate",
+            }} />
+          </div>
+          <style>{"@keyframes unicornIndet { from { margin-left: 0; width: 25%; } to { margin-left: 75%; width: 25%; } }"}</style>
         </div>
       )}
 
