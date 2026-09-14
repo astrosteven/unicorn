@@ -879,7 +879,9 @@ export default function SearchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRun, mode, queryInput, uploadText, coordInput, idInput, nameInput, radiusInput]);
 
-  // Hand the current query's matched objects to the visual inspector (via sessionStorage).
+  // Hand the current query's matched objects to the visual inspector in a NEW TAB (so the
+  // query results stay open behind it). localStorage — not sessionStorage — because the new
+  // tab is a separate session; the inspector consumes + clears the key on load.
   const INSPECT_HANDOFF_CAP = 10000;
   function sendToInspector() {
     const objs = queryAllRef.current.slice(0, INSPECT_HANDOFF_CAP).map(m => ({
@@ -890,8 +892,8 @@ export default function SearchPage() {
       mabs: typeof m.r.mabs === "number" ? m.r.mabs : null,
     }));
     if (!objs.length) return;
-    try { sessionStorage.setItem("inspectQueue", JSON.stringify({ label: queryInput, objects: objs })); } catch { /* quota */ }
-    router.push("/data/inspect");
+    try { localStorage.setItem("inspectQueue", JSON.stringify({ label: queryInput, ts: Date.now(), objects: objs })); } catch { /* quota */ }
+    window.open("/unicorn/data/inspect", "_blank");
   }
 
   // Hand the current query's matched objects to the color map (via localStorage — must

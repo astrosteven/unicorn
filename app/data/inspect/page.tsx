@@ -145,6 +145,7 @@ function Inspector({ email }: { email: string }) {
   const [loadErr, setLoadErr] = useState("");
   const [minZa, setMinZa] = useState(7);
   const [selectedOnly, setSelectedOnly] = useState(true);   // only inspect selected=1 objects
+  const [showRemoved, setShowRemoved] = useState(false);    // also re-include items removed FROM the selected sample
   const [search, setSearch] = useState("");
   const [decFilter, setDecFilter] = useState<"all" | InspectDecision>("all");
   const [sortKey, setSortKey] = useState<SortKey>("za");
@@ -164,7 +165,7 @@ function Inspector({ email }: { email: string }) {
   // -- load one or all fields: build each queue from its index, resume decisions from
   // Supabase, and reveal fields progressively (setRows after each field completes) so
   // the user can start triaging CEERS while COSMOS's big index is still downloading. --
-  const load = useCallback(async (fSel: string, minz: number, selOnly: boolean) => {
+  const load = useCallback(async (fSel: string, minz: number, selOnly: boolean, showRem: boolean) => {
     setRows(null); setLoadErr(""); setSelKey(null); setCard(null);
     cardCache.current.clear(); inflight.current.clear();
 
@@ -183,9 +184,14 @@ function Inspector({ email }: { email: string }) {
     try {
       for (const f of targets) {
         const { idx } = await loadField(f);
+        // ids removed FROM this field's selected sample: loadField already zeroed their
+        // `selected`, so buildQueue can't see they were once selected — pass them explicitly
+        // so "show removed" can re-include them for review / un-removal.
+        const remIds = new Set<number>();
+        if (showRem) for (const rec of byKey.values()) if (rec.field === f.field && rec.decision === "remove") remIds.add(Number(rec.obj_id));
         const built = external
           ? external.objects.filter(o => o.field === f.field).map(extToRow)
-          : buildQueue(idx, f.field, minz, selOnly);
+          : buildQueue(idx, f.field, minz, selOnly, remIds);
         for (const row of built) {
           const rec = byKey.get(rowKey(row));
           if (rec) { row.decision = rec.decision; row.notes = rec.notes ?? ""; }
@@ -201,7 +207,7 @@ function Inspector({ email }: { email: string }) {
   }, [external]);
 
   // One effect: (re)load whenever the field selection or the queue filters change.
-  useEffect(() => { load(fieldSel, minZa, selectedOnly); }, [fieldSel, minZa, selectedOnly, load]);
+  useEffect(() => { load(fieldSel, minZa, selectedOnly, showRemoved); }, [fieldSel, minZa, selectedOnly, showRemoved, load]);
 
   // -- derived: filtered + sorted view of the queue --
   const view = useMemo(() => {
@@ -317,8 +323,11 @@ function Inspector({ email }: { email: string }) {
     if (next) selectRow(next);
   }, [selectRow]);
 
-  // -- record a decision: optimistic local update + background Supabase upsert --
-  const decide = useCallback((decision: InspectDecision, notesOverride?: string) => {
+  // -- record a decision: optimistic local update, then AWAIT the Supabase upsert before
+  // auto-advancing. The dot updates instantly (setRows), but we hold the ~200ms until the
+  // write is acked so a decision is durably persisted before you move on or re-run the query
+  // — this kills the fire-and-forget race that could drop the last decision from a re-query. --
+  const decide = useCallback(async (decision: InspectDecision, notesOverride?: string) => {
     const key = selKeyRef.current;
     if (key == null) return;
     let saved: QueueRow | undefined;
@@ -331,8 +340,8 @@ function Inspector({ email }: { email: string }) {
       });
     });
     if (!saved) return;
-    // Fire-and-forget upsert (do NOT block UI). onConflict keeps one row per field+obj.
-    void upsert(saved, email, setSaveState);
+    // onConflict keeps one row per field+obj. Awaited so the write lands before we navigate.
+    await upsert(saved, email, setSaveState);
     // Auto-advance after a decision (not for a bare notes edit).
     if (autoAdvance && notesOverride === undefined) step(1);
   }, [email, autoAdvance, step]);
@@ -434,6 +443,12 @@ function Inspector({ email }: { email: string }) {
               <input type="checkbox" checked={selectedOnly} onChange={e => setSelectedOnly(e.target.checked)} />
               selected only
             </label>
+            {selectedOnly && (
+              <label className="mono" style={{ ...lbl, cursor: "pointer" }} title="Also re-include objects you removed from the selected sample (so you can review or un-remove them)">
+                <input type="checkbox" checked={showRemoved} onChange={e => setShowRemoved(e.target.checked)} />
+                show removed
+              </label>
+            )}
           </>
         )}
         <label className="mono" style={lbl}>ID
@@ -607,9 +622,9 @@ type ExternalQueue = { label: string; objects: ExtObj[] };
 function readHandoff(): ExternalQueue | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = sessionStorage.getItem("inspectQueue");
+    const raw = localStorage.getItem("inspectQueue");
     if (!raw) return null;
-    sessionStorage.removeItem("inspectQueue");   // consume once
+    localStorage.removeItem("inspectQueue");   // consume once (survives the new-tab hop)
     const q = JSON.parse(raw) as ExternalQueue;
     return q && Array.isArray(q.objects) && q.objects.length ? q : null;
   } catch { return null; }
@@ -623,12 +638,14 @@ function extToRow(o: ExtObj): QueueRow {
   return { field: o.field, id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, decision: "not_inspected", notes: "" };
 }
 
-function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedOnly: boolean): QueueRow[] {
+function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedOnly: boolean, removedIds?: Set<number>): QueueRow[] {
   const out: QueueRow[] = [];
   for (let i = 0; i < idx.n; i++) {
     const za = idx.za[i];
     if (za == null || za < minZa) continue;
-    if (selectedOnly && idx.selected?.[i] !== 1) continue;   // only doselect-selected objects
+    // selected=1, OR (show-removed) an item removed from the selected sample — its `selected`
+    // was zeroed by the inspection merge but it belongs in a "what did I remove" review.
+    if (selectedOnly && idx.selected?.[i] !== 1 && !(removedIds && removedIds.has(idx.id[i]))) continue;
     out.push({
       field: fieldName,
       id: idx.id[i],
