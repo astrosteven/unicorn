@@ -12,7 +12,7 @@ import dynamic from "next/dynamic";
 import type { Session } from "@supabase/supabase-js";
 import { supabase, type Inspection, type InspectDecision } from "@/lib/supabase";
 import {
-  SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot,
+  SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot, clearInspectCaches,
   type SourceResult, type FieldConfig, type FieldIndex,
 } from "@/app/data/_card/objectCard";
 import { fetchStamp } from "@/lib/photometry";
@@ -39,6 +39,10 @@ const INSPECT_STAMP_BANDS = [
 export default function InspectPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
+
+  // On leaving the inspector, drop the cached indices so the next search/map re-reads the
+  // LIVE inspections — otherwise a just-made "Remove from Selected" wouldn't show until reload.
+  useEffect(() => () => clearInspectCaches(), []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });

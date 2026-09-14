@@ -97,6 +97,11 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
   const [ya, setYa] = useState<AxisState>({ col: yDefault, min: "", max: "", log: false });
   const [hover, setHover] = useState<{ px: number; py: number; label: string } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  // Scatter (X vs Y) or a 1-D histogram of the X column. `bins` = bin count; `countLog` puts
+  // the count axis on a log scale (blank/auto value range comes from the X-axis min/max).
+  const [mode, setMode] = useState<"scatter" | "histogram">("scatter");
+  const [bins, setBins] = useState("30");
+  const [countLog, setCountLog] = useState(false);
 
   // Pull (x, y, id, field) for every match with both columns finite; cap the count.
   // A log axis additionally requires the value > 0 there — count how many that drops.
@@ -132,6 +137,42 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
   const [xlo, xhi] = domain(pts.map(p => p.x), xa);
   const [ylo, yhi] = domain(pts.map(p => p.y), ya);
 
+  // Histogram mode: bin the X column alone. Gather finite X (log drops ≤0), then bin over the
+  // X domain (log-spaced bins when the X axis is log). Count axis is linear, or log via countLog.
+  const hist = useMemo(() => {
+    if (mode !== "histogram") return null;
+    const col = xa.col;
+    const vals: number[] = [];
+    let drop = 0;
+    const n = Math.min(matches.length, PLOT_CAP);
+    for (let i = 0; i < n; i++) {
+      const v = numAt(matches[i], col);
+      if (v == null) continue;
+      if (xa.log && !(v > 0)) { drop++; continue; }
+      vals.push(v);
+    }
+    const [lo, hi] = domain(vals, xa);
+    const nb = Math.max(2, Math.min(200, Math.round(Number(bins)) || 30));
+    const L = xa.log ? Math.log10(lo) : lo, Hh = xa.log ? Math.log10(hi) : hi;
+    const span = (Hh - L) || 1;
+    const counts = new Array<number>(nb).fill(0);
+    for (const v of vals) {
+      const a = xa.log ? Math.log10(v) : v;
+      let b = Math.floor(((a - L) / span) * nb);
+      if (b === nb) b = nb - 1;                 // include the exact right edge
+      if (b < 0 || b >= nb) continue;           // outside a user-clamped range
+      counts[b]++;
+    }
+    const maxC = counts.reduce((m, c) => (c > m ? c : m), 0);
+    const edge = (k: number) => (xa.log ? Math.pow(10, L + (span * k) / nb) : L + (span * k) / nb);
+    return { lo, hi, nb, counts, maxC, edge, plotted: vals.length, drop, capped: matches.length > PLOT_CAP };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, matches, xa.col, xa.log, xa.min, xa.max, bins]);
+
+  // Histogram axes: value (x) honours xa.log; count (y) is [0,maxC] linear or [~1,maxC] log.
+  const hCLo = countLog ? 0.7 : 0;
+  const hCHi = hist ? Math.max(hist.maxC, countLog ? 10 : 1) : 1;
+
   // Plot geometry (viewBox units == px in the on-page SVG).
   const W = 640, H = 440, mL = 62, mR = 16, mT = 18, mB = 52;
   const iw = W - mL - mR, ih = H - mT - mB;
@@ -139,6 +180,12 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
   const ty = (y: number) => { const a = ya.log ? Math.log10(y) : y, lo = ya.log ? Math.log10(ylo) : ylo, hi = ya.log ? Math.log10(yhi) : yhi; return mT + ih - ((a - lo) / (hi - lo || 1)) * ih; };
   const xticks = xa.log ? logTicks(xlo, xhi) : linTicks(xlo, xhi);
   const yticks = ya.log ? logTicks(ylo, yhi) : linTicks(ylo, yhi);
+
+  // Histogram axis mappers (need plot geometry above): value (x) honours xa.log; count (y) is
+  // [0,maxC] linear or [~1,maxC] log.
+  const hvx = (x: number) => { const a = xa.log ? Math.log10(x) : x, lo = xa.log ? Math.log10(xlo) : xlo, hi = xa.log ? Math.log10(xhi) : xhi; return mL + ((a - lo) / (hi - lo || 1)) * iw; };
+  const hvy = (c: number) => { const a = countLog ? Math.log10(Math.max(c, hCLo)) : c, lo = countLog ? Math.log10(hCLo) : 0, hi = countLog ? Math.log10(hCHi) : hCHi; return mT + ih - ((a - lo) / (hi - lo || 1)) * ih; };
+  const cticks = countLog ? logTicks(hCLo, hCHi) : linTicks(0, hCHi);
 
   // Save the plot as a PNG (rasterize the live SVG, dark card background baked in).
   function downloadPNG() {
@@ -164,7 +211,7 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
         if (!b) return;
         const a = document.createElement("a");
         a.href = URL.createObjectURL(b);
-        a.download = `unicorn_scatter_${xa.col}_vs_${ya.col}.png`;
+        a.download = mode === "histogram" ? `unicorn_hist_${xa.col}.png` : `unicorn_scatter_${xa.col}_vs_${ya.col}.png`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 2000);
       }, "image/png");
@@ -207,19 +254,49 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
 
   return (
     <div className="card" style={{ padding: "1.25rem" }}>
+      {/* Plot-type toggle: scatter (X vs Y) or histogram (X alone) */}
+      <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+        {(["scatter", "histogram"] as const).map(m => (
+          <button key={m} onClick={() => setMode(m)} className="mono"
+            style={{ background: mode === m ? "rgba(196,144,216,0.16)" : "transparent",
+              color: mode === m ? "var(--accent)" : "var(--text-muted)",
+              border: `1px solid ${mode === m ? "var(--border-bright)" : "var(--border)"}`,
+              borderRadius: "4px", padding: "6px 14px", fontSize: "0.75rem", cursor: "pointer", textTransform: "capitalize" }}>
+            {m}
+          </button>
+        ))}
+      </div>
       {/* Axis controls */}
       <div style={{ display: "flex", flexDirection: "column", gap: "14px", marginBottom: "1rem" }}>
         {/* Called as a function (not <AxisControls/>) so the inputs are part of THIS
             component's tree — a nested component would get a new identity each keystroke
             and remount, dropping input focus after the first character. */}
         {AxisControls({ tag: "X", ax: xa, set: setXa })}
-        {AxisControls({ tag: "Y", ax: ya, set: setYa })}
+        {mode === "scatter" ? AxisControls({ tag: "Y", ax: ya, set: setYa }) : (
+          <div style={{ display: "flex", gap: "12px", alignItems: "flex-end", flexWrap: "wrap" }}>
+            <div>
+              <label style={labelCss}>BINS</label>
+              <input value={bins} onChange={e => setBins(e.target.value)} placeholder="30" style={inputCss} />
+            </div>
+            <button onClick={() => setCountLog(!countLog)} className="mono"
+              title="Toggle count axis linear / log"
+              style={{ background: countLog ? "rgba(196,144,216,0.16)" : "transparent", color: countLog ? "var(--accent)" : "var(--text-muted)",
+                border: `1px solid ${countLog ? "var(--border-bright)" : "var(--border)"}`, borderRadius: "4px", padding: "6px 12px", fontSize: "0.75rem", cursor: "pointer" }}>
+              count: {countLog ? "log" : "linear"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Point-count / cap / drop summary */}
       <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "0.75rem", display: "flex", gap: "14px", flexWrap: "wrap", alignItems: "center" }}>
-        <span>{pts.length.toLocaleString()} point{pts.length === 1 ? "" : "s"} plotted{capped ? ` — capped at ${PLOT_CAP.toLocaleString()} of ${total.toLocaleString()}` : ""}</span>
-        {dropNote && <span style={{ color: "var(--amber)" }}>{dropNote}</span>}
+        {mode === "scatter" ? (
+          <span>{pts.length.toLocaleString()} point{pts.length === 1 ? "" : "s"} plotted{capped ? ` — capped at ${PLOT_CAP.toLocaleString()} of ${total.toLocaleString()}` : ""}</span>
+        ) : (
+          <span>{(hist?.plotted ?? 0).toLocaleString()} value{(hist?.plotted ?? 0) === 1 ? "" : "s"} binned{hist?.capped ? ` — capped at ${PLOT_CAP.toLocaleString()} of ${total.toLocaleString()}` : ""}</span>
+        )}
+        {mode === "scatter" ? (dropNote && <span style={{ color: "var(--amber)" }}>{dropNote}</span>)
+          : (hist?.drop ? <span style={{ color: "var(--amber)" }}>{hist.drop} dropped (x≤0 on log)</span> : null)}
         <button onClick={downloadPNG} className="mono"
           title="Download this plot as a PNG"
           style={{ marginLeft: "auto", background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.3)", borderRadius: "5px", padding: "5px 12px", fontSize: "0.72rem", cursor: "pointer" }}>
@@ -227,7 +304,8 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
         </button>
       </div>
 
-      {/* Scatter */}
+      {/* Plot area — scatter (X vs Y) or histogram (X alone) */}
+      {mode === "scatter" ? (
       <div style={{ position: "relative", width: "100%", overflowX: "auto" }}>
         <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: `${W}px`, display: "block" }}
           onMouseLeave={() => setHover(null)}>
@@ -284,6 +362,60 @@ export default function ScatterPlot({ matches, queryCols }: { matches: MatchEntr
           </div>
         )}
       </div>
+      ) : (
+      <div style={{ position: "relative", width: "100%", overflowX: "auto" }}>
+        <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: `${W}px`, display: "block" }}>
+          {/* Plot frame */}
+          <rect x={mL} y={mT} width={iw} height={ih} fill="none" stroke="var(--border)" strokeWidth={1} />
+          {/* X (value) ticks + gridlines + labels */}
+          {xticks.map((t, i) => {
+            const px = hvx(t);
+            if (px < mL - 0.5 || px > W - mR + 0.5) return null;
+            return (
+              <g key={`hx${i}`}>
+                <line x1={px} y1={mT} x2={px} y2={mT + ih} stroke="var(--border)" strokeWidth={0.5} strokeOpacity={0.4} />
+                <line x1={px} y1={mT + ih} x2={px} y2={mT + ih + 5} stroke="var(--text-dim)" strokeWidth={1} />
+                <text x={px} y={mT + ih + 18} textAnchor="middle" fontSize={11} fill="var(--text-dim)" fontFamily="'Space Mono', monospace">{fmtTick(t)}</text>
+              </g>
+            );
+          })}
+          {/* Count (Y) ticks + gridlines + labels */}
+          {cticks.map((t, i) => {
+            const py = hvy(t);
+            if (py < mT - 0.5 || py > mT + ih + 0.5) return null;
+            return (
+              <g key={`hy${i}`}>
+                <line x1={mL} y1={py} x2={mL + iw} y2={py} stroke="var(--border)" strokeWidth={0.5} strokeOpacity={0.4} />
+                <line x1={mL - 5} y1={py} x2={mL} y2={py} stroke="var(--text-dim)" strokeWidth={1} />
+                <text x={mL - 9} y={py + 4} textAnchor="end" fontSize={11} fill="var(--text-dim)" fontFamily="'Space Mono', monospace">{fmtTick(t)}</text>
+              </g>
+            );
+          })}
+          {/* Bars */}
+          {hist && hist.counts.map((c, i) => {
+            if (c <= 0) return null;
+            const x0 = hvx(hist.edge(i)), x1 = hvx(hist.edge(i + 1));
+            const left = Math.min(x0, x1), w = Math.abs(x1 - x0);
+            const yTop = hvy(c), yBot = hvy(hCLo);
+            if (left > W - mR + 0.5 || left + w < mL - 0.5) return null;
+            return (
+              <rect key={`bar${i}`} x={left + 0.5} y={yTop} width={Math.max(w - 1, 0.5)} height={Math.max(yBot - yTop, 0)}
+                fill="var(--accent)" fillOpacity={0.75} stroke="var(--bg)" strokeWidth={0.5}>
+                <title>{`[${fmtTick(hist.edge(i))}, ${fmtTick(hist.edge(i + 1))})  n=${c}`}</title>
+              </rect>
+            );
+          })}
+          {/* Axis titles */}
+          <text x={mL + iw / 2} y={H - 6} textAnchor="middle" fontSize={12} fill="var(--text-muted)" fontFamily="'Space Mono', monospace">
+            {AXIS_LABEL.get(xa.col) ?? xa.col}{xa.log ? " (log)" : ""}
+          </text>
+          <text x={14} y={mT + ih / 2} textAnchor="middle" fontSize={12} fill="var(--text-muted)" fontFamily="'Space Mono', monospace"
+            transform={`rotate(-90 14 ${mT + ih / 2})`}>
+            count{countLog ? " (log)" : ""}
+          </text>
+        </svg>
+      </div>
+      )}
     </div>
   );
 }
