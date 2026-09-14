@@ -10,6 +10,7 @@ import ScatterPlot from "./ScatterPlot";  // interactive SVG scatter of the matc
 import {
   FILTER_WAVES,
   SEARCH_FIELDS,
+  fieldCatDir,
   loadField,
   refreshInspections,
   loadFilters,
@@ -711,7 +712,7 @@ export default function SearchPage() {
       // Fast path: pre-baked static RGB PNG. Only CEERS has these baked (verified 200 for
       // CEERS, 404 elsewhere), so we only probe it there — cheap fetch → image.
       if (fc.field === "CEERS") {
-        const rgbUrl = src.rgbUrl ?? `${corralBase()}/${fc.dir}/web/rgb/${fc.prefix}_${id}.png`;
+        const rgbUrl = src.rgbUrl ?? `${corralBase()}/${fieldCatDir(fc)}/web/rgb/${fc.prefix}_${id}.png`;
         try {
           const resp = await fetch(rgbUrl);
           if (resp.ok) { const b = await resp.blob(); if (b.size > 0) return await blobToImage(b); }
@@ -744,7 +745,7 @@ export default function SearchPage() {
         const base = `${r.fc.field}_${r.id}`;
         let stampImg: HTMLImageElement | null = null;
         try {
-          const resp = await fetch(src.stampUrl ?? `${corralBase()}/${r.fc.dir}/web/stamps/${r.fc.prefix}_${r.id}.png`);
+          const resp = await fetch(src.stampUrl ?? `${corralBase()}/${fieldCatDir(r.fc)}/web/stamps/${r.fc.prefix}_${r.id}.png`);
           if (resp.ok) stampImg = await blobToImage(await resp.blob());
         } catch { /* field w/o stamps: skip */ }
         let sedImg: HTMLImageElement | null = null, pzImg: HTMLImageElement | null = null;

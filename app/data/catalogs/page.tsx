@@ -2,6 +2,12 @@
 import { useState, useEffect } from "react";
 
 const BASE_URL = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";  // public Corral HTTPS root (catalog data)
+// 2026-09: the pre-AS1063 fields moved under Catalogs/Legacy/; AS1063 (+ future fields) stay at the
+// Catalogs/ top level. To REVERT the Corral move, set LEGACY_PARENT = "".
+const LEGACY_PARENT = "Legacy/";
+const TOP_LEVEL_FIELD_IDS = new Set(["as1063"]);
+const catBase = (field: { id: string; dir: string }) =>
+  `${BASE_URL}/${TOP_LEVEL_FIELD_IDS.has(field.id) ? "" : LEGACY_PARENT}${field.dir}`;
 
 // Photo-z variants. The FITS filename is identical in every variant dir
 // (<prefix>_photz_v<ver>.fits); only the Corral SUBDIRECTORY changes.
@@ -75,19 +81,19 @@ const PROJECT_FILES = [
   {
     label: "Templates — Fiducial",
     desc: "LAZY SED template library used for fiducial photo-z fits",
-    href: `${BASE_URL}/CEERS/unicorn_templates_fiducial.fits`,
+    href: `${BASE_URL}/Legacy/CEERS/unicorn_templates_fiducial.fits`,
     size: "1.2 GB",
   },
   {
     label: "Templates — EELG",
     desc: "LAZY SED template library for the EELG photo-z variant",
-    href: `${BASE_URL}/CEERS/unicorn_templates_eelg.fits`,
+    href: `${BASE_URL}/Legacy/CEERS/unicorn_templates_eelg.fits`,
     size: "1.3 GB",
   },
   {
     label: "Templates — LRD",
     desc: "LAZY SED template library for the LRD photo-z variant",
-    href: `${BASE_URL}/CEERS/unicorn_templates_lrd.fits`,
+    href: `${BASE_URL}/Legacy/CEERS/unicorn_templates_lrd.fits`,
     size: "1.4 GB",
   },
 ];
@@ -102,9 +108,9 @@ type FileRow = {
 };
 
 function fieldFiles(field: Field): FileRow[] {
-  const { dir, prefix: f, available } = field;
+  const { prefix: f, available } = field;
   const v = field.version;
-  const base = `${BASE_URL}/${dir}`;
+  const base = catBase(field);
   // Real byte sizes are only tabulated for CEERS; other fields show "—" (file still downloads).
   const size = (key: string) => (available && field.id === "ceers" ? CEERS_SIZES[key] ?? "—" : "—");
 

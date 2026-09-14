@@ -144,6 +144,15 @@ export function RgbStamp({ url }: { url: string }) {
 
 // ---- data wiring -----------------------------------------------------------
 export const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";
+// 2026-09: the pre-AS1063 fields were moved under Catalogs/Legacy/ on Corral; AS1063 (and any
+// future new field) lives at the Catalogs/ top level. fieldCatDir() returns the catalog path
+// segment for a field's per-object files (cards/stamps/rgb + Corral index fallback). To REVERT the
+// Corral move, set LEGACY_PARENT = "" (everything then reads from Catalogs/<dir>/ again).
+const LEGACY_PARENT = "Legacy/";
+const TOP_LEVEL_FIELDS = new Set(["AS1063"]);
+export function fieldCatDir(fc: { field: string; dir: string }): string {
+  return (TOP_LEVEL_FIELDS.has(fc.field) ? "" : LEGACY_PARENT) + fc.dir;
+}
 // The search index + zgrid are served from the site itself (GitHub Pages / Fastly
 // CDN) — fast + edge-cached for everyone — while the 174k per-object files stay on
 // Corral. Index files live in public/searchindex/ (see scripts/make_web_index.py).
@@ -261,7 +270,7 @@ export async function loadField(fc: FieldConfig): Promise<{ idx: FieldIndex; zg:
     const override = dataOverride();
     const idxName = `${fc.prefix}_search_v${fc.version}.json`;
     const zgName = `${fc.prefix}_zgrid_v${fc.version}.json`;
-    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    const primary = override ? `${override}/${fieldCatDir(fc)}/web` : INDEX_BASE;
     const load = async (base: string) => Promise.all([
       fetchJsonMaybeGz(`${base}/${idxName}`),
       fetchJsonMaybeGz(`${base}/${zgName}`),
@@ -271,7 +280,7 @@ export async function loadField(fc: FieldConfig): Promise<{ idx: FieldIndex; zg:
       [idx, zg] = await load(primary);
     } catch (e) {
       if (override) throw e;  // explicit override: don't silently fall back
-      [idx, zg] = await load(`${CORRAL_DEFAULT}/${fc.dir}/web`);
+      [idx, zg] = await load(`${CORRAL_DEFAULT}/${fieldCatDir(fc)}/web`);
     }
     // Apply the visual-inspection override (removes from the SELECTED sample) before
     // caching, so the whole site — search `selected`, map colour, ★ badge, inspector —
@@ -313,12 +322,12 @@ export async function loadFilters(fc: FieldConfig): Promise<Record<string, NumCo
   _filtersPromise[fc.field] = (async () => {
     const override = dataOverride();
     const name = `${fc.prefix}_filters_v${fc.version}.json`;
-    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    const primary = override ? `${override}/${fieldCatDir(fc)}/web` : INDEX_BASE;
     try {
       return await fetchJsonMaybeGz(`${primary}/${name}`);
     } catch (e) {
       if (override) throw e;
-      return await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fc.dir}/web/${name}`);
+      return await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fieldCatDir(fc)}/web/${name}`);
     }
   })();
   try {
@@ -345,11 +354,11 @@ export async function loadDb(fc: FieldConfig): Promise<Record<string, NumCol> | 
   _dbPromise[fc.field] = (async () => {
     const override = dataOverride();
     const name = `${fc.prefix}_db_v${fc.version}.json`;
-    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    const primary = override ? `${override}/${fieldCatDir(fc)}/web` : INDEX_BASE;
     try {
       return await fetchJsonMaybeGz(`${primary}/${name}`);
     } catch {
-      if (!override) { try { return await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fc.dir}/web/${name}`); } catch {} }
+      if (!override) { try { return await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fieldCatDir(fc)}/web/${name}`); } catch {} }
       return null;
     }
   })();
@@ -369,14 +378,14 @@ export async function loadSpecz(fc: FieldConfig): Promise<Record<string, SpeczRe
   _speczPromise[fc.field] = (async () => {
     const override = dataOverride();
     const name = `${fc.prefix}_specz_v${fc.version}.json`;
-    const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+    const primary = override ? `${override}/${fieldCatDir(fc)}/web` : INDEX_BASE;
     try {
       const data = await fetchJsonMaybeGz(`${primary}/${name}`);
       return (data && data.objects) || {};
     } catch {
       if (!override) {
         try {
-          const d = await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fc.dir}/web/${name}`);
+          const d = await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fieldCatDir(fc)}/web/${name}`);
           return (d && d.objects) || {};
         } catch { /* fall through */ }
       }
@@ -401,13 +410,13 @@ export async function loadInspect(fc: FieldConfig): Promise<InspectOverride | nu
   if (fc.field in _inspectCache) return _inspectCache[fc.field];
   const override = dataOverride();
   const name = `${fc.prefix}_inspect_v${fc.version}.json`;
-  const primary = override ? `${override}/${fc.dir}/web` : INDEX_BASE;
+  const primary = override ? `${override}/${fieldCatDir(fc)}/web` : INDEX_BASE;
   let data: { removed?: number[]; kept?: number[] } | null = null;
   try {
     data = await fetchJsonMaybeGz(`${primary}/${name}`);
   } catch {
     if (!override) {
-      try { data = await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fc.dir}/web/${name}`); } catch { /* absent */ }
+      try { data = await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fieldCatDir(fc)}/web/${name}`); } catch { /* absent */ }
     }
   }
   const removed = new Set<number>((data?.removed ?? []).map(Number));
@@ -520,7 +529,7 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
     // Per-object cards live under web/cards/; older uploads used web/objects/ — try
     // the current path first, fall back to the legacy one so a field mid-migration
     // (e.g. CEERS before its rename) keeps working.
-    const objBase = `${corralBase()}/${fc.dir}/web`;
+    const objBase = `${corralBase()}/${fieldCatDir(fc)}/web`;
     let r = await fetch(`${objBase}/cards/${fc.prefix}_${id}.json`);
     if (!r.ok) r = await fetch(`${objBase}/objects/${fc.prefix}_${id}.json`);
     if (!r.ok) return null;
@@ -540,8 +549,8 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
       interestLabel: o.interestLabel, zspec: o.zspec,
       zaCirc: o.zaCirc, dchi2: o.dchi2, m1500: o.m1500, m1300: o.m1300, mabs: o.mabs, beta: o.beta,
       aperflags: o.aperflags, neighbor: o.neighbor,
-      stampUrl: `${corralBase()}/${fc.dir}/web/stamps/${fc.prefix}_${id}.png`,
-      rgbUrl: `${corralBase()}/${fc.dir}/web/rgb/${fc.prefix}_${id}.png`,
+      stampUrl: `${corralBase()}/${fieldCatDir(fc)}/web/stamps/${fc.prefix}_${id}.png`,
+      rgbUrl: `${corralBase()}/${fieldCatDir(fc)}/web/rgb/${fc.prefix}_${id}.png`,
       selFail,
       czspec: cf?.z ?? undefined, czqual: cf?.q ?? undefined, cfield: cf?.cf, cid: cf?.cid,
       nickname,
