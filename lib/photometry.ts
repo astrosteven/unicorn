@@ -123,12 +123,15 @@ export async function fetchStamp(
   dec: number,
   half?: number,
   bands?: string[],
+  onProgress?: (loaded: number, total: number) => void,   // fired as each chunk's bands arrive (cache MISS only)
 ): Promise<StampResult> {
   const h = half ?? 25;
   const key = stampKey(field, ra, dec, h, bands);
   const cached = stampCache.get(key);
   if (cached) return cached;
 
+  const total = bands?.length ?? 0;
+  onProgress?.(0, total);
   const p = (async (): Promise<StampResult> => {
     const { data } = await supabase.auth.getSession();
     const token = data.session?.access_token;
@@ -159,11 +162,20 @@ export async function fetchStamp(
 
     // Chunk the band list so no single invocation blows Cloudflare's subrequest cap. When bands
     // is omitted (server default set), we can't chunk — one call, and let the server decide.
-    if (!bands || bands.length <= STAMP_BAND_CHUNK) return fetchChunk(bands);
+    if (!bands || bands.length <= STAMP_BAND_CHUNK) {
+      const part = await fetchChunk(bands);
+      onProgress?.(part.bands.length, total || part.bands.length);
+      return part;
+    }
 
     const chunks: string[][] = [];
     for (let i = 0; i < bands.length; i += STAMP_BAND_CHUNK) chunks.push(bands.slice(i, i + STAMP_BAND_CHUNK));
-    const parts = await Promise.all(chunks.map(fetchChunk));
+    let loaded = 0;
+    const parts = await Promise.all(chunks.map(c => fetchChunk(c).then(part => {
+      loaded += part.bands.length;
+      onProgress?.(loaded, total);   // report bands accumulated as chunks resolve
+      return part;
+    })));
 
     // Merge + restore the requested band order (chunks resolve out of order).
     const byBand = new Map<string, StampBand>();

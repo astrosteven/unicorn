@@ -33,6 +33,7 @@ export function LiveStampMontage({
   const [stamp, setStamp] = useState<StampResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [k, setK] = useState<number>(DEFAULT_K);
+  const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null);
 
   // Read the persisted hardness on mount (client-only; avoids SSR localStorage access).
   useEffect(() => { setK(loadK()); }, []);
@@ -43,9 +44,9 @@ export function LiveStampMontage({
   // the montage stuck on "loading cutouts…" forever).
   useEffect(() => {
     let live = true;
-    setStamp(null); setFailed(false);
+    setStamp(null); setFailed(false); setProgress(null);
     const timer = setTimeout(() => { if (live) setFailed(true); }, 20000);
-    fetchStamp(field, ra, dec, undefined, bands)
+    fetchStamp(field, ra, dec, undefined, bands, (loaded, total) => { if (live && total) setProgress({ loaded, total }); })
       .then(s => { if (live) { clearTimeout(timer); setStamp(s); } })
       .catch(() => { if (live) { clearTimeout(timer); setFailed(true); } });
     return () => { live = false; clearTimeout(timer); };
@@ -75,7 +76,23 @@ export function LiveStampMontage({
         </label>
       </div>
       {stamp == null
-        ? <div className="mono" style={{ fontSize: "0.72rem", color: "var(--text-dim)", padding: "1rem 0" }}>loading cutouts…</div>
+        ? (
+          <div style={{ padding: "1rem 0" }}>
+            <div className="mono" style={{ fontSize: "0.72rem", color: "var(--text-dim)", marginBottom: "6px" }}>
+              loading cutouts…{progress ? ` ${progress.loaded}/${progress.total} bands` : ""}
+            </div>
+            <div style={{ maxWidth: "360px", height: "7px", borderRadius: "4px", background: "var(--bg)", border: "1px solid var(--border)", overflow: "hidden" }}>
+              <div style={{
+                height: "100%", borderRadius: "4px",
+                background: "linear-gradient(90deg, var(--accent), var(--accent2))",
+                width: progress && progress.total ? `${Math.round((progress.loaded / progress.total) * 100)}%` : "30%",
+                transition: "width 200ms ease",
+                animation: progress ? undefined : "unicornStampIndet 1.1s ease-in-out infinite alternate",
+              }} />
+            </div>
+            <style>{"@keyframes unicornStampIndet { from { margin-left: 0; width: 22%; } to { margin-left: 78%; width: 22%; } }"}</style>
+          </div>
+        )
         : (
           <>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>

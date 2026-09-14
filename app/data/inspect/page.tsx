@@ -261,7 +261,7 @@ function Inspector({ email }: { email: string }) {
   // the first time (then edge-cached 24 h), so firing them all at once overloads Corral and the
   // precaches fail. We run a few workers that each AWAIT one stamp before taking the next, in
   // queue order (nearest-ahead first), and a generation ref cancels the walk when you advance. --
-  const PRECACHE_AHEAD = 10;
+  const PRECACHE_AHEAD = 20;
   const PRECACHE_CONCURRENCY = 3;
   const precacheGen = useRef(0);
   const prefetchAround = useCallback((key: string) => {
