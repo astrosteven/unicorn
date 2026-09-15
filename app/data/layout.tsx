@@ -9,9 +9,10 @@ import { useProfile, routeAllowed, type Role } from "@/lib/roles";
 // Nav links + the minimum role that may see each. `null` → visible to everyone
 // (including logged-out public viewers). Overview/Fields are always public.
 const NAV_LINKS: { href: string; label: string; min: Role | null }[] = [
-  { href: "/data",          label: "Overview", min: null },
-  { href: "/data/fields",   label: "Fields",   min: null },
-  { href: "/data/catalogs", label: "Catalogs", min: "general" },
+  { href: "/data",          label: "Overview",      min: null },
+  { href: "/data/fields",   label: "Fields",        min: null },
+  { href: "/data/readme",   label: "Catalog Guide", min: null },
+  { href: "/data/catalogs", label: "Catalogs",      min: "general" },
   { href: "/data/map",      label: "Explore",  min: "general" },
   { href: "/data/search",   label: "Search",   min: "general" },
   { href: "/data/review",   label: "Review",   min: "key" },

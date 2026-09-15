@@ -47,6 +47,7 @@ export default function Home() {
           <div style={{ display: "flex", gap: "4px" }}>
             <Link href="/data" className="navlink">Overview</Link>
             <Link href="/data/fields" className="navlink">Fields</Link>
+            <Link href="/data/readme" className="navlink">Catalog Guide</Link>
           </div>
         </div>
         <Link href="/login" className="btn btn-primary" style={{ padding: "7px 18px", fontSize: "0.78rem" }}>
