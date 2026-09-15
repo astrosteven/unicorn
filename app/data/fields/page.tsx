@@ -115,6 +115,19 @@ const FIELDS = [
     notes: "Custom UNICORN reduction",
   },
   {
+    id: "as1063",
+    name: "AS1063",
+    full: "Abell S1063 (RXC J2248.7−4431) Galaxy Cluster",
+    ra: 342.183,
+    dec: -44.531,
+    fov: 0.10,
+    area: "18 arcmin²",
+    imaging: "JWST NIRCam + HST ACS",
+    filters: ["F435W","F606W","F775W","F814W","F070W","F090W","F115W","F140M","F150W","F182M","F200W","F210M","F250M","F277W","F300M","F356W","F410M","F444W","F480M"],
+    program: "VENUS, GLIMPSE",
+    notes: "Custom UNICORN reduction",
+  },
+  {
     id: "cosmos",
     name: "COSMOS",
     full: "Cosmic Evolution Survey",
@@ -148,7 +161,7 @@ export default function FieldsPage() {
           Survey Fields
         </h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.95rem" }}>
-          UNICORN covers nine legacy JWST fields. Select a field to view its sky coverage and properties.
+          UNICORN covers ten JWST fields. Select a field to view its sky coverage and properties.
         </p>
       </div>
 

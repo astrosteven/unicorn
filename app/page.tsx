@@ -138,7 +138,7 @@ export default function Home() {
           gap: "2rem",
         }}>
           {[
-            { label: "Survey Fields", value: "9" },
+            { label: "Survey Fields", value: "10" },
             { label: "Total Sources",  value: "—" },
             { label: "Redshift Range", value: "0 – 12+" },
             { label: "Telescopes",     value: "HST+JWST" },
