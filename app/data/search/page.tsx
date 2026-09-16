@@ -58,6 +58,10 @@ const KNOWN_FILTERS = new Set(Object.keys(FILTER_WAVES).map(f => f.toLowerCase()
 const RE_MAGSNR = /^(mag|snr|flux)_([a-z0-9]+)$/;
 const RE_COLOR  = /^([a-z][a-z0-9]*)-([a-z][a-z0-9]*)$/;
 const LIMIT_SNR = 1;   // bands with S/N below this are treated as non-detections in colors
+// A fluxerr at/above this is a no-coverage SENTINEL (the catalog fills ~1e12), NOT a real 1σ
+// uncertainty. Treat such a band as unavailable so out-of-footprint sources don't get nonsense
+// "1σ upper limit = 1e12 nJy" colors or absurd SNRs.
+const SENTINEL_ERR = 1e9;
 
 // Is `f` a queryable field name (built-in, per-filter, or color)?
 function isKnownField(f: string): boolean {
@@ -71,7 +75,7 @@ function isKnownField(f: string): boolean {
 // 1σ upper limit (= fluxerr). Returns null if the band's flux/err aren't available.
 function bandColorFlux(r: IdxRow, band: string): number | null {
   const f = r[`flux_${band}`], e = r[`fluxerr_${band}`];
-  if (typeof f !== "number" || typeof e !== "number" || !(e > 0)) return null;
+  if (typeof f !== "number" || typeof e !== "number" || !(e > 0) || e >= SENTINEL_ERR) return null;
   const used = (f / e >= LIMIT_SNR) ? f : e;   // non-detection → 1σ limit
   return used > 0 ? used : null;
 }
@@ -89,7 +93,7 @@ export function colGetter(col: string): (r: IdxRow) => number | string | null {
   }
   if ((m = col.match(/^snr_([a-z0-9]+)$/)) && KNOWN_FILTERS.has(m[1])) {
     const fc = `flux_${m[1]}`, ec = `fluxerr_${m[1]}`;
-    return r => { const f = r[fc], e = r[ec]; return (typeof f === "number" && typeof e === "number" && e > 0) ? f / e : null; };
+    return r => { const f = r[fc], e = r[ec]; return (typeof f === "number" && typeof e === "number" && e > 0 && e < SENTINEL_ERR) ? f / e : null; };
   }
   if ((m = col.match(RE_COLOR)) && KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2])) {
     const a = m[1], b = m[2];
@@ -251,13 +255,21 @@ export function makePredicate(query: string): { test: Pred; need: string[] } | {
       if (!isKnownField(f)) return { error: `Unknown field "${f}"` };
       if (QUERY_STR.includes(f)) {
         if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != on "${f}"` };
-        return r => { const v = r[f]; if (v == null) return false; const eq = String(v).toLowerCase() === valraw; return op === "!=" ? !eq : eq; };
+        // Field names compare separator-insensitively (so `field = goodss` matches "GOODS-S"),
+        // matching the single-field fast-path; other string columns compare literally.
+        const norm = (s: string) => (f === "field" ? s.toLowerCase().replace(/[\s_-]/g, "") : s.toLowerCase());
+        const want = norm(valraw);
+        return r => { const v = r[f]; if (v == null) return false; const eq = norm(String(v)) === want; return op === "!=" ? !eq : eq; };
       }
       if (valraw === "none" || valraw === "null") {   // missing-value test, e.g. czspec = none
         if (op !== "=" && op !== "==" && op !== "!=") return { error: `use = or != with "none"` };
         const get = colGetter(f);
         return r => { const v = get(r); const missing = v == null || (typeof v === "number" && !Number.isFinite(v)); return op === "!=" ? !missing : missing; };
       }
+      // Reject trailing garbage so a missing space (e.g. `za>8and selected=1`) errors instead of
+      // silently parsing as 8 and dropping the rest of the query.
+      if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(valraw))
+        return { error: `"${valraw}" isn't a plain number — check for a missing space around and/or (e.g. "za > 8 and selected = 1")` };
       const x = parseFloat(valraw);
       if (!Number.isFinite(x)) return { error: `"${valraw}" is not a number` };
       const get = colGetter(f);
@@ -1738,9 +1750,9 @@ export default function SearchPage() {
                   ["field", "field name, e.g. CEERS"],
                   ["detectcat", "detection catalog: cold / hot"],
                   ["tile", "mosaic tile (COSMOS, EGS), e.g. A1 / NE"],
-                  ["flux_<filt>", "native flux (nJy) in any filter"],
+                  ["flux_<filt>", "native flux (nJy); queryable bands only (list below)"],
                   ["mag_<filt>", "AB mag = 31.4 − 2.5·log(flux), e.g. mag_f277w"],
-                  ["snr_<filt>", "S/N = flux / fluxerr in any filter"],
+                  ["snr_<filt>", "S/N = flux / fluxerr, e.g. snr_f444w"],
                   ["<filtA>-<filtB>", "color −2.5·log(fA/fB); 1σ limit if S/N<1"],
                 ] as [string, string][]).map(([k, v]) => (
                   <div key={k}><span style={{ color: "var(--accent)" }}>{k}</span> — {v}</div>
@@ -1749,9 +1761,10 @@ export default function SearchPage() {
               )}
               {defsOpen && (
                 <div style={{ marginTop: "8px", color: "var(--text-dim)", fontSize: "0.72rem", lineHeight: 1.7 }}>
-                  Per-filter names use the filter&apos;s lowercase label — HST/ACS (f435w, f606w, f814w) and
-                  NIRCam wide/medium bands (f090w, f115w, f150w, f200w, f277w, f356w, f410m, f444w, …). A field
-                  that lacks a band simply returns no match for it. (The per-filter flux table loads on demand
+                  Per-filter names use the filter&apos;s lowercase label. Queryable bands are the broadband set
+                  only — ACS f435w/f606w/f814w and NIRCam f090w/f115w/f150w/f200w/f277w/f356w/f444w. Medium
+                  bands and other filters (f410m, f335m, …) appear on an object&apos;s card but are NOT queryable.
+                  A field that lacks a band returns no match for it. (The per-filter flux table loads on demand
                   the first time you run a filter/color query.)
                 </div>
               )}
