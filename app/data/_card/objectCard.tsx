@@ -16,6 +16,20 @@ import { Comments } from "./Comments";
 const FitsglCutout = dynamic(() => import("./FitsglCutout").then((m) => m.FitsglCutout), {
   ssr: false,
 });
+// Live per-band cutout montage (Worker /stamp + canvas + stretch slider), same as the inspector.
+// Loaded client-only + lazily (also avoids a static-init cycle with StampMontage). Falls back to the
+// pre-baked PNG for fields the photometry Worker doesn't serve yet.
+const LiveStampMontage = dynamic(
+  () => import("@/app/data/inspect/LiveStampMontage").then((m) => m.LiveStampMontage),
+  { ssr: false },
+);
+// Curated montage band set (non-WFC3, wavelength order). Passed explicitly so fetchStamp chunks the
+// request (a long band list otherwise blows the Worker's subrequest cap and truncates mid-montage).
+const CARD_STAMP_BANDS = [
+  "f435w", "f606w", "f070w", "f775w", "f814w", "f090w", "f850l",
+  "f115w", "f140m", "f150w", "f162m", "f182m", "f200w", "f210m",
+  "f250m", "f277w", "f300m", "f335m", "f356w", "f360m", "f410m", "f430m", "f444w", "f460m", "f480m",
+];
 // Fields that have live fitsgl tiles (drives whether the card shows the on-the-fly
 // cutout). Kept in sync with FITSGL_BASE in FitsglCutout.tsx — all fields with tiles
 // on Corral render the color panel on their cards.
@@ -1061,7 +1075,11 @@ export function ResultCard({ src }: { src: SourceResult }) {
           dec={Number(src.row["DEC"])}
         />
       )}
-      {src.stampUrl && <StampMontage url={src.stampUrl} />}
+      {/* Live per-band cutouts (Worker /stamp) with a stretch slider — same as the inspector;
+          falls back to the pre-baked PNG for fields the Worker doesn't serve yet. */}
+      {Number.isFinite(Number(src.row["RA"])) && Number.isFinite(Number(src.row["DEC"]))
+        ? <LiveStampMontage field={src.field} ra={Number(src.row["RA"])} dec={Number(src.row["DEC"])} bands={CARD_STAMP_BANDS} fallbackUrl={src.stampUrl} />
+        : (src.stampUrl ? <StampMontage url={src.stampUrl} /> : null)}
 
       {/* Per-object comments — private by default, optional public. Only when we have a
           field + id to key on (RLS scopes reads to the user's own + public rows). */}
