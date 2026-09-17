@@ -6,8 +6,10 @@ import { useRouter } from "next/navigation";
 import JSZip from "jszip";
 import { FITSGL_BASE, CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map + campfire stretch
 import ScatterPlot from "./ScatterPlot";  // interactive SVG scatter of the matched set (Plot view)
+import { fetchStamp, type StampResult } from "@/lib/photometry";  // live FITS cutouts (Worker /stamp) for the card download
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
 import {
+  CARD_STAMP_BANDS,
   FILTER_WAVES,
   SEARCH_FIELDS,
   fieldCatDir,
@@ -381,6 +383,57 @@ async function svgToPngBlob(svg: SVGSVGElement, scale = 2): Promise<Blob | null>
 }
 
 // Load a Blob into an <img> (for canvas compositing).
+// Render a Worker /stamp result into ONE montage image (labelled grayscale grid), so the card
+// download can build stamps live from the FITS mosaics — same recipe as the inspector's
+// LiveStampMontage/StampCell: symmetric range [-k·noise, +k·noise], inverted (dark = flux),
+// NaN (off-image) → white, nearest-neighbor upscale. Returns null if there are no bands.
+async function liveStampMontageImage(stamp: StampResult, k: number): Promise<HTMLImageElement | null> {
+  const bands = stamp.bands;
+  if (!bands.length) return null;
+  const CELL = 72, LABEL_H = 14, GAP = 5, PAD = 4;
+  const cols = Math.min(bands.length, 8);
+  const rows = Math.ceil(bands.length / cols);
+  const cellW = CELL, cellH = CELL + LABEL_H;
+  const W = PAD * 2 + cols * cellW + (cols - 1) * GAP;
+  const H = PAD * 2 + rows * cellH + (rows - 1) * GAP;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  if (!ctx) return null;
+  const cs = getComputedStyle(document.body);
+  ctx.fillStyle = cs.backgroundColor || "#0b0817";
+  ctx.fillRect(0, 0, W, H);
+  ctx.textBaseline = "top";
+  ctx.font = "10px 'Space Mono', monospace";
+  const off = document.createElement("canvas");
+  const octx = off.getContext("2d")!;
+  bands.forEach((b, idx) => {
+    const cx = PAD + (idx % cols) * (cellW + GAP);
+    const cy = PAD + Math.floor(idx / cols) * (cellH + GAP);
+    // Label
+    ctx.fillStyle = cs.color || "#e8e2f2";
+    ctx.fillText(b.band.toUpperCase(), cx, cy);
+    // Cell: native float patch → grayscale ImageData → nearest-neighbor upscale into the cell.
+    const lo = -k * b.noise, span = 2 * k * b.noise || 1;
+    const img = octx.createImageData(b.w, b.h);
+    const d = img.data;
+    for (let i = 0; i < b.pixels.length; i++) {
+      const v = b.pixels[i];
+      let g: number;
+      if (Number.isNaN(v)) { g = 255; }
+      else { let t = (v - lo) / span; if (t < 0) t = 0; else if (t > 1) t = 1; g = Math.round((1 - t) * 255); }
+      const o = i * 4; d[o] = g; d[o + 1] = g; d[o + 2] = g; d[o + 3] = 255;
+    }
+    off.width = b.w; off.height = b.h;
+    octx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, 0, 0, b.w, b.h, cx, cy + LABEL_H, CELL, CELL);
+  });
+  const blob = await new Promise<Blob | null>(res => cv.toBlob(b => res(b), "image/png"));
+  if (!blob) return null;
+  try { return await blobToImage(blob); } catch { return null; }
+}
+
 function blobToImage(blob: Blob): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {
     const url = URL.createObjectURL(blob);
@@ -669,6 +722,10 @@ export default function SearchPage() {
     const rows = queryAllRef.current.map(m => ({ fc: m.fc, id: m.id }));
     const total = rows.length;
     setZipping(`0/${total}`);
+    // Live-stamp stretch: reuse the inspector's persisted "hardness" (unicorn_stampStretch) so
+    // the downloaded montages match what the user sees; default 2.5σ.
+    let stampK = 2.5;
+    try { const v = Number(window.localStorage.getItem("unicorn_stampStretch")); if (Number.isFinite(v) && v >= 1 && v <= 12) stampK = v; } catch { /* private mode */ }
 
     // 1) Fetch per-object detail concurrently.
     const srcs: (SourceResult | null)[] = new Array(total).fill(null);
@@ -750,16 +807,29 @@ export default function SearchPage() {
       try { return await blobToImage(await (await fetch(url)).blob()); } catch { return null; }
     }
 
-    let ok = 0;
+    let ok = 0, skippedNoData = 0, skippedErr = 0, skippedNoFetch = 0;
     for (let i = 0; i < total; i++) {
       const src = srcs[i]; const r = rows[i];
+      if (!src) { skippedNoFetch++; }
       if (src) {
         const base = `${r.fc.field}_${r.id}`;
+        // Stamp montage: build it LIVE from the FITS mosaics via the Worker (like the inspector),
+        // and fall back to the pre-baked PNG only if the Worker can't serve this field/object.
+        // This is the path to phasing out the millions of per-object stamp PNGs.
         let stampImg: HTMLImageElement | null = null;
-        try {
-          const resp = await fetch(src.stampUrl ?? `${corralBase()}/${fieldCatDir(r.fc)}/web/stamps/${r.fc.prefix}_${r.id}.png`);
-          if (resp.ok) stampImg = await blobToImage(await resp.blob());
-        } catch { /* field w/o stamps: skip */ }
+        const ra = Number(src.row["RA"]), dec = Number(src.row["DEC"]);
+        if (Number.isFinite(ra) && Number.isFinite(dec)) {
+          try {
+            const s = await fetchStamp(r.fc.field, ra, dec, undefined, CARD_STAMP_BANDS);
+            if (s.bands.length) stampImg = await liveStampMontageImage(s, stampK);
+          } catch { /* Worker down / unsupported field → PNG fallback below */ }
+        }
+        if (!stampImg) {
+          try {
+            const resp = await fetch(src.stampUrl ?? `${corralBase()}/${fieldCatDir(r.fc)}/web/stamps/${r.fc.prefix}_${r.id}.png`);
+            if (resp.ok) stampImg = await blobToImage(await resp.blob());
+          } catch { /* field w/o stamps (live or baked): skip */ }
+        }
         let sedImg: HTMLImageElement | null = null, pzImg: HTMLImageElement | null = null;
         try {
           flushSync(() => root.render(<CardPlots src={src} />));
@@ -772,14 +842,23 @@ export default function SearchPage() {
         // Color cutout (fast-path RGB, else WebGL capture; capped per object).
         let colorImg: HTMLImageElement | null = null;
         if (wantColor) { try { colorImg = await captureColor(src, r.fc); } catch { colorImg = null; } }
-        const png = await composeCardImage(src, sedImg, pzImg, stampImg, colorImg);
+        // NEVER let one object abort the whole batch: a compose throw (tainted canvas,
+        // OOM, bad image) here used to propagate out of the loop and truncate the zip to
+        // whatever had been added so far ("only the first few download"). Guard it.
+        let png: Blob | null = null, threw = false;
+        try { png = await composeCardImage(src, sedImg, pzImg, stampImg, colorImg); }
+        catch { png = null; threw = true; skippedErr++; }
         if (png) { zip.file(`${base}.png`, png); ok++; }
+        else if (!threw) { skippedNoData++; }   // all sub-images null → composeCardImage returned null
       }
       if (i % 3 === 0 || i === total - 1) setZipping(`render${wantColor ? "+color" : ""} ${i + 1}/${total}`);
     }
     root.unmount();
     holder.remove();
 
+    if (skippedNoFetch || skippedNoData || skippedErr) {
+      console.warn(`[card download] zipped ${ok}/${total}. skipped: ${skippedNoFetch} card-fetch fail, ${skippedNoData} no-imagery, ${skippedErr} compose-error.`);
+    }
     if (ok === 0) { setZipping(null); return; }
     setZipping("zipping…");
     const blob = await zip.generateAsync({ type: "blob" });

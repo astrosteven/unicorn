@@ -25,7 +25,7 @@ const LiveStampMontage = dynamic(
 );
 // Curated montage band set (non-WFC3, wavelength order). Passed explicitly so fetchStamp chunks the
 // request (a long band list otherwise blows the Worker's subrequest cap and truncates mid-montage).
-const CARD_STAMP_BANDS = [
+export const CARD_STAMP_BANDS = [
   "f435w", "f606w", "f070w", "f775w", "f814w", "f090w", "f850l",
   "f115w", "f140m", "f150w", "f162m", "f182m", "f200w", "f210m",
   "f250m", "f277w", "f300m", "f335m", "f356w", "f360m", "f410m", "f430m", "f444w", "f460m", "f480m",
