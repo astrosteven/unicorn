@@ -61,6 +61,9 @@ export function LiveStampMontage({
 
   // Endpoint down / unsupported field / not signed in → graceful pre-baked PNG fallback.
   if (failed) return fallbackUrl ? <StampMontage url={fallbackUrl} /> : null;
+  // Worker 200'd but couldn't read ANY band (e.g. a field whose mosaics aren't wired/named for the
+  // Worker yet — like NGDEEP) → fall back to the pre-baked PNG rather than an empty "all unavailable" grid.
+  if (stamp && stamp.bands.length === 0 && fallbackUrl) return <StampMontage url={fallbackUrl} />;
 
   return (
     <div style={{ width: "100%", marginTop: "1rem" }}>
