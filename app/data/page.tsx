@@ -31,9 +31,6 @@ export const FIELDS: Field[] = [
   { name: "A2744",         version: "0.98", sources: "107,015", color: "#ffb3d9", available: true,
     region: "Abell 2744 galaxy cluster (VENUS reduction, V. Kokorev)", geometry: "single-tile",
     provenance: "JWST NIRCam from UNCOVER (GO 2561), GLASS (ERS 1324), MegaScience (GO 4111), ALT (GO 3516), DDT (GO 2756)" },
-  { name: "AS1063",        version: "0.98", sources: "100,011", color: "#f4a9d1", available: true,
-    region: "Abell S1063 (RXC J2248.7−4431) galaxy cluster", geometry: "single-tile",
-    provenance: "JWST NIRCam + HST ACS from VENUS, GLIMPSE" },
   { name: "NGDEEP",        version: "0.95", sources: "29,955",  color: "#ef9fcd", available: true,
     region: "Next Generation Deep Extragalactic Exploratory Public Survey", geometry: "single-tile",
     provenance: "JWST NIRCam from NGDEEP (GO 2079), MIDIS (GTO 1283); custom UNICORN reduction" },
@@ -121,7 +118,7 @@ export default function DataOverview() {
           FIRST DATA RELEASE
         </p>
         <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
-          All ten fields — CEERS, EGS, GOODS-S, GOODS-N, A2744, AS1063, NGDEEP, COSMOS, PRIMER-COSMOS, and PRIMER-UDS — are now live and searchable via the{" "}
+          All nine fields — CEERS, EGS, GOODS-S, GOODS-N, A2744, NGDEEP, COSMOS, PRIMER-COSMOS, and PRIMER-UDS — are now live and searchable via the{" "}
           <span className="mono" style={{ color: "var(--accent)" }}>Query</span> page.
           The remaining fields are being prepared — check back for downloadable catalogs, field maps, and object pages.
         </p>

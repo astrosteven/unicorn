@@ -192,7 +192,9 @@ export const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalo
 // segment for a field's per-object files (cards/stamps/rgb + Corral index fallback). To REVERT the
 // Corral move, set LEGACY_PARENT = "" (everything then reads from Catalogs/<dir>/ again).
 const LEGACY_PARENT = "Legacy/";
-const TOP_LEVEL_FIELDS = new Set(["AS1063"]);
+// New fields (post-Legacy-move) live at the Catalogs/ top level; add them here. (AS1063
+// was here but was pulled from the site 2026-09-17 pending fixes.)
+const TOP_LEVEL_FIELDS = new Set<string>([]);
 export function fieldCatDir(fc: { field: string; dir: string }): string {
   return (TOP_LEVEL_FIELDS.has(fc.field) ? "" : LEGACY_PARENT) + fc.dir;
 }
@@ -252,9 +254,6 @@ export const SEARCH_FIELDS: { field: string; dir: string; prefix: string; versio
   { field: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.95", available: true },
   { field: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.95", available: true },
   { field: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: true },
-  // AS1063 (Abell S1063 lensing cluster; GLIMPSE GO 3293 + VENUS GO 6882). available:false
-  // until the web artifacts (as1063_search/zgrid/filters_v0.98 + web/cards) are uploaded.
-  { field: "AS1063",        dir: "VENUS/AS1063",  prefix: "as1063",       version: "0.98", available: true },
 ];
 
 export type FieldConfig = typeof SEARCH_FIELDS[0];

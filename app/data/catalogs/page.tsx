@@ -5,7 +5,9 @@ const BASE_URL = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";  // publ
 // 2026-09: the pre-AS1063 fields moved under Catalogs/Legacy/; AS1063 (+ future fields) stay at the
 // Catalogs/ top level. To REVERT the Corral move, set LEGACY_PARENT = "".
 const LEGACY_PARENT = "Legacy/";
-const TOP_LEVEL_FIELD_IDS = new Set(["as1063"]);
+// New fields (post-Legacy-move) stay at the top level; add their ids here. (as1063 was here
+// but was pulled from the site 2026-09-17 pending fixes.)
+const TOP_LEVEL_FIELD_IDS = new Set<string>([]);
 const catBase = (field: { id: string; dir: string }) =>
   `${BASE_URL}/${TOP_LEVEL_FIELD_IDS.has(field.id) ? "" : LEGACY_PARENT}${field.dir}`;
 
@@ -47,7 +49,6 @@ const FIELDS: Field[] = [
   { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.95", available: true, variants: BASE_PZ },
   { id: "a2744",         name: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.98", available: true, variants: NO_WFC3 },
   { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: true, variants: BASE_PZ },
-  { id: "as1063",        name: "AS1063",        dir: "VENUS/AS1063",  prefix: "as1063",       version: "0.98", available: true, variants: NO_WFC3, programs: ["VENUS", "GLIMPSE"] },
 ];
 
 // Real file sizes for the live CEERS v0.98 release, keyed by row key.
