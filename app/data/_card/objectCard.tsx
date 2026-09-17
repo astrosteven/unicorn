@@ -41,14 +41,16 @@ const FITSGL_FIELDS = new Set([
 // wide + medium band set used across UNICORN fields (incl. CEERS-SPAM medium bands).
 export const FILTER_WAVES: Record<string, number> = {
   // HST/ACS
-  F435W:0.433, F606W:0.592, F814W:0.806,
+  F435W:0.433, F475W:0.477, F606W:0.592, F775W:0.769, F814W:0.806, F850L:0.904,
+  // HST/WFC3
+  F098M:0.987, F105W:1.055, F125W:1.249, F140W:1.392, F160W:1.537,
   // NIRCam wide + medium
   F070W:0.704, F090W:0.902, F115W:1.154, F140M:1.404, F150W:1.501, F162M:1.626,
   F182M:1.845, F200W:1.989, F210M:2.093, F250M:2.503, F277W:2.758, F300M:2.996,
   F335M:3.365, F356W:3.568, F360M:3.624, F410M:4.082, F430M:4.281, F444W:4.436,
   F460M:4.630, F470N:4.706, F480M:4.815,
 };
-const ACS_FILTERS  = new Set(["F435W","F606W","F814W"]);
+const ACS_FILTERS  = new Set(["F435W","F475W","F606W","F775W","F814W","F850L"]);
 // Medium/narrow bands render smaller so they don't crowd the broad-band points.
 const MEDIUM_FILTERS = new Set(
   Object.keys(FILTER_WAVES).filter(f => f.endsWith("M") || f.endsWith("N"))
@@ -81,6 +83,7 @@ export interface SourceResult {
   mabs?: number;
   beta?: number;
   aperflags?: number;
+  aperSNR?: Record<string, number>;   // per-broadband 0.2" aperture S/N (native flux / empirical err)
   neighbor?: { dClosest?: number; magClosest?: number; dBrightest?: number; magBrightest?: number };
   stampUrl?: string;
   rgbUrl?: string;
@@ -113,6 +116,29 @@ export function selFailFromIndex(idx: FieldIndex, pos: number): SourceResult["se
     idx.zsubCriteria.forEach((name, b) => { if (bits & (1 << b)) zsub.push(name); });
   }
   return { det, pix, z, zsub };
+}
+
+// Compact per-broadband 0.2" aperture S/N table (native flux / empirical err), ordered by
+// wavelength. Shown next to the cutouts for quick per-band detection-significance during inspection.
+export function AperSnrTable({ snr }: { snr: Record<string, number> }) {
+  const bands = Object.keys(FILTER_WAVES).map(f => f.toLowerCase()).filter(b => b in snr);
+  if (!bands.length) return null;
+  const col = (s: number) => (s >= 5 ? "var(--green)" : s >= 3 ? "var(--amber)" : "var(--text-dim)");
+  return (
+    <div style={{ marginTop: "1rem" }}>
+      <div style={{ fontSize: "0.7rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", marginBottom: "5px" }}>
+        0.2″ APERTURE S/N <span style={{ color: "var(--text-dim)" }}>(native flux / empirical error)</span>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "5px 12px", fontFamily: "'Space Mono', monospace", fontSize: "0.72rem" }}>
+        {bands.map(b => (
+          <span key={b} style={{ display: "inline-flex", gap: "5px", alignItems: "baseline" }}>
+            <span style={{ color: "var(--text-muted)" }}>{b.toUpperCase()}</span>
+            <span style={{ color: col(snr[b]), fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{snr[b].toFixed(1)}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // Cutout-montage panel: loads the per-object stamp PNG from Corral on demand.
@@ -629,7 +655,7 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
       selected: o.selected, inspected: o.inspected, sample: o.sample,
       interestLabel: o.interestLabel, zspec: o.zspec,
       zaCirc: o.zaCirc, dchi2: o.dchi2, m1500: o.m1500, m1300: o.m1300, mabs: o.mabs, beta: o.beta,
-      aperflags: o.aperflags, neighbor: o.neighbor,
+      aperflags: o.aperflags, aperSNR: o.aperSNR, neighbor: o.neighbor,
       stampUrl: `${corralBase()}/${fieldCatDir(fc)}/web/stamps/${fc.prefix}_${id}.png`,
       rgbUrl: `${corralBase()}/${fieldCatDir(fc)}/web/rgb/${fc.prefix}_${id}.png`,
       selFail,
@@ -1080,6 +1106,7 @@ export function ResultCard({ src }: { src: SourceResult }) {
       {Number.isFinite(Number(src.row["RA"])) && Number.isFinite(Number(src.row["DEC"]))
         ? <LiveStampMontage field={src.field} ra={Number(src.row["RA"])} dec={Number(src.row["DEC"])} bands={CARD_STAMP_BANDS} fallbackUrl={src.stampUrl} />
         : (src.stampUrl ? <StampMontage url={src.stampUrl} /> : null)}
+      {src.aperSNR && <AperSnrTable snr={src.aperSNR} />}
 
       {/* Per-object comments — private by default, optional public. Only when we have a
           field + id to key on (RLS scopes reads to the user's own + public rows). */}
