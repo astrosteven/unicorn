@@ -61,7 +61,7 @@ const RED = "#e0503a";     // not selected
 const CYAN = "#38d0f0";
 // Fields the photometry Worker can measure (mosaics on Corral + wired in the Worker's
 // per-field config). Extend as each field's SCI/ERR mosaics come online.
-const PHOTO_FIELDS = new Set(["CEERS", "NGDEEP"]);
+const PHOTO_FIELDS = new Set(["CEERS", "NGDEEP", "GOODS-S", "GOODS-N", "A2744", "PRIMER-UDS", "PRIMER-COSMOS", "EGS"]);
 // Palette cycled across ACCUMULATED photometry apertures — each measured aperture takes the
 // next colour (wrapping), shared by its map circle, its legend swatch and its SED series.
 const PHOTO_PALETTE = ["#38d0f0", "#f2d43a", "#43d17a", "#e078e0", "#f0902d", "#8a7bff", "#e0503a", "#4dd6c0"];

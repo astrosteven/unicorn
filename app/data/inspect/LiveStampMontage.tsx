@@ -7,6 +7,7 @@
 // field / not signed in) we fall back to the existing pre-baked <StampMontage> PNG.
 import { useEffect, useRef, useState } from "react";
 import { fetchStamp, type StampResult } from "@/lib/photometry";
+import { fetchFitsglStamp, fitsglStampAvailable } from "@/lib/fitsglStamp";
 import { StampMontage } from "@/app/data/_card/objectCard";
 
 // Display cell size (px on screen). Cutouts are ~51px @ 30 mas ≈ 1.5″; we upscale them
@@ -46,7 +47,20 @@ export function LiveStampMontage({
     let live = true;
     setStamp(null); setFailed(false); setProgress(null);
     const timer = setTimeout(() => { if (live) setFailed(true); }, 20000);
-    fetchStamp(field, ra, dec, undefined, bands, (loaded, total) => { if (live && total) setProgress({ loaded, total }); })
+    const onProg = (loaded: number, total: number) => { if (live && total) setProgress({ loaded, total }); };
+    // Prefer the public fitsgl fpack tiles (static/CDN, no auth, no 3 GB byte-range) when the field
+    // has them and an explicit band list is given; fall back to the Worker /stamp path (native
+    // mosaics), then — if that yields nothing — the pre-baked PNG (handled by `failed`/empty below).
+    const load = async (): Promise<StampResult> => {
+      if (bands && bands.length && fitsglStampAvailable(field)) {
+        try {
+          const s = await fetchFitsglStamp(field, ra, dec, bands, 25, onProg);
+          if (s.bands.length) return s;
+        } catch { /* fall back to the Worker path */ }
+      }
+      return fetchStamp(field, ra, dec, undefined, bands, onProg);
+    };
+    load()
       .then(s => { if (live) { clearTimeout(timer); setStamp(s); } })
       .catch(() => { if (live) { clearTimeout(timer); setFailed(true); } });
     return () => { live = false; clearTimeout(timer); };
