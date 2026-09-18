@@ -54,6 +54,17 @@ export default function AdminPage() {
     load();
   };
 
+  // Reject / delete a request outright — removes the auth user (cascades to the profile), so the
+  // row disappears and they'd have to register again. Uses the admin-only delete_user RPC.
+  const deleteReq = async (target: string, email?: string | null) => {
+    if (!window.confirm(`Reject and permanently delete this request${email ? ` (${email})` : ""}? They can register again later.`)) return;
+    setBusy(target); setErr("");
+    const { error } = await supabase.rpc("delete_user", { target });
+    setBusy(null);
+    if (error) { setErr(`Delete failed: ${error.message}`); return; }
+    load();
+  };
+
   if (loading) return <Centered>Checking access…</Centered>;
   if (role !== "admin") return <Centered>Not authorized.</Centered>;
 
@@ -101,6 +112,7 @@ export default function AdminPage() {
                     <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "general", p.email, p.role === "pending")} style={btn("var(--green)")}>Approve → general</button>
                     <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "key", p.email, p.role === "pending")}     style={btn("var(--accent)")}>Grant key</button>
                     <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "pending")} style={btn("var(--text-muted)")}>Set pending</button>
+                    <button disabled={busy === p.user_id} onClick={() => deleteReq(p.user_id, p.email)} style={btn("var(--red)")}>Reject / delete</button>
                   </div>
                 </td>
               </tr>
