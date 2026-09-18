@@ -14,6 +14,11 @@ type Profile = {
   role: Role;
   justification: string | null;
   created_at: string;
+  // Activity fields — present only when the admin_user_activity RPC is installed (supabase/usage.sql).
+  last_sign_in_at?: string | null;
+  n_events?: number | null;
+  last_event_at?: string | null;
+  n_inspections?: number | null;
 };
 
 // pending first, then the rest by newest-registered.
@@ -25,12 +30,20 @@ export default function AdminPage() {
   const [err, setErr]   = useState("");
   const [busy, setBusy] = useState<string | null>(null); // user_id currently updating
 
+  const [hasActivity, setHasActivity] = useState(false);
   const load = useCallback(async () => {
     setErr("");
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("user_id, email, role, justification, created_at");
-    if (error) { setErr(error.message); return; }
+    // Prefer the enriched activity rollup (last sign-in + per-user counts); fall back to the plain
+    // profiles select if the RPC isn't installed yet (supabase/usage.sql not run).
+    const rpc = await supabase.rpc("admin_user_activity");
+    let data = rpc.data as Profile[] | null;
+    if (!rpc.error && data) { setHasActivity(true); }
+    else {
+      setHasActivity(false);
+      const sel = await supabase.from("profiles").select("user_id, email, role, justification, created_at");
+      if (sel.error) { setErr(sel.error.message); return; }
+      data = sel.data as Profile[];
+    }
     const sorted = ([...(data ?? [])] as Profile[]).sort((a, b) => {
       const ra = ROLE_ORDER[a.role] ?? 9, rb = ROLE_ORDER[b.role] ?? 9;
       if (ra !== rb) return ra - rb;
@@ -93,6 +106,8 @@ export default function AdminPage() {
               <th style={th}>ROLE</th>
               <th style={th}>JUSTIFICATION</th>
               <th style={th}>REGISTERED</th>
+              {hasActivity && <th style={th}>LAST SIGN-IN</th>}
+              {hasActivity && <th style={th}>ACTIVITY</th>}
               <th style={th}>ACTIONS</th>
             </tr>
           </thead>
@@ -107,6 +122,17 @@ export default function AdminPage() {
                 <td style={{ ...td, color: "var(--text-dim)", whiteSpace: "nowrap" }} className="mono">
                   {p.created_at ? new Date(p.created_at).toLocaleDateString() : "—"}
                 </td>
+                {hasActivity && (
+                  <td style={{ ...td, color: "var(--text-dim)", whiteSpace: "nowrap" }} className="mono">
+                    {p.last_sign_in_at ? new Date(p.last_sign_in_at).toLocaleDateString() : <span style={{ color: "var(--text-dim)" }}>never</span>}
+                  </td>
+                )}
+                {hasActivity && (
+                  <td style={{ ...td, color: "var(--text-muted)", whiteSpace: "nowrap", fontSize: "0.78rem" }} className="mono"
+                    title={p.last_event_at ? `last active ${new Date(p.last_event_at).toLocaleString()}` : "no tracked events yet"}>
+                    {(p.n_events ?? 0)} evt · {(p.n_inspections ?? 0)} insp
+                  </td>
+                )}
                 <td style={{ ...td, whiteSpace: "nowrap" }}>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
                     <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "general", p.email, p.role === "pending")} style={btn("var(--green)")}>Approve → general</button>
@@ -118,7 +144,7 @@ export default function AdminPage() {
               </tr>
             ))}
             {rows != null && rows.length === 0 && (
-              <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>No accounts yet.</td></tr>
+              <tr><td colSpan={hasActivity ? 7 : 5} style={{ ...td, textAlign: "center", color: "var(--text-muted)", padding: "2rem" }}>No accounts yet.</td></tr>
             )}
           </tbody>
         </table>

@@ -8,6 +8,7 @@ import { FITSGL_BASE, CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";  
 import ScatterPlot from "./ScatterPlot";  // interactive SVG scatter of the matched set (Plot view)
 import { fetchStamp, type StampResult } from "@/lib/photometry";  // live FITS cutouts (Worker /stamp) for the card download
 import { precacheStamp, fetchFitsglStamp, fitsglStampAvailable } from "@/lib/fitsglStamp";  // fitsgl-tile stamps + prefetch
+import { logUsage } from "@/lib/usage";  // per-user activity (admin dashboard)
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
 import {
   CARD_STAMP_BANDS,
@@ -722,6 +723,7 @@ export default function SearchPage() {
     // FULL matched set (every object, not just the ≤500 rendered in the table).
     const rows = queryAllRef.current.map(m => ({ fc: m.fc, id: m.id }));
     const total = rows.length;
+    logUsage("download", { kind: "cards", n: total });   // per-user activity (admin dashboard)
     setZipping(`0/${total}`);
     // Live-stamp stretch: reuse the inspector's persisted "hardness" (unicorn_stampStretch) so
     // the downloaded montages match what the user sees; default 2.5σ.
@@ -1280,6 +1282,7 @@ export default function SearchPage() {
   };
 
   async function doSearch() {
+    logUsage("search", { mode, field: searchField });   // per-user activity (admin dashboard)
     setStatus("searching");
     setSearchProgress(null);
     setResultView("table");   // a new search starts on the table; plot re-derives from queryAllRef
