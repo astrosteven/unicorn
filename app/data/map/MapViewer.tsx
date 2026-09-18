@@ -29,13 +29,24 @@ import {
   skyToPix,
   pixToSky,
   angularSeparationDeg,
+  renderSourceForView,
   DEFAULT_TRILOGY_PARAMS,
   type FitsglConfig,
   type ViewerConfig,
   type TrilogyParams,
   type TrilogyStats,
   type StretchMode,
+  type ColormapName,
 } from "@fitsgl/core";
+import FitsglControls, {
+  RGB_VIEW,
+  DEFAULT_STRETCH_MODE,
+  applyFitsglDisplay,
+  singleBandSource,
+  TRILOGY_KNOBS,
+  type ViewSel,
+  type ControlBand,
+} from "@/app/data/_card/FitsglControls";
 import {
   loadField,
   loadFilters,
@@ -77,44 +88,9 @@ const CAMPFIRE_TRILOGY: TrilogyParams = {
   noisesig0: 2.0,
 };
 
-// The scaling knobs surfaced in the panel, with drag range + step. These four are the
-// trilogy params that actually change the look (see @fitsgl/core TrilogyParams docs):
-//  noiselum   — output luminance the noise floor maps to (noise-floor brightness)
-//  noisesig   — where the noise level is anchored: x1 = mean + noisesig*sigma (contrast)
-//  satpercent — % of pixels allowed to saturate; the white point (log-ish, so a log slider)
-//  noisesig0  — black point below the sky: x0 = mean - noisesig0*sigma
-type Knob = {
-  key: keyof TrilogyParams;
-  label: string;
-  hint: string;
-  min: number;
-  max: number;
-  step: number;
-  log?: boolean;        // slider position is log10-spaced across [min,max]
-  trilogyOnly?: boolean; // only shapes the trilogy curve (ignored by linear/log/sqrt/asinh)
-};
-// The trilogy params set each band's normalization interval [x0,x2] (black/white points)
-// via applyTrilogy — the multiband shader then applies the SELECTED transfer curve
-// (u_stretchMode) over that interval. So noisesig/satpercent/noisesig0 shape the levels
-// for EVERY mode; noiselum only solves the trilogy softening K, so it is trilogy-only.
-const SCALING_KNOBS: Knob[] = [
-  { key: "noiselum", label: "Noise floor", hint: "brightness of the sky/noise (trilogy)", min: 0, max: 0.4, step: 0.005, trilogyOnly: true },
-  { key: "noisesig", label: "Contrast", hint: "noise anchor · mean + n·σ", min: 0.5, max: 4, step: 0.05 },
-  { key: "satpercent", label: "White point", hint: "% pixels saturated", min: 0.001, max: 1, step: 0.001, log: true },
-  { key: "noisesig0", label: "Black point", hint: "sky floor · mean − n·σ", min: 1, max: 3, step: 0.05 },
-];
-
-// Every transfer curve @fitsgl/core supports (StretchMode). trilogy is the campfire
-// default; the others reuse the same per-band black/white points and just swap the curve
-// applied on top (u_stretchMode) — no tile rescan, no camera move.
-const STRETCH_MODE_OPTS: { mode: StretchMode; label: string; hint: string }[] = [
-  { mode: "trilogy", label: "Trilogy", hint: "Coe faithful log (campfire default)" },
-  { mode: "log",     label: "Log",     hint: "astropy LogStretch (a=1000)" },
-  { mode: "asinh",   label: "Asinh",   hint: "astropy AsinhStretch (a=0.1)" },
-  { mode: "sqrt",    label: "Sqrt",    hint: "square-root" },
-  { mode: "linear",  label: "Linear",  hint: "identity" },
-];
-const DEFAULT_STRETCH_MODE: StretchMode = "trilogy";
+// The scaling knobs + stretch-mode list + default stretch mode now live in the SHARED
+// control component (FitsglControls) so the map and the per-field Fields viewer render the
+// same panel; TRILOGY_KNOBS / DEFAULT_STRETCH_MODE are imported above.
 
 // Cap on drawn overlay glyphs per frame — the viewport cull keeps only what's visible,
 // and this bounds the SVG node count so pan/zoom stays smooth even zoomed all the way
@@ -609,6 +585,17 @@ export default function MapViewer({
   // @fitsgl/core supports (log/asinh/sqrt/linear), applied over the same per-band levels.
   const [stretchMode, setStretchMode] = useState<StretchMode>(DEFAULT_STRETCH_MODE);
   const [panelOpen, setPanelOpen] = useState(true);
+  // View mode / filter: RGB colour composite (default) OR a single band by name. Switching
+  // to a band swaps the viewer's render source to a SingleBandSource; RGB restores the
+  // producer trilogy composite. Single-band-only: colormap + a percentile black/white window
+  // (null = auto from the band's precomputed trilogy stats).
+  const [view, setView] = useState<ViewSel>(RGB_VIEW);
+  const [colormap, setColormap] = useState<ColormapName>("gray");
+  const [percentile, setPercentile] = useState<{ lo: number; hi: number } | null>(null);
+  // The default look is the campfire RGB trilogy; everything back to default ⇒ this is true.
+  const isDefaultLook =
+    view === RGB_VIEW && stretchMode === DEFAULT_STRETCH_MODE &&
+    TRILOGY_KNOBS.every(k => trilogy[k.key] === CAMPFIRE_TRILOGY[k.key]);
 
   const clickRef = useRef(onSourceClick);
   useEffect(() => { clickRef.current = onSourceClick; }, [onSourceClick]);
@@ -672,7 +659,15 @@ export default function MapViewer({
   // needs, so the scaling panel can re-derive the stretch live from the panel's params
   // without a tile rescan (exactly how FitsglCutout drives it). `single` distinguishes a
   // one-band view (stats is a lone TrilogyStats) from the multiband composite (an array).
-  const prep = useMemo<{ viewer: ViewerConfig; stats: TrilogyStats[] | null; single: boolean } | null>(() => {
+  const prep = useMemo<{
+    viewer: ViewerConfig;
+    stats: TrilogyStats[] | null;
+    single: boolean;
+    // The band list the view/filter selector offers (name + label + per-band trilogy stats).
+    bands: ControlBand[];
+    // Per-band precomputed trilogy stats by name — single-band view derives its levels from these.
+    bandStats: Record<string, TrilogyStats | undefined>;
+  } | null>(() => {
     if (!config) return null;
     const bands = explorerBandsFromConfig(config);
     const st = defaultExplorerState(bands, defaultViewFromConfig(config));
@@ -685,11 +680,23 @@ export default function MapViewer({
       v.mode === "single" ? [v.band] : v.mode === "rgb" ? [v.r, v.g, v.b] : v.bands.map(b => b.band);
     const raw = names.map(n => bands.find(b => b.name === n)?.trilogy);
     const stats = raw.every(s => s !== undefined) ? (raw as TrilogyStats[]) : null;
-    return { viewer, stats, single: v.mode === "single" };
+    const bandStats: Record<string, TrilogyStats | undefined> = {};
+    for (const b of bands) bandStats[b.name] = b.trilogy;
+    const controlBands: ControlBand[] = bands.map(b => ({ name: b.name, label: b.label ?? b.name, trilogy: b.trilogy }));
+    return { viewer, stats, single: v.mode === "single", bands: controlBands, bandStats };
   }, [config]);
   const viewerConfig = prep?.viewer ?? null;
+  const controlBands = prep?.bands ?? [];
   useEffect(() => {
     statsRef.current = { stats: prep?.stats ?? null, single: prep?.single ?? false };
+  }, [prep]);
+  // The producer RGB ViewerView (+ its per-band stats + single-ness), read imperatively so
+  // switching the render source back to RGB is a faithful restore, in a ref (no re-subscribe).
+  const rgbViewRef = useRef<ViewerConfig["view"] | null>(null);
+  const bandStatsRef = useRef<Record<string, TrilogyStats | undefined>>({});
+  useEffect(() => {
+    rgbViewRef.current = prep?.viewer.view ?? null;
+    bandStatsRef.current = prep?.bandStats ?? {};
   }, [prep]);
 
   // Native pixel scale (arcsec/px) from the first band's grid; 0.03 for the 30 mas
@@ -792,29 +799,81 @@ export default function MapViewer({
     ...(polyDraw ? [{ verts: polyDraw.verts, color: CYAN, closed: false, cursor: polyDraw.cursor }] : []),
   ];
 
-  // Re-derive + apply the trilogy stretch on the LIVE viewer from the given params. This
-  // is the exact FitsExplorer path (applyTrilogy + setStretchMode("trilogy")): it only
-  // updates the transfer curve — it does NOT touch the camera or the SVG overlay, so the
-  // Kron ellipses and the current pan/zoom are preserved. No-ops until the viewer's
-  // source mode has settled (else applyTrilogy would run against the wrong band set).
-  const applyScaling = useCallback((params: TrilogyParams, mode: StretchMode) => {
+  // Re-derive + apply the display on the LIVE viewer from the current view + params. This
+  // is the exact FitsExplorer path (applyTrilogy + setStretchMode) routed through the shared
+  // applyFitsglDisplay helper: it only updates the transfer curve / colormap — it does NOT
+  // touch the camera or the SVG overlay, so the Kron ellipses and the current pan/zoom are
+  // preserved. No-ops until the viewer's source mode has settled (else applyTrilogy would
+  // run against the wrong band set). `viewSel` lets callers pass the pending view during a
+  // source switch before React state has updated.
+  const applyScaling = useCallback((
+    params: TrilogyParams, mode: StretchMode,
+    viewSel?: ViewSel, cmap?: ColormapName, pct?: { lo: number; hi: number } | null,
+  ) => {
     const h = handleRef.current;
-    const viewer = h?.getViewer();
+    if (!h) return;
+    const v = viewSel ?? viewRef.current;
     const { stats, single } = statsRef.current;
-    if (!viewer || !stats) return;
-    const expectedMode = single ? "single" : "multiband";
-    if (viewer.sourceMode !== expectedMode) return;
-    // applyTrilogy sets each band's black/white points (x0/x2) from the params; the
-    // selected curve is then applied over that interval by the shader. For any non-
-    // trilogy curve we still call applyTrilogy to establish the levels, then override
-    // the transfer function with setStretchMode(mode).
-    viewer.applyTrilogy(single ? stats[0] : stats, params);
-    viewer.setStretchMode(mode);
+    if (v === RGB_VIEW) {
+      applyFitsglDisplay(h, { view: RGB_VIEW, trilogy: params, stretchMode: mode, stats, rgbSingle: single });
+    } else {
+      applyFitsglDisplay(h, {
+        view: v, trilogy: params, stretchMode: mode,
+        stats: bandStatsRef.current[v] ?? null,
+        colormap: cmap ?? colormapRef.current,
+        percentile: pct !== undefined ? pct : percentileRef.current,
+      });
+    }
   }, []);
 
-  // Apply live whenever the panel params OR the selected mode change (viewer already up).
-  // The onReady/onFrame paths cover the pre-mode-settled window; this covers panel edits.
-  useEffect(() => { applyScaling(trilogy, stretchMode); }, [trilogy, stretchMode, applyScaling]);
+  // Latest view/colormap/percentile in refs so the stable applyScaling + source-switch read
+  // them without re-subscribing.
+  const viewRef = useRef<ViewSel>(view);
+  viewRef.current = view;
+  const colormapRef = useRef<ColormapName>(colormap);
+  colormapRef.current = colormap;
+  const percentileRef = useRef<{ lo: number; hi: number } | null>(percentile);
+  percentileRef.current = percentile;
+
+  // Switch the viewer's render source when the view/filter changes: build a SingleBandSource
+  // for a picked band, or restore the producer RGB composite. setSource is a live in-memory
+  // swap (all bands are loaded up front), and it preserves the grid — so North-up, the WCS
+  // cursor readout and every overlay stay registered. After the swap we re-apply the display.
+  const switchSource = useCallback((v: ViewSel) => {
+    const h = handleRef.current;
+    const viewer = h?.getViewer();
+    if (!h || !viewer) return;
+    try {
+      if (v === RGB_VIEW) {
+        const rgbView = rgbViewRef.current;
+        const pyr = h.getPyramids();
+        if (!rgbView || !pyr) return;
+        // Restore the producer composite (multiband/rgb — or, for a single-band-default
+        // field, its one pyramid). Skip if the viewer already holds that composite mode.
+        const targetMode = statsRef.current.single ? "single" : "multiband";
+        if (viewer.sourceMode !== targetMode) viewer.setSource(renderSourceForView(rgbView, pyr));
+      } else {
+        const src = singleBandSource(h, v);
+        if (src) viewer.setSource(src);
+      }
+    } catch (err) {
+      console.error("[map] setSource failed:", err);
+      return;
+    }
+    // Re-apply the display over the freshly-switched source.
+    applyScaling(trilogyRef.current, stretchRef.current, v);
+  }, [applyScaling]);
+
+  // Refs mirroring the panel state so switchSource can re-apply after a source swap.
+  const trilogyRef = useRef<TrilogyParams>(trilogy);
+  trilogyRef.current = trilogy;
+  const stretchRef = useRef<StretchMode>(stretchMode);
+  stretchRef.current = stretchMode;
+
+  // Apply live whenever the panel params / mode / colormap / percentile change (viewer up).
+  useEffect(() => { applyScaling(trilogy, stretchMode); }, [trilogy, stretchMode, colormap, percentile, applyScaling]);
+  // Swap the render source when the view/filter changes.
+  useEffect(() => { switchSource(view); }, [view, switchSource]);
 
   // Latest scaling, read by the post-ready poke loop so it can (re)apply the stretch as
   // the viewer's source mode settles even if no panel edit fires the effect above.
@@ -1663,8 +1722,11 @@ export default function MapViewer({
   const onReady = useCallback((h: FitsViewerHandle) => {
     handleRef.current = h;
     if (idx) readyHandleRef.current?.(h, idx);
+    // A fresh viewer opens in the producer RGB composite; if the user had switched to a
+    // single band (e.g. before a context-loss remount), restore that source now.
+    if (viewRef.current !== RGB_VIEW) switchSource(viewRef.current);
     pokeProject();
-  }, [idx, pokeProject]);
+  }, [idx, pokeProject, switchSource]);
 
   // If the index arrives after the viewer is ready, still hand it up.
   useEffect(() => {
@@ -2008,14 +2070,26 @@ export default function MapViewer({
           than run off the bottom of the map. */}
       <div style={{ position: "absolute", top: 12, right: 12, bottom: 12, zIndex: 20, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", overflowY: "auto", pointerEvents: "none" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", pointerEvents: "auto" }}>
-        <ScalingPanel
+        <FitsglControls
+          title="DISPLAY"
+          bands={controlBands}
+          view={view}
+          onViewChange={setView}
           params={trilogy}
+          onParamsChange={patch => setTrilogy(p => ({ ...p, ...patch }))}
           mode={stretchMode}
+          onModeChange={setStretchMode}
+          colormap={colormap}
+          onColormapChange={setColormap}
+          percentile={percentile}
+          onPercentileChange={setPercentile}
+          isDefault={isDefaultLook}
+          onReset={() => {
+            setView(RGB_VIEW); setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE);
+            setColormap("gray"); setPercentile(null);
+          }}
           open={panelOpen}
           onToggle={() => setPanelOpen(o => !o)}
-          onChange={patch => setTrilogy(p => ({ ...p, ...patch }))}
-          onModeChange={setStretchMode}
-          onReset={() => { setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE); }}
         />
         <NIRSpecPanel
           msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
@@ -2054,125 +2128,6 @@ export default function MapViewer({
           onAdjust={adjustAperture}
         />
       </div>
-    </div>
-  );
-}
-
-// ---- SCALING control panel -------------------------------------------------
-// Compact, collapsible color-scaling panel pinned to the map's top-right. Each knob is a
-// range slider (log-spaced for satpercent) with its live numeric value; changes stream
-// straight to setTrilogy, which re-derives the stretch on the next paint. A "Reset to
-// default" button restores the CAMPFIRE values. This replaces the built-in control panel
-// FitsExplorer rendered on the right (which exposed the same trilogy knobs as rotary
-// Knobs plus the RGB weight matrix / colormap / band rail — none of which the map needs,
-// since the map's bands, weights and colormap are fixed).
-function ScalingPanel({
-  params, mode, open, onToggle, onChange, onModeChange, onReset,
-}: {
-  params: TrilogyParams;
-  mode: StretchMode;
-  open: boolean;
-  onToggle: () => void;
-  onChange: (patch: Partial<TrilogyParams>) => void;
-  onModeChange: (mode: StretchMode) => void;
-  onReset: () => void;
-}) {
-  const isDefault =
-    mode === DEFAULT_STRETCH_MODE &&
-    SCALING_KNOBS.every(k => params[k.key] === CAMPFIRE_TRILOGY[k.key]);
-  // noiselum only shapes the trilogy curve; hide it for the other transfer functions.
-  const knobs = SCALING_KNOBS.filter(k => !k.trilogyOnly || mode === "trilogy");
-  return (
-    <div
-      style={{
-        width: open ? 224 : undefined,
-        background: "rgba(13,10,26,0.86)", backdropFilter: "blur(6px)",
-        border: "1px solid var(--border-bright)", borderRadius: 8,
-        boxShadow: "0 6px 24px rgba(0,0,0,0.4)", overflow: "hidden",
-      }}
-    >
-      <button
-        onClick={onToggle}
-        className="mono"
-        aria-expanded={open}
-        style={{
-          display: "flex", alignItems: "center", gap: 8, width: "100%",
-          background: "none", border: "none", cursor: "pointer",
-          color: "var(--accent)", fontSize: "0.72rem", letterSpacing: "0.08em",
-          padding: "9px 11px",
-        }}
-      >
-        <span style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s", display: "inline-block", fontSize: "0.7rem" }}>▸</span>
-        SCALING
-      </button>
-
-      {open && (
-        <div style={{ padding: "2px 12px 12px" }}>
-          {/* Transfer-curve (stretch-mode) selector. */}
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: "0.68rem", color: "var(--text)", fontWeight: 600, marginBottom: 3 }}>Stretch</div>
-            <select
-              aria-label="Stretch mode"
-              value={mode}
-              onChange={e => onModeChange(e.target.value as StretchMode)}
-              className="mono"
-              style={{
-                width: "100%", background: "var(--bg)", border: "1px solid var(--border-bright)",
-                borderRadius: 5, color: "var(--accent)", fontSize: "0.7rem", padding: "5px 7px", cursor: "pointer",
-              }}
-            >
-              {STRETCH_MODE_OPTS.map(o => <option key={o.mode} value={o.mode}>{o.label}</option>)}
-            </select>
-            <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 2 }}>
-              {STRETCH_MODE_OPTS.find(o => o.mode === mode)?.hint}
-            </div>
-          </div>
-
-          {knobs.map(k => {
-            const val = params[k.key];
-            // For a log slider, map the value to a 0..1000 position over [log(min),log(max)].
-            const toPos = (v: number) =>
-              k.log ? ((Math.log10(v) - Math.log10(k.min)) / (Math.log10(k.max) - Math.log10(k.min))) * 1000 : v;
-            const fromPos = (p: number) =>
-              k.log ? Math.pow(10, Math.log10(k.min) + (p / 1000) * (Math.log10(k.max) - Math.log10(k.min))) : p;
-            return (
-              <div key={k.key} style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 3 }}>
-                  <span style={{ fontSize: "0.68rem", color: "var(--text)", fontWeight: 600 }}>{k.label}</span>
-                  <span className="mono" style={{ fontSize: "0.68rem", color: "var(--accent)" }}>
-                    {k.log ? val.toFixed(3) : val.toFixed(k.step < 0.01 ? 3 : 2)}
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  aria-label={k.label}
-                  min={k.log ? 0 : k.min}
-                  max={k.log ? 1000 : k.max}
-                  step={k.log ? 1 : k.step}
-                  value={toPos(val)}
-                  onChange={e => onChange({ [k.key]: fromPos(Number(e.target.value)) } as Partial<TrilogyParams>)}
-                  style={{ width: "100%", accentColor: "var(--accent)", cursor: "pointer", height: 4 }}
-                />
-                <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 1 }}>{k.hint}</div>
-              </div>
-            );
-          })}
-          <button
-            onClick={onReset}
-            disabled={isDefault}
-            className="mono"
-            style={{
-              width: "100%", marginTop: 2,
-              background: "none", border: "1px solid var(--border-bright)", borderRadius: 5,
-              color: isDefault ? "var(--text-dim)" : "var(--text-muted)",
-              cursor: isDefault ? "default" : "pointer", opacity: isDefault ? 0.55 : 1,
-              fontSize: "0.68rem", padding: "6px 10px",
-            }}
-          >
-            Reset to default
-          </button>
-        </div>
-      )}
     </div>
   );
 }
