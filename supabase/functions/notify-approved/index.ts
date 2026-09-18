@@ -13,7 +13,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, content-type, apikey",
+  // Include x-client-info / x-supabase-api-version — supabase-js's functions.invoke sends them and
+  // the browser CORS preflight fails without them (the admin page .catch()es it, so it'd be silent).
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-api-version",
 };
 const json = (body: unknown, status: number) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });

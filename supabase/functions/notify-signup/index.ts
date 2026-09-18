@@ -20,7 +20,10 @@
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, content-type, apikey",
+  // Must include x-client-info (+ x-supabase-api-version) — supabase-js's functions.invoke sends
+  // them, and a browser CORS preflight fails (silently, since the caller .catch()es it) if they're
+  // not allowed. That's why direct curl worked but the /login form's call didn't.
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-api-version",
 };
 
 Deno.serve(async (req: Request) => {
