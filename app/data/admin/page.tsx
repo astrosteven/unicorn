@@ -41,11 +41,16 @@ export default function AdminPage() {
 
   useEffect(() => { if (role === "admin") load(); }, [role, load]);
 
-  const setRole = async (target: string, new_role: Role) => {
+  const setRole = async (target: string, new_role: Role, email?: string | null, wasPending?: boolean) => {
     setBusy(target); setErr("");
     const { error } = await supabase.rpc("approve_user", { target, new_role });
     setBusy(null);
     if (error) { setErr(`Update failed: ${error.message}`); return; }
+    // On the pending → approved transition, send the user a "you're in" email (best-effort;
+    // notify-approved verifies the caller is an admin server-side, so it can't be abused).
+    if (wasPending && new_role !== "pending" && email) {
+      supabase.functions.invoke("notify-approved", { body: { email } }).catch(() => { /* email is best-effort */ });
+    }
     load();
   };
 
@@ -93,8 +98,8 @@ export default function AdminPage() {
                 </td>
                 <td style={{ ...td, whiteSpace: "nowrap" }}>
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                    <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "general")} style={btn("var(--green)")}>Approve → general</button>
-                    <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "key")}     style={btn("var(--accent)")}>Grant key</button>
+                    <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "general", p.email, p.role === "pending")} style={btn("var(--green)")}>Approve → general</button>
+                    <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "key", p.email, p.role === "pending")}     style={btn("var(--accent)")}>Grant key</button>
                     <button disabled={busy === p.user_id} onClick={() => setRole(p.user_id, "pending")} style={btn("var(--text-muted)")}>Set pending</button>
                   </div>
                 </td>
