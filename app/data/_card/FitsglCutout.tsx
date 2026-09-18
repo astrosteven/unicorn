@@ -40,6 +40,17 @@ import {
 // defaults). Applied over each field's own per-band stats, so it recomputes the same
 // stretch campfire uses — no tile rebuild needed. Shared by the map (MapViewer) too.
 export const CAMPFIRE_TRILOGY = { noiselum: 0.12, satpercent: 0.01, noisesig: 2.0, noisesig0: 2.0 };
+// On-card color "stretch" (hardness) = the trilogy noise-luminance floor; higher lifts faint flux.
+// Persisted so it carries across cards, and defaulted a bit harder than the map's 0.12 (the card
+// color usually wants more punch). The on-card slider overrides only this one trilogy param.
+const COLOR_NLUM_KEY = "unicorn_colorNoiselum";
+const DEFAULT_COLOR_NLUM = 0.18;
+const COLOR_NLUM_MIN = 0.05, COLOR_NLUM_MAX = 0.45;
+function loadColorNlum(): number {
+  if (typeof window === "undefined") return DEFAULT_COLOR_NLUM;
+  const v = Number(window.localStorage.getItem(COLOR_NLUM_KEY));
+  return Number.isFinite(v) && v >= COLOR_NLUM_MIN && v <= COLOR_NLUM_MAX ? v : DEFAULT_COLOR_NLUM;
+}
 
 // Per-field fitsgl base URL. Only fields present here render an on-the-fly cutout;
 // others render nothing (the card simply omits the color panel). Extend as each
@@ -166,6 +177,17 @@ export function FitsglCutout({
   const trilogyRef = useRef(trilogy);
   trilogyRef.current = trilogy;
   const placedRef = useRef(false);
+  // On-card color stretch (persisted noiselum), live-adjustable via the slider below the cutout.
+  const [nlum, setNlum] = useState(DEFAULT_COLOR_NLUM);
+  const nlumRef = useRef(nlum);
+  nlumRef.current = nlum;
+  useEffect(() => { setNlum(loadColorNlum()); }, []);   // client-only persisted read
+  // Re-apply the trilogy live when the stretch changes (viewer already mounted → no remount).
+  useEffect(() => {
+    const v = handleRef.current?.getViewer();
+    if (v && prep) applyTrilogy(v, prep, { ...trilogyRef.current, noiselum: nlum });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nlum, prep]);
 
   // Fetch + derive the field's config (cached). Nothing renders if the field has no
   // fitsgl tiles, or if the config fails to load (graceful — the card omits the panel).
@@ -226,7 +248,7 @@ export function FitsglCutout({
     (h: FitsViewerHandle) => {
       handleRef.current = h;
       const viewer = h.getViewer();
-      if (viewer && prep) applyTrilogy(viewer, prep, trilogyRef.current);
+      if (viewer && prep) applyTrilogy(viewer, prep, { ...trilogyRef.current, noiselum: nlumRef.current });
       placeCamera();
     },
     [prep, placeCamera]
@@ -247,7 +269,7 @@ export function FitsglCutout({
   const onFrame = useCallback(() => {
     if (!placedRef.current) {
       const viewer = handleRef.current?.getViewer();
-      if (viewer && prep) applyTrilogy(viewer, prep, trilogyRef.current);
+      if (viewer && prep) applyTrilogy(viewer, prep, { ...trilogyRef.current, noiselum: nlumRef.current });
       const ok = placeCamera();
       if (ok) {
         placedRef.current = true;
@@ -321,6 +343,18 @@ export function FitsglCutout({
           </div>
         )}
       </div>
+      {showLabel && (
+        <label className="mono" style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "5px", width: CUTOUT_PX, fontSize: "0.62rem", color: "var(--text-muted)" }}>
+          stretch
+          <input
+            type="range" min={COLOR_NLUM_MIN} max={COLOR_NLUM_MAX} step={0.01} value={nlum}
+            onChange={(e) => { const v = Number(e.target.value); setNlum(v); try { window.localStorage.setItem(COLOR_NLUM_KEY, String(v)); } catch { /* private mode */ } }}
+            aria-label="color stretch (trilogy noise floor)"
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "var(--text-dim)", width: "2.4em", textAlign: "right" }}>{nlum.toFixed(2)}</span>
+        </label>
+      )}
       <style>{`@keyframes unicorn-spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );

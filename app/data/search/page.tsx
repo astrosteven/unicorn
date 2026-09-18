@@ -7,6 +7,7 @@ import JSZip from "jszip";
 import { FITSGL_BASE, CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map + campfire stretch
 import ScatterPlot from "./ScatterPlot";  // interactive SVG scatter of the matched set (Plot view)
 import { fetchStamp, type StampResult } from "@/lib/photometry";  // live FITS cutouts (Worker /stamp) for the card download
+import { precacheStamp, fetchFitsglStamp, fitsglStampAvailable } from "@/lib/fitsglStamp";  // fitsgl-tile stamps + prefetch
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
 import {
   CARD_STAMP_BANDS,
@@ -813,16 +814,18 @@ export default function SearchPage() {
       if (!src) { skippedNoFetch++; }
       if (src) {
         const base = `${r.fc.field}_${r.id}`;
-        // Stamp montage: build it LIVE from the FITS mosaics via the Worker (like the inspector),
-        // and fall back to the pre-baked PNG only if the Worker can't serve this field/object.
-        // This is the path to phasing out the millions of per-object stamp PNGs.
+        // Stamp montage: build it LIVE, matching the card display — fitsgl fpack tiles first
+        // (works for every field with a fitsgl build, incl. COSMOS which the Worker can't serve),
+        // then the Worker /stamp path (native mosaics), and only then the pre-baked PNG.
         let stampImg: HTMLImageElement | null = null;
         const ra = Number(src.row["RA"]), dec = Number(src.row["DEC"]);
         if (Number.isFinite(ra) && Number.isFinite(dec)) {
-          try {
-            const s = await fetchStamp(r.fc.field, ra, dec, undefined, CARD_STAMP_BANDS);
-            if (s.bands.length) stampImg = await liveStampMontageImage(s, stampK);
-          } catch { /* Worker down / unsupported field → PNG fallback below */ }
+          let s: StampResult | null = null;
+          if (fitsglStampAvailable(r.fc.field)) {
+            try { const fs = await fetchFitsglStamp(r.fc.field, ra, dec, CARD_STAMP_BANDS, 25); if (fs.bands.length) s = fs; } catch { /* → Worker */ }
+          }
+          if (!s) { try { const ws = await fetchStamp(r.fc.field, ra, dec, undefined, CARD_STAMP_BANDS); if (ws.bands.length) s = ws; } catch { /* → PNG */ } }
+          if (s) { try { stampImg = await liveStampMontageImage(s, stampK); } catch { /* → PNG */ } }
         }
         if (!stampImg) {
           try {
@@ -1207,6 +1210,21 @@ export default function SearchPage() {
   // count / status / summary. `summary(shown)` returns the header text for the effective count.
   // `rawTotal` is the true match count when it can exceed the retained set (query mode caps the
   // retained `all` at 100k for download); the header shows it when dedup is OFF. With dedup ON we
+  // After a query commits, warm the stamp cache for the first handful of results in the background
+  // (fitsgl tiles → Worker /stamp — the same path a card/inspector will use), so opening those is
+  // instant. Best-effort: a short delay lets the table paint first, then a few warmers run in parallel.
+  function precacheResults(items: MatchEntry[]) {
+    const list = items.slice(0, 12).filter(m => typeof m.r.ra === "number" && typeof m.r.dec === "number");
+    let i = 0;
+    const warm = async () => {
+      while (i < list.length) {
+        const m = list[i++];
+        await precacheStamp(m.fc.field, m.r.ra as number, m.r.dec as number, CARD_STAMP_BANDS);
+      }
+    };
+    setTimeout(() => { for (let k = 0; k < 3; k++) warm(); }, 300);
+  }
+
   // can only collapse what we retained, so the shown count is the deduped retained length.
   function commitMatches(
     all: MatchEntry[],
@@ -1230,6 +1248,7 @@ export default function SearchPage() {
     setQueryTotal(shown);
     setStatus(shown === 0 ? "notfound" : "table");
     setMatchSummary(summary(shown));
+    precacheResults(eff);
   }
 
   // Re-derive the published set when the de-dup toggle flips — no re-query; reuse the raw set
