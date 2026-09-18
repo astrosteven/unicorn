@@ -564,60 +564,18 @@ export default function FitsglControls({
 function WeightDial({
   value, color, label, onChange,
 }: { value: number; color: string; label: string; onChange: (v: number) => void }) {
-  const dragRef = useRef<{ startY: number; startV: number } | null>(null);
-  const R = 9, C = 11, STROKE = 2.5;
-  // Arc from -135° to +135° (270° sweep), value 0..1 fills it clockwise from the bottom-left.
-  const A0 = -135, SWEEP = 270;
-  const pct = Math.max(0, Math.min(1, value));
-  const polar = (deg: number) => {
-    const r = (deg - 90) * Math.PI / 180;
-    return { x: C + R * Math.cos(r), y: C + R * Math.sin(r) };
-  };
-  const arcPath = (fromDeg: number, toDeg: number) => {
-    const a = polar(fromDeg), b = polar(toDeg);
-    const large = toDeg - fromDeg > 180 ? 1 : 0;
-    return `M ${a.x.toFixed(2)} ${a.y.toFixed(2)} A ${R} ${R} 0 ${large} 1 ${b.x.toFixed(2)} ${b.y.toFixed(2)}`;
-  };
-  const track = arcPath(A0, A0 + SWEEP);
-  const fill = pct > 0.001 ? arcPath(A0, A0 + SWEEP * pct) : "";
-
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-    dragRef.current = { startY: e.clientY, startV: value };
-  }, [value]);
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d) return;
-    // 140px of vertical travel spans the full 0..1 range; up increases.
-    onChange(Math.max(0, Math.min(1, d.startV + (d.startY - e.clientY) / 140)));
-  }, [onChange]);
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
-    dragRef.current = null;
-    (e.target as Element).releasePointerCapture?.(e.pointerId);
-  }, []);
-  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    const step = e.shiftKey ? 0.1 : 0.05;
-    if (e.key === "ArrowUp" || e.key === "ArrowRight") { onChange(Math.min(1, value + step)); e.preventDefault(); }
-    else if (e.key === "ArrowDown" || e.key === "ArrowLeft") { onChange(Math.max(0, value - step)); e.preventDefault(); }
-    else if (e.key === "Home") { onChange(0); e.preventDefault(); }
-    else if (e.key === "End") { onChange(1); e.preventDefault(); }
-  }, [value, onChange]);
-
+  // A compact horizontal slider (shown 0..100, stored 0..1). Replaced the fiddly rotary knob —
+  // a native range input is a much bigger, easier hit target.
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
   return (
-    <div
-      role="slider" tabIndex={0}
-      aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct * 100)}
-      title={`${label}: ${Math.round(pct * 100)}`}
-      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-      onKeyDown={onKeyDown}
-      className="fitsgl-dial"
-      style={{ display: "flex", flexDirection: "column", alignItems: "center", cursor: "ns-resize", touchAction: "none", outlineOffset: 2 }}
-    >
-      <svg width={C * 2} height={C * 2} aria-hidden="true">
-        <path d={track} fill="none" stroke="rgba(255,255,255,0.14)" strokeWidth={STROKE} strokeLinecap="round" />
-        {fill && <path className="fitsgl-dial-fill" d={fill} fill="none" stroke={color} strokeWidth={STROKE} strokeLinecap="round" />}
-      </svg>
-      <span className="mono" style={{ fontSize: "0.52rem", color: "var(--text-dim)", marginTop: -2 }}>{Math.round(pct * 100)}</span>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+      <input
+        type="range" min={0} max={100} step={1} value={pct}
+        aria-label={label} title={`${label}: ${pct}`}
+        onChange={(e) => onChange(Math.max(0, Math.min(1, Number(e.target.value) / 100)))}
+        style={{ width: 48, accentColor: color, cursor: "pointer" }}
+      />
+      <span className="mono" style={{ fontSize: "0.52rem", color: "var(--text-dim)" }}>{pct}</span>
     </div>
   );
 }

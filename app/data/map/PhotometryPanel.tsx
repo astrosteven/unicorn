@@ -286,10 +286,16 @@ export default function PhotometryPanel({
                     {/* radius stepper — re-measures this aperture at ±0.05″. Circles only:
                         adjust-by-radius is meaningless for a polygon, so it's hidden for them. */}
                     {!isPoly && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, marginLeft: "auto" }}>
-                        <button title="shrink 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec - 0.05)} style={STEP_BTN}>−</button>
-                        <span style={{ minWidth: 42, textAlign: "center" }}>{a.radiusArcsec.toFixed(2)}″</span>
-                        <button title="grow 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec + 0.05)} style={STEP_BTN}>+</button>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, marginLeft: "auto" }} title="aperture diameter (arcsec)">
+                        <button title="−0.1″ diameter" onClick={() => onAdjust(a.n, a.radiusArcsec - 0.05)} style={STEP_BTN}>−</button>
+                        <input
+                          type="number" min={0.06} step={0.05} value={(a.radiusArcsec * 2).toFixed(2)}
+                          aria-label="aperture diameter arcsec"
+                          onChange={e => { const d = Number(e.target.value); if (Number.isFinite(d) && d >= 0.06) onAdjust(a.n, d / 2); }}
+                          style={{ width: 46, background: "var(--bg)", border: "1px solid var(--border-bright)", borderRadius: 4, color: "var(--text)", fontFamily: "'Space Mono', monospace", fontSize: "0.62rem", padding: "1px 4px", textAlign: "right" }}
+                        />
+                        <span style={{ color: "var(--text-dim)" }}>″⌀</span>
+                        <button title="+0.1″ diameter" onClick={() => onAdjust(a.n, a.radiusArcsec + 0.05)} style={STEP_BTN}>+</button>
                       </span>
                     )}
                     <button title="delete this aperture" onClick={() => onRemoveAperture(a.n)}
@@ -327,7 +333,7 @@ export default function PhotometryPanel({
                     <div className="mono" style={{ fontSize: "0.64rem", color: a.color, marginBottom: 5 }}>
                       #{a.n} · {a.shape.kind === "polygon"
                         ? `polygon (${(a.shape as { vertices: [number, number][] }).vertices.length} verts)`
-                        : `r = ${a.radiusArcsec.toFixed(3)}″`} · {a.ra.toFixed(6)}, {a.dec.toFixed(6)}
+                        : `⌀ ${(a.radiusArcsec * 2).toFixed(3)}″`} · {a.ra.toFixed(6)}, {a.dec.toFixed(6)}
                     </div>
                     {a.state.kind === "error" ? (
                       <div className="mono" style={{ fontSize: "0.7rem", color: "var(--red)", lineHeight: 1.6 }}>{a.state.message}</div>
