@@ -29,7 +29,6 @@ import {
   skyToPix,
   pixToSky,
   angularSeparationDeg,
-  renderSourceForView,
   DEFAULT_TRILOGY_PARAMS,
   type FitsglConfig,
   type ViewerConfig,
@@ -39,13 +38,18 @@ import {
   type ColormapName,
 } from "@fitsgl/core";
 import FitsglControls, {
-  RGB_VIEW,
+  RGB_WEIGHTED,
+  RGB_SIMPLE,
   DEFAULT_STRETCH_MODE,
   applyFitsglDisplay,
   singleBandSource,
+  simpleRgbSource,
+  weightedSource,
+  weightsEqual,
   TRILOGY_KNOBS,
   type ViewSel,
   type ControlBand,
+  type Weights,
 } from "@/app/data/_card/FitsglControls";
 import {
   loadField,
@@ -585,17 +589,19 @@ export default function MapViewer({
   // @fitsgl/core supports (log/asinh/sqrt/linear), applied over the same per-band levels.
   const [stretchMode, setStretchMode] = useState<StretchMode>(DEFAULT_STRETCH_MODE);
   const [panelOpen, setPanelOpen] = useState(true);
-  // View mode / filter: RGB colour composite (default) OR a single band by name. Switching
-  // to a band swaps the viewer's render source to a SingleBandSource; RGB restores the
-  // producer trilogy composite. Single-band-only: colormap + a percentile black/white window
-  // (null = auto from the band's precomputed trilogy stats).
-  const [view, setView] = useState<ViewSel>(RGB_VIEW);
+  // View mode: RGB-weighted composite (default) / simple 3-band RGB / a single band by name.
+  // Switching swaps the viewer's render source; single-band adds colormap + a percentile
+  // black/white window (null = auto from the band's precomputed trilogy stats).
+  const [view, setView] = useState<ViewSel>(RGB_WEIGHTED);
   const [colormap, setColormap] = useState<ColormapName>("gray");
   const [percentile, setPercentile] = useState<{ lo: number; hi: number } | null>(null);
-  // The default look is the campfire RGB trilogy; everything back to default ⇒ this is true.
-  const isDefaultLook =
-    view === RGB_VIEW && stretchMode === DEFAULT_STRETCH_MODE &&
-    TRILOGY_KNOBS.every(k => trilogy[k.key] === CAMPFIRE_TRILOGY[k.key]);
+  // Per-band (R,G,B) weights for the weighted composite. Seeded from the producer default
+  // once `prep` loads (see the effect below), so the map opens on the exact ship colour.
+  const [weights, setWeights] = useState<Weights>({ bands: [], map: {} });
+  // Band order currently loaded into the viewer's multiband source (from the last setSource)
+  // — lets a weight-only change use the fast setBandWeights path and keeps applyTrilogy's
+  // stats in matching order. Declared here (before the prep-seed effect that primes it).
+  const appliedBandsRef = useRef<string[]>([]);
 
   const clickRef = useRef(onSourceClick);
   useEffect(() => { clickRef.current = onSourceClick; }, [onSourceClick]);
@@ -634,9 +640,6 @@ export default function MapViewer({
   // virtual grid — resolve each source's world px from ra/dec via the viewer WCS instead.
   const tiledRef = useRef(false);
   const resolvedRef = useRef(false);   // world px resolved for the current source list?
-  // Latest per-band trilogy stats + view kind, in a ref so applyScaling reads them
-  // without re-subscribing. Set from the config memo.
-  const statsRef = useRef<{ stats: TrilogyStats[] | null; single: boolean }>({ stats: null, single: false });
 
   // Load the tile config.
   useEffect(() => {
@@ -661,12 +664,14 @@ export default function MapViewer({
   // one-band view (stats is a lone TrilogyStats) from the multiband composite (an array).
   const prep = useMemo<{
     viewer: ViewerConfig;
-    stats: TrilogyStats[] | null;
-    single: boolean;
-    // The band list the view/filter selector offers (name + label + per-band trilogy stats).
+    // The band list the view selector offers (name + label + stats + wavelength for rainbow).
     bands: ControlBand[];
-    // Per-band precomputed trilogy stats by name — single-band view derives its levels from these.
+    // Per-band precomputed trilogy stats by name — every mode derives its levels from these.
     bandStats: Record<string, TrilogyStats | undefined>;
+    // The producer default weighted composite (map + ordered bands) — the ship colour.
+    defaultWeights: Weights;
+    // The simple 3-band RGB triple (producer default_rgb).
+    rgbTriple: { r: string; g: string; b: string };
   } | null>(() => {
     if (!config) return null;
     const bands = explorerBandsFromConfig(config);
@@ -675,28 +680,42 @@ export default function MapViewer({
     // the map opens matching campfire / the card cutouts; the panel tunes from here.
     st.trilogyParams = { ...st.trilogyParams, ...CAMPFIRE_TRILOGY };
     const viewer = deriveViewerConfig(bands, st);
-    const v = viewer.view;
-    const names =
-      v.mode === "single" ? [v.band] : v.mode === "rgb" ? [v.r, v.g, v.b] : v.bands.map(b => b.band);
-    const raw = names.map(n => bands.find(b => b.name === n)?.trilogy);
-    const stats = raw.every(s => s !== undefined) ? (raw as TrilogyStats[]) : null;
     const bandStats: Record<string, TrilogyStats | undefined> = {};
     for (const b of bands) bandStats[b.name] = b.trilogy;
-    const controlBands: ControlBand[] = bands.map(b => ({ name: b.name, label: b.label ?? b.name, trilogy: b.trilogy }));
-    return { viewer, stats, single: v.mode === "single", bands: controlBands, bandStats };
+    const controlBands: ControlBand[] = bands.map(b => ({
+      name: b.name, label: b.label ?? b.name, trilogy: b.trilogy, wavelengthMicron: b.wavelengthMicron,
+    }));
+    // Producer weighted composite: state.weightBands/weights when the config shipped a
+    // weighted default; else fall back to the rgb triple as three pure-channel weights.
+    const rgbTriple = { r: st.rgb.r, g: st.rgb.g, b: st.rgb.b };
+    const defaultWeights: Weights = st.weightBands.length
+      ? { bands: [...st.weightBands], map: { ...st.weights } }
+      : { bands: [rgbTriple.r, rgbTriple.g, rgbTriple.b], map: { [rgbTriple.r]: [1, 0, 0], [rgbTriple.g]: [0, 1, 0], [rgbTriple.b]: [0, 0, 1] } };
+    return { viewer, bands: controlBands, bandStats, defaultWeights, rgbTriple };
   }, [config]);
   const viewerConfig = prep?.viewer ?? null;
   const controlBands = prep?.bands ?? [];
-  useEffect(() => {
-    statsRef.current = { stats: prep?.stats ?? null, single: prep?.single ?? false };
-  }, [prep]);
-  // The producer RGB ViewerView (+ its per-band stats + single-ness), read imperatively so
-  // switching the render source back to RGB is a faithful restore, in a ref (no re-subscribe).
-  const rgbViewRef = useRef<ViewerConfig["view"] | null>(null);
+  // The default look = RGB-weighted + campfire trilogy + producer default weights. Drives the
+  // "Reset to default" enabled state.
+  const isDefaultLook =
+    view === RGB_WEIGHTED && stretchMode === DEFAULT_STRETCH_MODE &&
+    TRILOGY_KNOBS.every(k => trilogy[k.key] === CAMPFIRE_TRILOGY[k.key]) &&
+    (prep ? weightsEqual(weights, prep.defaultWeights) : true);
+  // Per-band stats + the simple-RGB triple, read imperatively (no re-subscribe).
   const bandStatsRef = useRef<Record<string, TrilogyStats | undefined>>({});
+  const rgbTripleRef = useRef<{ r: string; g: string; b: string } | null>(null);
   useEffect(() => {
-    rgbViewRef.current = prep?.viewer.view ?? null;
     bandStatsRef.current = prep?.bandStats ?? {};
+    rgbTripleRef.current = prep?.rgbTriple ?? null;
+  }, [prep]);
+  // Seed the weighted-composite weights from the producer default once prep loads (or when
+  // the field changes). This is what makes the map open on the exact ship colour. Also seed
+  // appliedBandsRef so the poke-loop applyScaling has the right stats order before the first
+  // switchSource runs (the mounted config default already holds this band order).
+  useEffect(() => {
+    if (!prep) return;
+    setWeights(prep.defaultWeights);
+    appliedBandsRef.current = [...prep.defaultWeights.bands];
   }, [prep]);
 
   // Native pixel scale (arcsec/px) from the first band's grid; 0.03 for the 30 mas
@@ -806,74 +825,107 @@ export default function MapViewer({
   // preserved. No-ops until the viewer's source mode has settled (else applyTrilogy would
   // run against the wrong band set). `viewSel` lets callers pass the pending view during a
   // source switch before React state has updated.
-  const applyScaling = useCallback((
-    params: TrilogyParams, mode: StretchMode,
-    viewSel?: ViewSel, cmap?: ColormapName, pct?: { lo: number; hi: number } | null,
-  ) => {
+  // Latest panel state in refs so the stable callbacks read them without re-subscribing.
+  const viewRef = useRef<ViewSel>(view); viewRef.current = view;
+  const colormapRef = useRef<ColormapName>(colormap); colormapRef.current = colormap;
+  const percentileRef = useRef<{ lo: number; hi: number } | null>(percentile); percentileRef.current = percentile;
+  const weightsRef = useRef<Weights>(weights); weightsRef.current = weights;
+  const trilogyRef = useRef<TrilogyParams>(trilogy); trilogyRef.current = trilogy;
+  const stretchRef = useRef<StretchMode>(stretchMode); stretchRef.current = stretchMode;
+
+  // Per-band trilogy stats in a given band order (for applyTrilogy). Missing stats ⇒ null.
+  const orderedStats = useCallback((names: string[]): TrilogyStats[] | null => {
+    const out: TrilogyStats[] = [];
+    for (const n of names) {
+      const s = bandStatsRef.current[n];
+      if (!s) return null;
+      out.push(s);
+    }
+    return out.length ? out : null;
+  }, []);
+
+  // Re-derive + apply the display on the LIVE viewer for the current view + params. Routed
+  // through the shared applyFitsglDisplay helper: it only updates the transfer curve /
+  // colormap / levels — never the camera or the SVG overlay, so overlays + pan/zoom persist.
+  // No-ops until the viewer's source mode has settled. `viewSel` lets callers pass the
+  // pending view during a source switch before React state has updated.
+  const applyScaling = useCallback((params: TrilogyParams, mode: StretchMode, viewSel?: ViewSel) => {
     const h = handleRef.current;
     if (!h) return;
     const v = viewSel ?? viewRef.current;
-    const { stats, single } = statsRef.current;
-    if (v === RGB_VIEW) {
-      applyFitsglDisplay(h, { view: RGB_VIEW, trilogy: params, stretchMode: mode, stats, rgbSingle: single });
+    if (v === RGB_WEIGHTED) {
+      applyFitsglDisplay(h, { view: RGB_WEIGHTED, trilogy: params, stretchMode: mode, stats: orderedStats(appliedBandsRef.current) });
+    } else if (v === RGB_SIMPLE) {
+      const t = rgbTripleRef.current;
+      applyFitsglDisplay(h, { view: RGB_SIMPLE, trilogy: params, stretchMode: mode, stats: t ? orderedStats([t.r, t.g, t.b]) : null });
     } else {
       applyFitsglDisplay(h, {
         view: v, trilogy: params, stretchMode: mode,
         stats: bandStatsRef.current[v] ?? null,
-        colormap: cmap ?? colormapRef.current,
-        percentile: pct !== undefined ? pct : percentileRef.current,
+        colormap: colormapRef.current, percentile: percentileRef.current,
       });
     }
-  }, []);
+  }, [orderedStats]);
 
-  // Latest view/colormap/percentile in refs so the stable applyScaling + source-switch read
-  // them without re-subscribing.
-  const viewRef = useRef<ViewSel>(view);
-  viewRef.current = view;
-  const colormapRef = useRef<ColormapName>(colormap);
-  colormapRef.current = colormap;
-  const percentileRef = useRef<{ lo: number; hi: number } | null>(percentile);
-  percentileRef.current = percentile;
-
-  // Switch the viewer's render source when the view/filter changes: build a SingleBandSource
-  // for a picked band, or restore the producer RGB composite. setSource is a live in-memory
-  // swap (all bands are loaded up front), and it preserves the grid — so North-up, the WCS
-  // cursor readout and every overlay stay registered. After the swap we re-apply the display.
+  // Switch the viewer's render source when the view changes: weighted MultiBandSource /
+  // simple RgbSource / SingleBandSource. setSource is a live in-memory swap (all bands are
+  // loaded up front) and preserves the grid — so North-up, the WCS cursor readout and every
+  // overlay stay registered. After the swap we re-apply the display.
   const switchSource = useCallback((v: ViewSel) => {
     const h = handleRef.current;
     const viewer = h?.getViewer();
     if (!h || !viewer) return;
     try {
-      if (v === RGB_VIEW) {
-        const rgbView = rgbViewRef.current;
-        const pyr = h.getPyramids();
-        if (!rgbView || !pyr) return;
-        // Restore the producer composite (multiband/rgb — or, for a single-band-default
-        // field, its one pyramid). Skip if the viewer already holds that composite mode.
-        const targetMode = statsRef.current.single ? "single" : "multiband";
-        if (viewer.sourceMode !== targetMode) viewer.setSource(renderSourceForView(rgbView, pyr));
+      if (v === RGB_WEIGHTED) {
+        const applied: string[] = [];
+        const src = weightedSource(h, weightsRef.current, applied);
+        if (!src) return;
+        viewer.setSource(src);
+        appliedBandsRef.current = applied;
+      } else if (v === RGB_SIMPLE) {
+        const t = rgbTripleRef.current;
+        const src = t && simpleRgbSource(h, t.r, t.g, t.b);
+        if (!src) return;
+        viewer.setSource(src);
+        appliedBandsRef.current = t ? [t.r, t.g, t.b] : [];
       } else {
         const src = singleBandSource(h, v);
-        if (src) viewer.setSource(src);
+        if (!src) return;
+        viewer.setSource(src);
+        appliedBandsRef.current = [v];
       }
     } catch (err) {
       console.error("[map] setSource failed:", err);
       return;
     }
-    // Re-apply the display over the freshly-switched source.
     applyScaling(trilogyRef.current, stretchRef.current, v);
   }, [applyScaling]);
 
-  // Refs mirroring the panel state so switchSource can re-apply after a source swap.
-  const trilogyRef = useRef<TrilogyParams>(trilogy);
-  trilogyRef.current = trilogy;
-  const stretchRef = useRef<StretchMode>(stretchMode);
-  stretchRef.current = stretchMode;
+  // Apply a weights change to the LIVE weighted composite. If the band SET is unchanged we
+  // take the fast setBandWeights path (no rebuild); otherwise we rebuild the source. Then
+  // re-apply the trilogy so the new levels/curve stick. Only runs in RGB-weighted mode.
+  const applyWeights = useCallback((w: Weights) => {
+    const h = handleRef.current;
+    const viewer = h?.getViewer();
+    if (!h || !viewer || viewRef.current !== RGB_WEIGHTED) return;
+    const applied = appliedBandsRef.current;
+    const sameSet = applied.length === w.bands.length && applied.every((b, i) => b === w.bands[i]);
+    if (sameSet && viewer.sourceMode === "multiband") {
+      try { viewer.setBandWeights(applied.map(b => w.map[b] ?? [0, 0, 0])); }
+      catch (err) { console.error("[map] setBandWeights failed:", err); }
+    } else {
+      // Band set changed (add/remove/rainbow-different-set): rebuild via switchSource, which
+      // reads weightsRef — updated by the caller before this runs.
+      switchSource(RGB_WEIGHTED);
+    }
+  }, [switchSource]);
 
   // Apply live whenever the panel params / mode / colormap / percentile change (viewer up).
   useEffect(() => { applyScaling(trilogy, stretchMode); }, [trilogy, stretchMode, colormap, percentile, applyScaling]);
-  // Swap the render source when the view/filter changes.
+  // Swap the render source when the view changes.
   useEffect(() => { switchSource(view); }, [view, switchSource]);
+  // Push weight edits to the live composite (weightsRef is set above before this runs).
+  useEffect(() => { applyWeights(weights); }, [weights, applyWeights]);
 
   // Latest scaling, read by the post-ready poke loop so it can (re)apply the stretch as
   // the viewer's source mode settles even if no panel edit fires the effect above.
@@ -1722,9 +1774,10 @@ export default function MapViewer({
   const onReady = useCallback((h: FitsViewerHandle) => {
     handleRef.current = h;
     if (idx) readyHandleRef.current?.(h, idx);
-    // A fresh viewer opens in the producer RGB composite; if the user had switched to a
-    // single band (e.g. before a context-loss remount), restore that source now.
-    if (viewRef.current !== RGB_VIEW) switchSource(viewRef.current);
+    // A fresh viewer opens in the producer default composite. Re-assert the CURRENT view +
+    // weights (they may differ from the default after user edits, or after a context-loss
+    // remount that reset to the config default). switchSource is idempotent + cheap.
+    switchSource(viewRef.current);
     pokeProject();
   }, [idx, pokeProject, switchSource]);
 
@@ -2077,6 +2130,8 @@ export default function MapViewer({
           onViewChange={setView}
           params={trilogy}
           onParamsChange={patch => setTrilogy(p => ({ ...p, ...patch }))}
+          weights={weights}
+          onWeightsChange={setWeights}
           mode={stretchMode}
           onModeChange={setStretchMode}
           colormap={colormap}
@@ -2085,8 +2140,9 @@ export default function MapViewer({
           onPercentileChange={setPercentile}
           isDefault={isDefaultLook}
           onReset={() => {
-            setView(RGB_VIEW); setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE);
+            setView(RGB_WEIGHTED); setTrilogy(CAMPFIRE_TRILOGY); setStretchMode(DEFAULT_STRETCH_MODE);
             setColormap("gray"); setPercentile(null);
+            if (prep) setWeights(prep.defaultWeights);
           }}
           open={panelOpen}
           onToggle={() => setPanelOpen(o => !o)}
