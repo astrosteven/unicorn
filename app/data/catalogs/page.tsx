@@ -120,7 +120,6 @@ function fieldFiles(field: Field): FileRow[] {
   // aren't on the public tree for COSMOS, so they're omitted.
   if (field.id === "cosmos") {
     return [
-      { label: "README", desc: "Column descriptions, data model, selection criteria", file: `${f}_unicorn.readme`, href: `${base}/${f}_unicorn.readme`, size: "—" },
       { label: "Photometry", desc: "Source positions, morphology, fluxes in all filters (Kron + circular apertures; ext 2 = aperture diameters)", file: `${f}_photom_v${v}.fits`, href: `${base}/${f}_photom_v${v}.fits`, size: "—", ext: 2 },
       { label: "Photo-z — Fiducial (no-VIS)", desc: "Fiducial photo-z, Euclid VIS excluded (the COSMOS default)", file: `Photoz_novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
       { label: "Photo-z — EELG (no-VIS)", desc: "EELG template set, no-VIS", file: `Photoz_eelg_novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_eelg_novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
@@ -132,13 +131,6 @@ function fieldFiles(field: Field): FileRow[] {
   }
 
   const files: FileRow[] = [
-    {
-      label: "README",
-      desc: "Column descriptions, data model, selection criteria, and version history",
-      file: `${f}_unicorn.readme`,
-      href: `${base}/${f}_unicorn.readme`,
-      size: size("readme"),
-    },
     {
       label: "Photometry",
       desc: "Source positions, morphology, fluxes in all filters (Kron + 12 circular apertures; ext 2 lists aperture diameters)",
@@ -310,7 +302,8 @@ export default function CatalogsPage() {
         <p style={{ color: "var(--text-muted)", fontSize: "0.95rem", maxWidth: "640px" }}>
           All UNICORN data products are FITS binary tables with embedded column descriptions
           and units (per-field versions <span className="mono" style={{ color: "var(--accent)" }}>v0.95–v0.98</span>).
-          See the README for full documentation.
+          See the <a href="/unicorn/data/readme" style={{ color: "var(--accent2)", textDecoration: "none" }}>Catalog Guide</a> for
+          full column &amp; format documentation (always current).
         </p>
         <button onClick={allScript} className="mono" style={{ marginTop: "14px", background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.35)", borderRadius: "5px", padding: "9px 16px", fontSize: "0.8rem", cursor: "pointer" }}>
           ↓ Download script — all fields
