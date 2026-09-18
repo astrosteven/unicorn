@@ -67,7 +67,7 @@ import {
   type NumCol,
 } from "@/app/data/_card/objectCard";
 import { supabase } from "@/lib/supabase";
-import { measureAperture, abMagFromNJy } from "@/lib/photometry";
+import { measureAperture, abMagFromNJy, type PhotometryResult } from "@/lib/photometry";
 import PhotometryPanel, { type MeasuredAperture, type PickedCatalog } from "./PhotometryPanel";
 import { catalogBandsFromFilters } from "./PhotometrySED";
 import { FILTER_WAVES } from "@/app/data/_card/objectCard";
@@ -1575,7 +1575,14 @@ export default function MapViewer({
   // circle aperture's centre (grab near a centre → drag to reposition → re-measure on release).
   const photoApsRef = useRef(photoAps);
   photoApsRef.current = photoAps;
-  const moveRef = useRef<{ n: number } | null>(null);
+  // In-progress edit of an existing aperture: move a circle centre, drag one polygon vertex, or
+  // move a whole polygon (tracking the last cursor sky for the per-move delta). Re-measure on release.
+  const moveRef = useRef<
+    | { kind: "circle"; n: number }
+    | { kind: "vertex"; n: number; vi: number }
+    | { kind: "polymove"; n: number; last: { ra: number; dec: number } }
+    | null
+  >(null);
 
   const skyAt = useCallback((clientX: number, clientY: number): { ra: number; dec: number } | null => {
     const h = handleRef.current;
@@ -1591,20 +1598,42 @@ export default function MapViewer({
   const onPhotoDown = useCallback((e: React.PointerEvent) => {
     if (!photoTool) return;                 // tool off → let the map pan as usual
     if (e.button !== 0) return;
-    // Grab near an EXISTING circle aperture's centre (~12 px) → MOVE it (drag to reposition,
-    // re-measure on release) instead of starting a new draw. Works in either shape mode.
+    // Grab an EXISTING aperture to EDIT it (instead of starting a new draw): a circle centre
+    // (~12 px) → move; a polygon vertex (~10 px) → drag that vertex; a polygon interior → move
+    // the whole polygon. Works in either shape mode. Re-measures on release.
     const hm = handleRef.current, wcsm = hm?.getViewer()?.getWcs();
     if (hm && wcsm) {
+      const scr = (ra: number, dec: number) => { const px = skyToPix(wcsm, ra, dec); return hm.imageToScreen(px.x, px.y); };
+      const grabbed = () => { e.stopPropagation(); e.preventDefault(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); };
+      // ray-cast point-in-polygon on screen vertices
+      const pip = (x: number, y: number, pts: { x: number; y: number }[]) => {
+        let inside = false;
+        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+          const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+          if (((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)) inside = !inside;
+        }
+        return inside;
+      };
+      // 1) circle centres
       for (const ap of photoApsRef.current) {
         if (ap.shape.kind !== "circle") continue;
-        const px = skyToPix(wcsm, ap.ra, ap.dec);
-        const sc = hm.imageToScreen(px.x, px.y);
-        if (sc && Math.hypot(e.clientX - sc.x, e.clientY - sc.y) <= 12) {
-          moveRef.current = { n: ap.n };
-          e.stopPropagation(); e.preventDefault();
-          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-          return;
+        const sc = scr(ap.ra, ap.dec);
+        if (sc && Math.hypot(e.clientX - sc.x, e.clientY - sc.y) <= 12) { moveRef.current = { kind: "circle", n: ap.n }; grabbed(); return; }
+      }
+      // 2) polygon vertices
+      for (const ap of photoApsRef.current) {
+        if (ap.shape.kind !== "polygon") continue;
+        for (let vi = 0; vi < ap.shape.vertices.length; vi++) {
+          const sc = scr(ap.shape.vertices[vi][0], ap.shape.vertices[vi][1]);
+          if (sc && Math.hypot(e.clientX - sc.x, e.clientY - sc.y) <= 10) { moveRef.current = { kind: "vertex", n: ap.n, vi }; grabbed(); return; }
         }
+      }
+      // 3) polygon interiors → move the whole polygon
+      for (const ap of photoApsRef.current) {
+        if (ap.shape.kind !== "polygon") continue;
+        const pts = ap.shape.vertices.map(([r, d]) => scr(r, d)).filter(Boolean) as { x: number; y: number }[];
+        const cur = skyAt(e.clientX, e.clientY);
+        if (pts.length >= 3 && cur && pip(e.clientX, e.clientY, pts)) { moveRef.current = { kind: "polymove", n: ap.n, last: cur }; grabbed(); return; }
       }
     }
     if (photoShapeRef.current !== "circle") return;  // polygon mode draws on click, not drag
@@ -1622,12 +1651,24 @@ export default function MapViewer({
   const onPhotoMove = useCallback((e: React.PointerEvent) => {
     // Moving an existing circle centre: re-pin it to the cursor sky position live (project()
     // re-derives its screen circle, so it follows the drag). Re-measure happens on release.
-    if (moveRef.current) {
+    const mv = moveRef.current;
+    if (mv) {
       e.stopPropagation();
       const cur = skyAt(e.clientX, e.clientY);
       if (!cur) return;
-      const n = moveRef.current.n;
-      setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, ra: cur.ra, dec: cur.dec } : a));
+      if (mv.kind === "circle") {
+        setPhotoAps(prev => prev.map(a => a.n === mv.n ? { ...a, ra: cur.ra, dec: cur.dec } : a));
+      } else if (mv.kind === "vertex") {
+        setPhotoAps(prev => prev.map(a => (a.n === mv.n && a.shape.kind === "polygon")
+          ? { ...a, shape: { kind: "polygon", vertices: a.shape.vertices.map((v, i) => i === mv.vi ? [cur.ra, cur.dec] as [number, number] : v) } }
+          : a));
+      } else { // polymove: shift every vertex (+ the centroid marker) by the per-move sky delta
+        const dRa = cur.ra - mv.last.ra, dDec = cur.dec - mv.last.dec;
+        mv.last = cur;
+        setPhotoAps(prev => prev.map(a => (a.n === mv.n && a.shape.kind === "polygon")
+          ? { ...a, ra: a.ra + dRa, dec: a.dec + dDec, shape: { kind: "polygon", vertices: a.shape.vertices.map(([r, d]) => [r + dRa, d + dDec] as [number, number]) } }
+          : a));
+      }
       return;
     }
     // Polygon mode: track the cursor sky position for the rubber-band edge to the first
@@ -1655,12 +1696,19 @@ export default function MapViewer({
       e.stopPropagation();
       try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
       const ap = photoApsRef.current.find(a => a.n === n);
-      if (ap && ap.shape.kind === "circle") {
+      if (ap) {
+        const done = (result: PhotometryResult) => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done" as const, result } } : a));
+        const fail = (err: unknown) => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "error" as const, message: err instanceof Error ? err.message : String(err) } } : a));
         setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "measuring" } } : a));
-        void measureAperture(field.field, ap.ra, ap.dec, { type: "circle", radius_arcsec: ap.radiusArcsec })
-          .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
-          .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
-            ? { ...a, state: { kind: "error", message: err instanceof Error ? err.message : String(err) } } : a)));
+        if (ap.shape.kind === "circle") {
+          void measureAperture(field.field, ap.ra, ap.dec, { type: "circle", radius_arcsec: ap.radiusArcsec }).then(done).catch(fail);
+        } else {
+          const vertices = ap.shape.vertices;
+          const cRa = vertices.reduce((s, v) => s + v[0], 0) / vertices.length;
+          const cDec = vertices.reduce((s, v) => s + v[1], 0) / vertices.length;
+          setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, ra: cRa, dec: cDec } : a));
+          void measureAperture(field.field, cRa, cDec, { type: "polygon", vertices }).then(done).catch(fail);
+        }
       }
       return;
     }
@@ -2222,7 +2270,15 @@ export default function MapViewer({
           {photoPolys.map((p, k) => (
             <g key={k}>
               {p.closed ? (
-                <polygon points={p.points} fill={`${p.color}22`} stroke={p.color} strokeWidth={1.6} />
+                <>
+                  <polygon points={p.points} fill={`${p.color}22`} stroke={p.color} strokeWidth={1.6} />
+                  {/* Vertex grab handles while the Measure tool is on (drag a vertex to reshape;
+                      drag the interior to move the whole polygon). */}
+                  {photoTool && p.points.split(" ").filter(Boolean).map((xy, j) => {
+                    const [x, y] = xy.split(",").map(Number);
+                    return <circle key={j} cx={x} cy={y} r={4} fill={p.color} stroke="rgba(255,255,255,0.75)" strokeWidth={1} />;
+                  })}
+                </>
               ) : (
                 <>
                   {/* In-progress: the drawn edges so far (open polyline), the rubber-band edge to
