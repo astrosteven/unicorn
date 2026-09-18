@@ -171,9 +171,11 @@ export default function FieldsPage() {
                 transition: "all 0.15s",
               }}
             >
-              <div className="mono" style={{
-                fontSize: "0.88rem",
-                fontWeight: 700,
+              <div style={{
+                fontFamily: "var(--serif)",
+                fontSize: "1rem",
+                fontWeight: 600,
+                letterSpacing: "-0.015em",
                 color: selected === f.id ? FIELD_COLORS[i] : "var(--text)",
               }}>
                 {f.name}
@@ -196,7 +198,7 @@ export default function FieldsPage() {
           {/* Metadata grid */}
           <div className="card" style={{ padding: "1.25rem" }}>
             <div style={{ marginBottom: "1rem" }}>
-              <h2 className="mono" style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--accent)", marginBottom: "4px" }}>
+              <h2 style={{ fontFamily: "var(--serif)", fontSize: "1.35rem", fontWeight: 600, letterSpacing: "-0.015em", color: "var(--accent)", marginBottom: "4px" }}>
                 {field.name}
               </h2>
               <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>{field.full}</p>

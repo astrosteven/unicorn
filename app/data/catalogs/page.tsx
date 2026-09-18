@@ -399,9 +399,11 @@ export default function CatalogsPage() {
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-                    <span className="mono" style={{
-                      fontSize: "1rem",
-                      fontWeight: 700,
+                    <span style={{
+                      fontFamily: "var(--serif)",
+                      fontSize: "1.15rem",
+                      fontWeight: 600,
+                      letterSpacing: "-0.015em",
                       color: isOpen ? "var(--accent)" : "var(--text)",
                     }}>
                       {field.name}

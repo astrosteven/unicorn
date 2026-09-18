@@ -76,7 +76,7 @@ export default function DataOverview() {
             cursor: field.available ? "pointer" : "default",
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-              <span className="mono" style={{ fontSize: "0.88rem", fontWeight: 700, color: field.color }}>
+              <span style={{ fontFamily: "var(--serif)", fontSize: "1.05rem", fontWeight: 600, letterSpacing: "-0.015em", color: field.color }}>
                 {field.name}
               </span>
               <span style={{
