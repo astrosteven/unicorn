@@ -1724,6 +1724,12 @@ export default function MapViewer({
         : a)));
   }, [photoAps]);
 
+  // Remove ONE measured aperture (by index). project() re-derives the map circles/polys and the
+  // SED from photoAps, so filtering it out is all that's needed — no re-measure, no re-pin.
+  const removeAperture = useCallback((n: number) => {
+    setPhotoAps(prev => prev.filter(a => a.n !== n));
+  }, []);
+
   // The capture overlay occludes the viewer canvas, so wheel events land on it instead of
   // the canvas — which would kill zoom while the tool is on. Re-dispatch the wheel to the
   // canvas beneath so zoom keeps working; the drag (pointer) is still ours for drawing.
@@ -2313,6 +2319,7 @@ export default function MapViewer({
           onPhotoShape={setPhotoShape}
           onCatalogMode={toggleCatalogMode}
           onRemovePick={removePick}
+          onRemoveAperture={removeAperture}
           onClear={clearPhoto}
           onDownload={downloadPhoto}
           onAdjust={adjustAperture}

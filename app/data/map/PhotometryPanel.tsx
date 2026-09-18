@@ -64,6 +64,7 @@ export default function PhotometryPanel({
   onPhotoShape,
   onCatalogMode,
   onRemovePick,
+  onRemoveAperture,
   onClear,
   onDownload,
   onAdjust,
@@ -88,6 +89,8 @@ export default function PhotometryPanel({
   onCatalogMode: () => void;
   /** Remove a single picked catalog object (by id). */
   onRemovePick: (id: number) => void;
+  /** Remove a single measured aperture (by its index n). */
+  onRemoveAperture: (n: number) => void;
   onClear: () => void;
   onDownload: () => void;
   /** Re-measure aperture #n at a new radius (arcsec) — for the ± steppers (circles only). */
@@ -289,6 +292,8 @@ export default function PhotometryPanel({
                         <button title="grow 0.05″" onClick={() => onAdjust(a.n, a.radiusArcsec + 0.05)} style={STEP_BTN}>+</button>
                       </span>
                     )}
+                    <button title="delete this aperture" onClick={() => onRemoveAperture(a.n)}
+                      style={{ ...STEP_BTN, marginLeft: isPoly ? "auto" : 6, color: "var(--red)" }}>✕</button>
                   </div>
                   );
                 })}
