@@ -560,6 +560,10 @@ export default function MapViewer({
   const [ifuOn, setIfuOn] = useState(false);
   const [msaFieldOn, setMsaFieldOn] = useState(false);
   const [paDeg, setPaDeg] = useState(0);
+  // What point the MSA rotates ABOUT when PA changes: "view" (screen centre — your target, the
+  // default), "ref" (the MSA reference / field centre, d=s=0), or a fixed-slit label (keep that
+  // slit pinned on the sky as you roll). Held-fixed point is resolved in handlePaChange.
+  const [rotateAbout, setRotateAbout] = useState<string>("view");
   // Per-field allowed-PA lookup (public/nirspec/v3pa/<id>.json). null = none / still loading;
   // when absent the panel behaves exactly as before (no achievability flag).
   const [v3paData, setV3paData] = useState<V3paData | null>(null);
@@ -833,8 +837,8 @@ export default function MapViewer({
   const pixelScaleRef = useRef(pixelScale);
   pixelScaleRef.current = pixelScale;
   // Aperture-overlay settings, in a ref for the same reason (project runs per frame).
-  const apRef = useRef({ msaOn, ifuOn, msaFieldOn, paDeg, apertureSky });
-  apRef.current = { msaOn, ifuOn, msaFieldOn, paDeg, apertureSky };
+  const apRef = useRef({ msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, rotateAbout });
+  apRef.current = { msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, rotateAbout };
 
   // When an aperture is first switched on, PLACE it (a fixed sky pos) so it's a positioned,
   // draggable object — not something that follows the view. For the MSA field, offset the
@@ -858,10 +862,12 @@ export default function MapViewer({
     if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
   }, [msaOn, ifuOn, msaFieldOn, apertureSky, paDeg]);
 
-  // Rotate ABOUT the view centre: on a PA change, keep whatever aperture point is currently at
-  // the view centre fixed there (so a galaxy aligned in a slit stays in the slit). Solve the
-  // (d,s) of the view centre in the old frame, then reposition the reference so that same (d,s)
-  // point lands on the view centre at the new PA.
+  // Rotate ABOUT a chosen pivot: on a PA change, keep one point fixed on the sky and swing the
+  // rest of the MSA around it. The pivot (per the "Rotate about" dropdown) is either the point
+  // currently at the VIEW CENTRE ("view", default — a galaxy centred in a slit stays in it), the
+  // MSA REFERENCE ("ref", d=s=0 — the field centre of the MSA footprint), or a FIXED SLIT (keep
+  // that slit pinned on the sky). We take the pivot's current screen pixel, solve its (d,s) in the
+  // old frame, then reposition the reference so that same (d,s) lands back on that pixel at the new PA.
   const handlePaChange = useCallback((newPa: number) => {
     const h = handleRef.current;
     const wcs = h?.getViewer()?.getWcs();
@@ -870,15 +876,23 @@ export default function MapViewer({
     if (!h || !wcs || !cam || !sky) { setPaDeg(newPa); return; }
     const oldF = apertureFrameWorld(wcs, sky, apRef.current.paDeg);
     if (!oldF) { setPaDeg(newPa); return; }
-    const ox = cam.centerX - oldF.cx, oy = cam.centerY - oldF.cy;
     const k2 = oldF.disp.x * oldF.disp.x + oldF.disp.y * oldF.disp.y;   // px²/arcsec² (disp⊥spat, equal scale)
     if (!(k2 > 0)) { setPaDeg(newPa); return; }
+    // Pixel to hold fixed under the rotation.
+    const about = apRef.current.rotateAbout;
+    let pivotX = cam.centerX, pivotY = cam.centerY;   // "view" (default)
+    if (about !== "view") {
+      const [dP, sP] = about === "ref" ? [0, 0] : slitCenterDS(about);
+      pivotX = oldF.cx + oldF.disp.x * dP + oldF.spat.x * sP;
+      pivotY = oldF.cy + oldF.disp.y * dP + oldF.spat.y * sP;
+    }
+    const ox = pivotX - oldF.cx, oy = pivotY - oldF.cy;
     const d = (ox * oldF.disp.x + oy * oldF.disp.y) / k2;
     const s = (ox * oldF.spat.x + oy * oldF.spat.y) / k2;
     const newF = apertureFrameWorld(wcs, sky, newPa);      // new-PA disp/spat directions
     if (!newF) { setPaDeg(newPa); return; }
-    const cx = cam.centerX - (newF.disp.x * d + newF.spat.x * s);
-    const cy = cam.centerY - (newF.disp.y * d + newF.spat.y * s);
+    const cx = pivotX - (newF.disp.x * d + newF.spat.x * s);
+    const cy = pivotY - (newF.disp.y * d + newF.spat.y * s);
     const ns = pixToSky(wcs, cx, cy);
     if (Number.isFinite(ns.ra) && Number.isFinite(ns.dec)) setApertureSky({ ra: ns.ra, dec: ns.dec });
     setPaDeg(newPa);
@@ -2270,6 +2284,7 @@ export default function MapViewer({
           msaCount={msaSources.length}
           onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
+          rotateAbout={rotateAbout} onRotateAbout={setRotateAbout}
           paAchieve={paAchieve} onPickPa={handlePaChange}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
@@ -2314,7 +2329,7 @@ export default function MapViewer({
 // sky position (so panning no longer drags it) vs following the view centre. (The custom
 // photometry draw tool lives in its own separate PHOTOMETRY panel below this one.)
 function NIRSpecPanel({
-  msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve,
+  msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
 }: {
   msaOn: boolean;
@@ -2322,6 +2337,9 @@ function NIRSpecPanel({
   msaFieldOn: boolean;
   paDeg: number;
   pinned: boolean;
+  /** What the MSA rotates about on a PA change: "view" | "ref" | a fixed-slit label. */
+  rotateAbout: string;
+  onRotateAbout: (v: string) => void;
   /** Count of catalog sources inside the 4 MSA quadrants at the current centre + PA. */
   msaCount: number;
   /** Achievability of the current PA (= APA) at this field, or null if no lookup loaded. */
@@ -2451,6 +2469,27 @@ function NIRSpecPanel({
               }}
             />
             <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 2 }}>east of north · orients the slit long axis</div>
+
+            {/* Pivot for PA rotation: keep this point fixed on the sky as you roll. "View centre"
+                (your target) is the default; a fixed slit keeps that slit pinned so a source stays
+                in it while the rest of the mask swings; "MSA centre" pivots about the field centre. */}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 7, fontSize: "0.62rem", color: "var(--text-muted)" }}>
+              <span style={{ whiteSpace: "nowrap" }}>rotate about</span>
+              <select
+                value={rotateAbout}
+                onChange={e => onRotateAbout(e.target.value)}
+                aria-label="Rotate MSA about"
+                style={{
+                  flex: 1, background: "var(--bg)", border: "1px solid var(--border-bright)",
+                  borderRadius: 5, color: "var(--text)", fontFamily: "'Space Mono', monospace",
+                  fontSize: "0.66rem", padding: "3px 6px", cursor: "pointer",
+                }}
+              >
+                <option value="view">View centre (target)</option>
+                <option value="ref">MSA centre (field)</option>
+                {MSA_SLITS_DS.map(sl => <option key={sl.label} value={sl.label}>{sl.label} slit</option>)}
+              </select>
+            </label>
 
             {/* Achievability of this PA at the field (from public/nirspec/v3pa/<id>.json,
                 jwst_gtvt over 1 yr). Green = some observable date can roll to this APA;
