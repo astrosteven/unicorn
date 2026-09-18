@@ -112,6 +112,15 @@ html, body {
 }
 .signout:hover { color: var(--text); border-color: var(--lavender); }
 
+/* Segmented nav: related tabs grouped in a rounded rail with a filled active pill. The general
+   segment uses the accent gradient; the key-tier segment (Review/Inspect) uses pink to signal it. */
+.navseg { display: inline-flex; gap: 2px; background: #120d29; border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+.navseg .navlink { border: 1px solid transparent; padding: 6px 14px; }
+.navseg .navlink.active { color: #1a0f2a; background: linear-gradient(180deg, var(--accent), var(--lavender)); border-color: transparent; }
+.navseg.key .navlink { color: var(--pink-light); }
+.navseg.key .navlink.active { color: #2a0f22; background: linear-gradient(180deg, var(--pink), var(--pink-light)); }
+.navseg-label { font-family: 'Space Mono', monospace; font-size: 0.56rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); align-self: center; }
+
 /* Star field */
 body::before {
   content: '';

@@ -8,16 +8,17 @@ import { useProfile, routeAllowed, type Role } from "@/lib/roles";
 
 // Nav links + the minimum role that may see each. `null` → visible to everyone
 // (including logged-out public viewers). Overview/Fields are always public.
-const NAV_LINKS: { href: string; label: string; min: Role | null }[] = [
-  { href: "/data",          label: "Overview",      min: null },
-  { href: "/data/fields",   label: "Fields",        min: null },
-  { href: "/data/readme",   label: "Catalog Guide", min: null },
-  { href: "/data/catalogs", label: "Catalogs",      min: "general" },
-  { href: "/data/map",      label: "Explore",  min: "general" },
-  { href: "/data/search",   label: "Search",   min: "general" },
-  { href: "/data/review",   label: "Review",   min: "key" },
-  { href: "/data/inspect",  label: "Inspect",  min: "key" },
-  { href: "/data/admin",    label: "Admin",    min: "admin" },
+type NavGroup = "general" | "key" | "admin";
+const NAV_LINKS: { href: string; label: string; min: Role | null; group: NavGroup }[] = [
+  { href: "/data",          label: "Overview",      min: null,      group: "general" },
+  { href: "/data/fields",   label: "Fields",        min: null,      group: "general" },
+  { href: "/data/readme",   label: "Catalog Guide", min: null,      group: "general" },
+  { href: "/data/catalogs", label: "Catalogs",      min: "general", group: "general" },
+  { href: "/data/map",      label: "Explore",       min: "general", group: "general" },
+  { href: "/data/search",   label: "Search",        min: "general", group: "general" },
+  { href: "/data/review",   label: "Review",        min: "key",     group: "key" },
+  { href: "/data/inspect",  label: "Inspect",       min: "key",     group: "key" },
+  { href: "/data/admin",    label: "Admin",         min: "admin",   group: "admin" },
 ];
 
 // Rank roles so a nav link shows when the user's role meets the link's minimum.
@@ -34,6 +35,22 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
   const { session, role, loading } = useProfile();
 
   const allowed = routeAllowed(pathname, role);
+
+  // Nav helpers: a link is active on its exact route (or any sub-route, except the "/data" root),
+  // and each segment renders only the links the current role may see.
+  const isActive = (href: string) => pathname === href || (href !== "/data" && pathname.startsWith(href));
+  const seg = (group: NavGroup, cls: string) => {
+    const links = NAV_LINKS.filter(l => l.group === group && meets(role, l.min));
+    if (!links.length) return null;
+    return (
+      <div className={cls}>
+        {links.map(l => (
+          <Link key={l.href} href={l.href} className={isActive(l.href) ? "navlink active" : "navlink"}>{l.label}</Link>
+        ))}
+      </div>
+    );
+  };
+  const hasKey = NAV_LINKS.some(l => l.group === "key" && meets(role, l.min));
 
   // Not logged in and on a gated route → send to the sign-in / register page.
   // (Public routes render for anon with no redirect.)
@@ -65,7 +82,7 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
         top: 0,
         zIndex: 10,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "2rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
           <Link href="/data" style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: "10px" }}>
             <Image src="/unicorn/logo.png" alt="UNICORN" width={30} height={30} style={{ objectFit: "contain" }} />
             <span className="mono" style={{
@@ -78,27 +95,26 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
               UNICORN
             </span>
           </Link>
-          <div style={{ display: "flex", gap: "4px" }}>
-            {NAV_LINKS.filter(link => meets(role, link.min)).map(link => {
-              const active = pathname === link.href ||
-                (link.href !== "/data" && pathname.startsWith(link.href));
-              return (
-                <Link key={link.href} href={link.href} className={active ? "navlink active" : "navlink"}>
-                  {link.label}
-                </Link>
-              );
-            })}
-          </div>
+          {seg("general", "navseg")}
+          {hasKey && <span className="navseg-label">key</span>}
+          {seg("key", "navseg key")}
         </div>
-        {session ? (
-          <button className="signout" onClick={async () => { await supabase.auth.signOut(); router.push("/"); }}>
-            Sign out
-          </button>
-        ) : (
-          <Link href="/login" className="signout" style={{ textDecoration: "none" }}>
-            Sign in
-          </Link>
-        )}
+        {/* Admin lives with the account controls (top-right), out of the science-tab flow. */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {meets(role, "admin") && (
+            <Link href="/data/admin" className={isActive("/data/admin") ? "navlink active" : "navlink"}
+              style={{ fontSize: "0.78rem" }}>⚙ Admin</Link>
+          )}
+          {session ? (
+            <button className="signout" onClick={async () => { await supabase.auth.signOut(); router.push("/"); }}>
+              Sign out
+            </button>
+          ) : (
+            <Link href="/login" className="signout" style={{ textDecoration: "none" }}>
+              Sign in
+            </Link>
+          )}
+        </div>
       </nav>
 
       {/* Persistent development / authorized-use disclaimer for the protected area */}
