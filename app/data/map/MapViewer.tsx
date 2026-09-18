@@ -1571,6 +1571,11 @@ export default function MapViewer({
   photoShapeRef.current = photoShape;
   const polyDrawRef = useRef(polyDraw);
   polyDrawRef.current = polyDraw;
+  // Live photoAps (for the pointer handlers' hit-test) + the in-progress MOVE of an existing
+  // circle aperture's centre (grab near a centre → drag to reposition → re-measure on release).
+  const photoApsRef = useRef(photoAps);
+  photoApsRef.current = photoAps;
+  const moveRef = useRef<{ n: number } | null>(null);
 
   const skyAt = useCallback((clientX: number, clientY: number): { ra: number; dec: number } | null => {
     const h = handleRef.current;
@@ -1585,6 +1590,23 @@ export default function MapViewer({
 
   const onPhotoDown = useCallback((e: React.PointerEvent) => {
     if (!photoTool) return;                 // tool off → let the map pan as usual
+    if (e.button !== 0) return;
+    // Grab near an EXISTING circle aperture's centre (~12 px) → MOVE it (drag to reposition,
+    // re-measure on release) instead of starting a new draw. Works in either shape mode.
+    const hm = handleRef.current, wcsm = hm?.getViewer()?.getWcs();
+    if (hm && wcsm) {
+      for (const ap of photoApsRef.current) {
+        if (ap.shape.kind !== "circle") continue;
+        const px = skyToPix(wcsm, ap.ra, ap.dec);
+        const sc = hm.imageToScreen(px.x, px.y);
+        if (sc && Math.hypot(e.clientX - sc.x, e.clientY - sc.y) <= 12) {
+          moveRef.current = { n: ap.n };
+          e.stopPropagation(); e.preventDefault();
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+    }
     if (photoShapeRef.current !== "circle") return;  // polygon mode draws on click, not drag
     if (e.button !== 0) return;             // left-drag only
     const c = skyAt(e.clientX, e.clientY);
@@ -1598,6 +1620,16 @@ export default function MapViewer({
   }, [photoTool, skyAt]);
 
   const onPhotoMove = useCallback((e: React.PointerEvent) => {
+    // Moving an existing circle centre: re-pin it to the cursor sky position live (project()
+    // re-derives its screen circle, so it follows the drag). Re-measure happens on release.
+    if (moveRef.current) {
+      e.stopPropagation();
+      const cur = skyAt(e.clientX, e.clientY);
+      if (!cur) return;
+      const n = moveRef.current.n;
+      setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, ra: cur.ra, dec: cur.dec } : a));
+      return;
+    }
     // Polygon mode: track the cursor sky position for the rubber-band edge to the first
     // vertex once at least one vertex is down. No drag capture — the map still pans between.
     if (photoShapeRef.current === "polygon") {
@@ -1616,6 +1648,22 @@ export default function MapViewer({
   }, [skyAt]);
 
   const onPhotoUp = useCallback((e: React.PointerEvent) => {
+    // Finish a centre-move: re-measure the aperture at its new position.
+    if (moveRef.current) {
+      const n = moveRef.current.n;
+      moveRef.current = null;
+      e.stopPropagation();
+      try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      const ap = photoApsRef.current.find(a => a.n === n);
+      if (ap && ap.shape.kind === "circle") {
+        setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "measuring" } } : a));
+        void measureAperture(field.field, ap.ra, ap.dec, { type: "circle", radius_arcsec: ap.radiusArcsec })
+          .then(result => setPhotoAps(prev => prev.map(a => a.n === n ? { ...a, state: { kind: "done", result } } : a)))
+          .catch(err => setPhotoAps(prev => prev.map(a => a.n === n
+            ? { ...a, state: { kind: "error", message: err instanceof Error ? err.message : String(err) } } : a)));
+      }
+      return;
+    }
     const start = drawingRef.current;
     if (!start) return;
     e.stopPropagation();
@@ -2152,7 +2200,9 @@ export default function MapViewer({
           {photoCircles.map((c, k) => (
             <g key={k}>
               <circle cx={c.cx} cy={c.cy} r={c.r} fill="none" stroke={c.color} strokeWidth={1.6} />
-              <circle cx={c.cx} cy={c.cy} r={1.5} fill={c.color} />
+              {/* Centre = drag handle when the Measure tool is on (grab to move the aperture). */}
+              <circle cx={c.cx} cy={c.cy} r={photoTool ? 4 : 1.5} fill={c.color}
+                stroke={photoTool ? "rgba(255,255,255,0.75)" : "none"} strokeWidth={photoTool ? 1 : 0} />
             </g>
           ))}
         </svg>
