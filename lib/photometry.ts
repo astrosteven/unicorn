@@ -10,6 +10,28 @@ import { supabase } from "@/lib/supabase";
 
 export const PHOTOMETRY_WORKER_URL =
   "https://unicorn-photometry.unicorn-astro.workers.dev/photometry";
+const BANDS_WORKER_URL =
+  "https://unicorn-photometry.unicorn-astro.workers.dev/bands";
+
+// Each band measure costs ~3 subrequests (header + SCI + ERR window), and HST bands with big
+// headers cost more. A full-band field is ~30 bands → one Worker call blows Cloudflare's
+// 50-subrequest cap (the redder bands silently error out). Split the band list into chunks that
+// each stay well under the cap and fire them as parallel invocations, then merge. Matches the
+// stamp path's STAMP_BAND_CHUNK strategy.
+const MEASURE_BAND_CHUNK = 6;
+
+// Per-field default band list (from the Worker /bands route), memoized so we only fetch it once.
+const bandListCache: Record<string, string[]> = {};
+async function fieldBandList(field: string): Promise<string[] | null> {
+  if (bandListCache[field]) return bandListCache[field];
+  try {
+    const r = await fetch(`${BANDS_WORKER_URL}?field=${encodeURIComponent(field)}`);
+    if (!r.ok) return null;
+    const j = (await r.json()) as { bands?: string[] };
+    if (Array.isArray(j.bands) && j.bands.length) { bandListCache[field] = j.bands; return j.bands; }
+  } catch { /* fall back to a single un-chunked call */ }
+  return null;
+}
 
 // Aperture shapes accepted by the Worker. Circle center / polygon vertices are sky coords;
 // the circle's center rides on the top-level ra/dec of the request.
@@ -48,16 +70,39 @@ export async function measureAperture(
   const token = data.session?.access_token;
   if (!token) throw new Error("Please sign in to measure photometry.");
 
-  const res = await fetch(PHOTOMETRY_WORKER_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-    body: JSON.stringify({ field, ra, dec, shape, bands }),
-  });
-  if (!res.ok) {
-    const msg = (await res.json().catch(() => ({} as { error?: string }))).error;
-    throw new Error(msg ?? `HTTP ${res.status}`);
+  // One Worker invocation for a (chunk of) bands.
+  const measureChunk = async (chunk?: string[]): Promise<PhotometryResult> => {
+    const res = await fetch(PHOTOMETRY_WORKER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ field, ra, dec, shape, bands: chunk }),
+    });
+    if (!res.ok) {
+      const msg = (await res.json().catch(() => ({} as { error?: string }))).error;
+      throw new Error(msg ?? `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<PhotometryResult>;
+  };
+
+  // If the caller named an explicit short band list, measure it in one call. Otherwise pull the
+  // field's full default list so we can chunk it — a full-band field would otherwise exceed the
+  // Worker's 50-subrequest cap and drop its reddest bands.
+  const full = bands && bands.length ? bands : await fieldBandList(field);
+  if (!full || full.length <= MEASURE_BAND_CHUNK) return measureChunk(bands);
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < full.length; i += MEASURE_BAND_CHUNK) chunks.push(full.slice(i, i + MEASURE_BAND_CHUNK));
+  const parts = await Promise.all(chunks.map(measureChunk));
+
+  // Merge: concat results + errors, then restore the requested band order.
+  const results: BandFlux[] = [];
+  const errors: { band: string; error: string }[] = [];
+  for (const p of parts) {
+    results.push(...p.results);
+    if (p.errors) errors.push(...p.errors);
   }
-  return res.json() as Promise<PhotometryResult>;
+  results.sort((a, b) => full.indexOf(a.band) - full.indexOf(b.band));
+  return { ...parts[0], results, errors: errors.length ? errors : undefined };
 }
 
 // AB magnitude from flux in nJy (nJy zero point = 31.4). Handy for the results panel.
