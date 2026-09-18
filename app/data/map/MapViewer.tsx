@@ -40,12 +40,18 @@ import {
 import FitsglControls, {
   RGB_WEIGHTED,
   RGB_SIMPLE,
+  STACK_SW,
+  STACK_LW,
+  SW_BANDS,
+  LW_BANDS,
   DEFAULT_STRETCH_MODE,
+  isStackView,
   applyFitsglDisplay,
   singleBandSource,
   simpleRgbSource,
   weightedSource,
   weightsEqual,
+  stackWeights,
   TRILOGY_KNOBS,
   type ViewSel,
   type ControlBand,
@@ -762,6 +768,10 @@ export default function MapViewer({
     defaultWeights: Weights;
     // The simple 3-band RGB triple (producer default_rgb).
     rgbTriple: { r: string; g: string; b: string };
+    // Precomputed grayscale stack weights for the SW/LW NIRCam groups present in this field
+    // (null when the group has no bands here → its preset is hidden).
+    swStack: Weights | null;
+    lwStack: Weights | null;
   } | null>(() => {
     if (!config) return null;
     const bands = explorerBandsFromConfig(config);
@@ -781,7 +791,9 @@ export default function MapViewer({
     const defaultWeights: Weights = st.weightBands.length
       ? { bands: [...st.weightBands], map: { ...st.weights } }
       : { bands: [rgbTriple.r, rgbTriple.g, rgbTriple.b], map: { [rgbTriple.r]: [1, 0, 0], [rgbTriple.g]: [0, 1, 0], [rgbTriple.b]: [0, 0, 1] } };
-    return { viewer, bands: controlBands, bandStats, defaultWeights, rgbTriple };
+    const swStack = stackWeights(controlBands, SW_BANDS);
+    const lwStack = stackWeights(controlBands, LW_BANDS);
+    return { viewer, bands: controlBands, bandStats, defaultWeights, rgbTriple, swStack, lwStack };
   }, [config]);
   const viewerConfig = prep?.viewer ?? null;
   const controlBands = prep?.bands ?? [];
@@ -794,9 +806,12 @@ export default function MapViewer({
   // Per-band stats + the simple-RGB triple, read imperatively (no re-subscribe).
   const bandStatsRef = useRef<Record<string, TrilogyStats | undefined>>({});
   const rgbTripleRef = useRef<{ r: string; g: string; b: string } | null>(null);
+  // Precomputed SW/LW grayscale stack weights, read imperatively in switchSource/applyScaling.
+  const stacksRef = useRef<{ [STACK_SW]: Weights | null; [STACK_LW]: Weights | null }>({ [STACK_SW]: null, [STACK_LW]: null });
   useEffect(() => {
     bandStatsRef.current = prep?.bandStats ?? {};
     rgbTripleRef.current = prep?.rgbTriple ?? null;
+    stacksRef.current = { [STACK_SW]: prep?.swStack ?? null, [STACK_LW]: prep?.lwStack ?? null };
   }, [prep]);
   // Seed the weighted-composite weights from the producer default once prep loads (or when
   // the field changes). This is what makes the map open on the exact ship colour. Also seed
@@ -950,8 +965,10 @@ export default function MapViewer({
     const h = handleRef.current;
     if (!h) return;
     const v = viewSel ?? viewRef.current;
-    if (v === RGB_WEIGHTED) {
-      applyFitsglDisplay(h, { view: RGB_WEIGHTED, trilogy: params, stretchMode: mode, stats: orderedStats(appliedBandsRef.current) });
+    if (v === RGB_WEIGHTED || isStackView(v)) {
+      // Weighted composite / grayscale stack — both multiband; stats follow the applied band
+      // order (set by switchSource). The 4 trilogy sliders drive the levels on the stack too.
+      applyFitsglDisplay(h, { view: v, trilogy: params, stretchMode: mode, stats: orderedStats(appliedBandsRef.current) });
     } else if (v === RGB_SIMPLE) {
       const t = rgbTripleRef.current;
       applyFitsglDisplay(h, { view: RGB_SIMPLE, trilogy: params, stretchMode: mode, stats: t ? orderedStats([t.r, t.g, t.b]) : null });
@@ -973,9 +990,13 @@ export default function MapViewer({
     const viewer = h?.getViewer();
     if (!h || !viewer) return;
     try {
-      if (v === RGB_WEIGHTED) {
+      if (v === RGB_WEIGHTED || isStackView(v)) {
+        // Weighted RGB composite (user weights) OR a grayscale SW/LW stack (precomputed equal
+        // weights) — both are weighted MultiBandSources; only the weight set differs.
+        const w = v === RGB_WEIGHTED ? weightsRef.current : (v === STACK_SW ? stacksRef.current[STACK_SW] : stacksRef.current[STACK_LW]);
+        if (!w) return;
         const applied: string[] = [];
-        const src = weightedSource(h, weightsRef.current, applied);
+        const src = weightedSource(h, w, applied);
         if (!src) return;
         viewer.setSource(src);
         appliedBandsRef.current = applied;

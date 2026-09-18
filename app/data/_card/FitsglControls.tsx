@@ -75,11 +75,52 @@ export const DEFAULT_STRETCH_MODE: StretchMode = "trilogy";
 // string so the <select> round-trips cleanly.
 export const RGB_WEIGHTED = "__rgbw__";   // faithful weighted-trilogy composite (default)
 export const RGB_SIMPLE = "__rgb__";      // fixed 3-band r/g/b composite
+export const STACK_SW = "__stack_sw__";   // NIRCam short-wavelength grayscale stack
+export const STACK_LW = "__stack_lw__";   // NIRCam long-wavelength grayscale stack
 // Back-compat alias: the pre-WEIGHTS code called the composite RGB_VIEW; keep it pointing at
 // the weighted composite so any external reference still resolves to the default look.
 export const RGB_VIEW = RGB_WEIGHTED;
-export type ViewSel = typeof RGB_WEIGHTED | typeof RGB_SIMPLE | string;  // sentinel | band name
-export function isRgbView(v: ViewSel): boolean { return v === RGB_WEIGHTED || v === RGB_SIMPLE; }
+export type ViewSel = typeof RGB_WEIGHTED | typeof RGB_SIMPLE | typeof STACK_SW | typeof STACK_LW | string;
+// A stack is a weighted (grayscale) MultiBandSource, so it shares the multiband draw path.
+export function isStackView(v: ViewSel): boolean { return v === STACK_SW || v === STACK_LW; }
+// Every composite (weighted RGB / simple RGB / SW+LW stacks) that is NOT a single band.
+export function isRgbView(v: ViewSel): boolean { return v === RGB_WEIGHTED || v === RGB_SIMPLE || isStackView(v); }
+
+// ---- NIRCam band stacks ----------------------------------------------------
+// SW = NIRCam short-wavelength channel; LW = long-wavelength channel. A "stack" is an
+// achromatic (R=G=B) luminance composite of all of a group's bands present in the field.
+// Membership is the standard NIRCam filter set per channel (wide + medium; narrow bands
+// aren't in these mosaics but would extend the lists if ever added).
+export const SW_BANDS = ["f070w", "f090w", "f115w", "f140m", "f150w", "f162m", "f182m", "f200w", "f210m"];
+export const LW_BANDS = ["f250m", "f277w", "f300m", "f335m", "f356w", "f360m", "f410m", "f430m", "f444w", "f460m", "f480m"];
+export const STACK_GROUPS: { view: typeof STACK_SW | typeof STACK_LW; label: string; members: string[] }[] = [
+  { view: STACK_SW, label: "SW stack", members: SW_BANDS },
+  { view: STACK_LW, label: "LW stack", members: LW_BANDS },
+];
+
+// The field's bands (by name) that belong to a stack group, IN GROUP (wavelength) ORDER.
+// Case-insensitive match on band name. Empty ⇒ the group isn't present (preset hidden).
+export function stackMembers(bands: readonly ControlBand[], members: readonly string[]): string[] {
+  const have = new Set(bands.map(b => b.name.toLowerCase()));
+  return members.filter(m => have.has(m.toLowerCase()))
+    // map back to the field's actual-cased band name
+    .map(m => bands.find(b => b.name.toLowerCase() === m.toLowerCase())!.name);
+}
+
+// Build the grayscale stack Weights for a group present in the field: EQUAL weight per band
+// mapped equally into R, G and B (so R=G=B ⇒ mono luminance), normalized by 1/n so the stack
+// isn't dominated by any one band and the summed contribution is scale-stable as bands vary.
+// The multiband shader already divides by ΣweightR (etc.) per channel, so any constant works;
+// 1/n is used for a predictable, band-count-independent luminance. Returns null if the group
+// has no bands in this field (⇒ the preset is disabled).
+export function stackWeights(bands: readonly ControlBand[], members: readonly string[]): Weights | null {
+  const present = stackMembers(bands, members).slice(0, MAX_BANDS);
+  if (!present.length) return null;
+  const w = 1 / present.length;
+  const map: WeightMap = {};
+  for (const n of present) map[n] = [w, w, w];   // equal → R=G=B → grayscale
+  return { bands: present, map };
+}
 
 // A band the selector offers: its stable name + a human label + (optional) precomputed
 // trilogy stats (trilogy needs them; percentile fallback used when absent) + wavelength
@@ -264,6 +305,9 @@ export default function FitsglControls({
 }: FitsglControlsProps) {
   const single = !isRgbView(view);
   const weighted = view === RGB_WEIGHTED;
+  const stack = isStackView(view);
+  // Which SW/LW stack presets are present in this field (≥1 group band) — the rest are hidden.
+  const availStacks = STACK_GROUPS.filter(g => stackMembers(bands, g.members).length > 0);
   // noiselum only shapes the trilogy curve; hide it for the other transfer functions.
   const knobs = TRILOGY_KNOBS.filter(k => !k.trilogyOnly || mode === "trilogy");
 
@@ -339,10 +383,14 @@ export default function FitsglControls({
             >
               <option value={RGB_WEIGHTED}>RGB — weighted</option>
               <option value={RGB_SIMPLE}>RGB — simple 3-band</option>
+              {availStacks.map(g => <option key={g.view} value={g.view}>{g.label} (grayscale)</option>)}
               {bands.map(b => <option key={b.name} value={b.name}>{b.label}</option>)}
             </select>
             <div style={hintStyle}>
-              {weighted ? "all bands blended into R/G/B" : single ? "single band · grayscale/colormap" : "fixed 3-band composite"}
+              {weighted ? "all bands blended into R/G/B"
+                : stack ? `mono luminance · ${stackMembers(bands, STACK_GROUPS.find(g => g.view === view)!.members).length} bands`
+                : single ? "single band · grayscale/colormap"
+                : "fixed 3-band composite"}
             </div>
           </div>
 

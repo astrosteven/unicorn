@@ -33,12 +33,18 @@ import { CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";
 import FitsglControls, {
   RGB_WEIGHTED,
   RGB_SIMPLE,
+  STACK_SW,
+  STACK_LW,
+  SW_BANDS,
+  LW_BANDS,
   DEFAULT_STRETCH_MODE,
+  isStackView,
   applyFitsglDisplay,
   singleBandSource,
   simpleRgbSource,
   weightedSource,
   weightsEqual,
+  stackWeights,
   TRILOGY_KNOBS,
   type ViewSel,
   type ControlBand,
@@ -94,7 +100,9 @@ export default function FieldFitsglViewer({
     const defaultWeights: Weights = st.weightBands.length
       ? { bands: [...st.weightBands], map: { ...st.weights } }
       : { bands: [rgbTriple.r, rgbTriple.g, rgbTriple.b], map: { [rgbTriple.r]: [1, 0, 0], [rgbTriple.g]: [0, 1, 0], [rgbTriple.b]: [0, 0, 1] } };
-    return { viewer, bands: controlBands, bandStats, defaultWeights, rgbTriple };
+    const swStack = stackWeights(controlBands, SW_BANDS);
+    const lwStack = stackWeights(controlBands, LW_BANDS);
+    return { viewer, bands: controlBands, bandStats, defaultWeights, rgbTriple, swStack, lwStack };
   }, [config]);
   const viewerConfig = prep?.viewer ?? null;
   const controlBands = prep?.bands ?? [];
@@ -137,8 +145,10 @@ export default function FieldFitsglViewer({
     const p = prepRef.current;
     if (!h || !p) return false;
     const v = viewSel ?? viewRef.current;
-    if (v === RGB_WEIGHTED) {
-      return applyFitsglDisplay(h, { view: RGB_WEIGHTED, trilogy: trilogyRef.current, stretchMode: stretchRef.current, stats: orderedStats(appliedBandsRef.current) });
+    if (v === RGB_WEIGHTED || isStackView(v)) {
+      // Weighted composite / grayscale stack — both multiband; stats follow the applied band
+      // order. The 4 trilogy sliders drive the levels on the stack too.
+      return applyFitsglDisplay(h, { view: v, trilogy: trilogyRef.current, stretchMode: stretchRef.current, stats: orderedStats(appliedBandsRef.current) });
     }
     if (v === RGB_SIMPLE) {
       const t = p.rgbTriple;
@@ -157,9 +167,13 @@ export default function FieldFitsglViewer({
     const p = prepRef.current;
     if (!h || !viewer || !p) return;
     try {
-      if (v === RGB_WEIGHTED) {
+      if (v === RGB_WEIGHTED || isStackView(v)) {
+        // Weighted RGB composite (user weights) OR a grayscale SW/LW stack (precomputed equal
+        // weights) — both weighted MultiBandSources; only the weight set differs.
+        const w = v === RGB_WEIGHTED ? weightsRef.current : (v === STACK_SW ? p.swStack : p.lwStack);
+        if (!w) return;
         const applied: string[] = [];
-        const src = weightedSource(h, weightsRef.current, applied);
+        const src = weightedSource(h, w, applied);
         if (!src) return;
         viewer.setSource(src); appliedBandsRef.current = applied;
       } else if (v === RGB_SIMPLE) {
