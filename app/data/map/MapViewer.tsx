@@ -624,6 +624,8 @@ export default function MapViewer({
   // field is CEERS (the Worker is CEERS-only). `photoTool` toggles the draw mode on/off.
   const [session, setSession] = useState<import("@supabase/supabase-js").Session | null>(null);
   const [photoTool, setPhotoTool] = useState(false);
+  const photoToolRef = useRef(false);
+  photoToolRef.current = photoTool;
   // Which shape the Measure tool draws while it's ON: a drag CIRCLE (mousedown centre →
   // drag radius) or a hand-drawn POLYGON (click vertices → double-click / Enter to close).
   const [photoShape, setPhotoShape] = useState<"circle" | "polygon">("circle");
@@ -971,6 +973,53 @@ export default function MapViewer({
     h.setCenter(cx, cy);
     h.setZoom(zoom);
   }, [cameraTargetRef]);
+
+  // Touch pan + pinch-zoom. @fitsgl/core only wires MOUSE + wheel, so on phones/iPads the map
+  // wouldn't pan or zoom at all. Bridge touch → the camera handle here: one finger pans (keep the
+  // world point under the finger), two fingers pinch-zoom about the midpoint. preventDefault (with
+  // touch-action:none on the wrap) stops the page from scrolling/zooming instead of the map.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    let prevMid: { x: number; y: number } | null = null;
+    let prevDist = 0;
+    const midOf = (t: TouchList) => t.length >= 2
+      ? { x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 }
+      : { x: t[0].clientX, y: t[0].clientY };
+    const distOf = (t: TouchList) => t.length >= 2 ? Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) : 0;
+    const onStart = (e: TouchEvent) => {
+      if (photoToolRef.current || e.touches.length === 0) return;   // draw tool handles its own touches
+      prevMid = midOf(e.touches); prevDist = distOf(e.touches);
+    };
+    const onMove = (e: TouchEvent) => {
+      if (photoToolRef.current || !prevMid) return;
+      const h = handleRef.current;
+      const cam0 = h?.getCameraState();
+      if (!h || !cam0) return;
+      e.preventDefault();
+      const curMid = midOf(e.touches), curDist = distOf(e.touches);
+      const worldPrev = h.screenToImage(prevMid.x, prevMid.y);      // world under the previous midpoint (current cam)
+      if (curDist > 0 && prevDist > 0) h.setZoom(cam0.zoom * (curDist / prevDist));
+      const cam1 = h.getCameraState() ?? cam0;
+      const worldNow = h.screenToImage(curMid.x, curMid.y);          // world now under the new midpoint (post-zoom cam)
+      if (worldPrev && worldNow) h.setCenter(cam1.centerX + (worldPrev.x - worldNow.x), cam1.centerY + (worldPrev.y - worldNow.y));
+      prevMid = curMid; prevDist = curDist;
+    };
+    const onEnd = (e: TouchEvent) => {
+      if (e.touches.length === 0) { prevMid = null; prevDist = 0; }
+      else { prevMid = midOf(e.touches); prevDist = distOf(e.touches); }   // a finger lifted → re-baseline
+    };
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd);
+    el.addEventListener("touchcancel", onEnd);
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, []);
 
   // Is the current PA (= aperture PA, APA) achievable at this field on some observable date?
   // null when no lookup is loaded for the field (panel then hides the flag).
@@ -2235,7 +2284,7 @@ export default function MapViewer({
   const glyphSW = glyphs.length <= 40 ? 3 : glyphs.length <= 200 ? 2.3 : glyphs.length <= 1200 ? 1.7 : 1.3;
 
   return (
-    <div ref={wrapRef} style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div ref={wrapRef} style={{ width: "100%", height: "100%", position: "relative", touchAction: "none" }}>
       <FitsViewer
         key={viewerKey}
         config={viewerConfig}
@@ -2540,8 +2589,11 @@ export default function MapViewer({
           with the NIRSpec + PHOTOMETRY panels in one top-right column so they never overlap.
           maxHeight + overflow lets the (potentially tall) PHOTOMETRY panel scroll rather
           than run off the bottom of the map. */}
-      <div style={{ position: "absolute", top: 12, right: 12, bottom: 12, zIndex: 20, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", overflowY: "auto", paddingBottom: 28, pointerEvents: "none" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", pointerEvents: "auto" }}>
+      <div style={{ position: "absolute", top: 12, right: 12, bottom: 12, zIndex: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", pointerEvents: "none" }}>
+        {/* The INNER column is the scroller and the only pointer/touch target — the outer box stays
+            pointer-transparent so the map pans/zooms in the empty space around the panels, while
+            this column can be dragged to scroll (touch) and doesn't block map gestures elsewhere. */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", maxHeight: "100%", overflowY: "auto", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
         <FitsglControls
           title="DISPLAY"
           bands={controlBands}

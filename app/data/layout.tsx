@@ -67,7 +67,7 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
   );
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column" }}>
       <nav style={{
         borderBottom: "1px solid var(--border)",
         padding: "0 clamp(1.25rem, 4vw, 2.5rem)",

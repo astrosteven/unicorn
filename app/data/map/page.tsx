@@ -238,6 +238,18 @@ export default function MapPage() {
   const [filters, setFilters] = useState<MapFilters>(DEFAULT_FILTERS);
   const [shown, setShown] = useState<number | null>(null);
   const [gotoMsg, setGotoMsg] = useState<string>("");
+  // Narrow screens (phones): the 220px filter sidebar eats most of the width, so collapse it into
+  // a toggle-drawer and let the map viewer go full-width.
+  const [narrow, setNarrow] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 768px)");
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
 
   // Viewer handle + loaded index, captured once ready — drives the "go to" control.
   const handleRef = useRef<FitsViewerHandle | null>(null);
@@ -447,7 +459,7 @@ export default function MapPage() {
   const queuedShownHere = queueOn ? (queuedHereRef.current?.size ?? 0) : 0;
 
   return (
-    <main style={{ height: "calc(100vh - 64px)", display: "flex", flexDirection: "column" }}>
+    <main style={{ height: "calc(100dvh - 64px)", display: "flex", flexDirection: "column" }}>
       {/* Header strip + go-to */}
       <div style={{ padding: "1rem 1.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap" }}>
@@ -519,9 +531,32 @@ export default function MapPage() {
 
       {/* Sidebar + viewer + card panel */}
       <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
-        <FilterSidebar filters={filters} setFilters={setFilters} shown={shown} />
+        {/* Wide screens: sidebar inline. Phones: a slide-in drawer toggled by the ☰ button over
+            the map, so the viewer keeps the full width. */}
+        {!narrow && <FilterSidebar filters={filters} setFilters={setFilters} shown={shown} />}
+        {narrow && filtersOpen && (
+          <div style={{ position: "absolute", inset: 0, zIndex: 30, display: "flex" }}>
+            <div style={{ position: "relative", zIndex: 1, maxWidth: "82%", overflowY: "auto", background: "var(--bg)", boxShadow: "12px 0 40px rgba(0,0,0,0.5)" }}>
+              <FilterSidebar filters={filters} setFilters={setFilters} shown={shown} />
+            </div>
+            <div onClick={() => setFiltersOpen(false)} style={{ flex: 1, background: "rgba(0,0,0,0.4)" }} />
+          </div>
+        )}
 
         <div ref={viewerBoxRef} style={{ flex: 1, minWidth: 0, position: "relative", background: "#0d0a1a" }}>
+          {narrow && !filtersOpen && (
+            <button
+              onClick={() => setFiltersOpen(true)}
+              className="mono"
+              style={{
+                position: "absolute", top: 10, left: 10, zIndex: 16,
+                background: "rgba(13,10,26,0.86)", border: "1px solid var(--border-bright)",
+                borderRadius: 6, color: "var(--text)", cursor: "pointer", fontSize: "0.72rem", padding: "7px 11px",
+              }}
+            >
+              ☰ Filters
+            </button>
+          )}
           <MapViewer
             key={activeField.field}
             field={activeField}
