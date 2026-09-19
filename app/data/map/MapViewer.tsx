@@ -2593,7 +2593,7 @@ export default function MapViewer({
         {/* The INNER column is the scroller and the only pointer/touch target — the outer box stays
             pointer-transparent so the map pans/zooms in the empty space around the panels, while
             this column can be dragged to scroll (touch) and doesn't block map gestures elsewhere. */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", maxHeight: "100%", overflowY: "auto", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
         <FitsglControls
           title="DISPLAY"
           bands={controlBands}
