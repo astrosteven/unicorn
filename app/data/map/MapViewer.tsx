@@ -595,7 +595,8 @@ export default function MapViewer({
     msa: string[]; ifu: string | null; field: string[];
     slits: { label: string; pts: string; lx: number; ly: number }[];
     fieldIfu: { pts: string; lx: number; ly: number } | null;
-    fp: { key: string; color: string; polys: string[]; lx: number; ly: number }[];
+    fp: { key: string; color: string; polys: string[]; lx: number; ly: number;
+      off: { x: number; y: number; arcmin: number } | null }[];
   }>({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null, fp: [] });
   // ---- JWST instrument footprints (SIAF, all in the NRS_FULL_MSA ideal frame) --------------
   // The whole focal plane pins at one sky point and rotates by the shared aperture PA, so every
@@ -1272,12 +1273,28 @@ export default function MapViewer({
             ? ap.siaf.instruments
                 .filter(ins => ap.footprints.has(ins.key))
                 .map(ins => {
-                  let sx = 0, sy = 0, nc = 0;
+                  let sx = 0, sy = 0, nc = 0;   // screen centroid
+                  let dd = 0, ss = 0, nds = 0;  // ds centroid (arcsec) for the off-screen distance
                   const polys = ins.apertures.map(a => {
-                    for (const [d, s] of a.ds) { const c = apXY(frame, d, s); sx += c.x; sy += c.y; nc++; }
+                    for (const [d, s] of a.ds) { const c = apXY(frame, d, s); sx += c.x; sy += c.y; nc++; dd += d; ss += s; nds++; }
                     return apPoly(frame, a.ds);
                   });
-                  return { key: ins.key, color: ins.color, polys, lx: nc ? sx / nc : 0, ly: nc ? sy / nc : 0 };
+                  const lx = nc ? sx / nc : 0, ly = nc ? sy / nc : 0;
+                  // JWST's instruments span ~15′, so at MSA-working zoom a distant one (MIRI ~14′)
+                  // falls off-screen. If its centroid is outside the viewport, clamp a labelled
+                  // marker to the edge pointing at it (with its offset in arcmin) so a checked
+                  // instrument is never invisibly "missing".
+                  const W = rect.width, H = rect.height;
+                  let off: { x: number; y: number; arcmin: number } | null = null;
+                  if (lx < 0 || lx > W || ly < 0 || ly > H) {
+                    const cxv = W / 2, cyv = H / 2, m = 30;
+                    const dx = lx - cxv, dy = ly - cyv;
+                    const tx = dx > 0 ? (W - m - cxv) / dx : dx < 0 ? (m - cxv) / dx : Infinity;
+                    const ty = dy > 0 ? (H - m - cyv) / dy : dy < 0 ? (m - cyv) / dy : Infinity;
+                    const t = Math.max(0, Math.min(tx, ty));
+                    off = { x: cxv + dx * t, y: cyv + dy * t, arcmin: nds ? Math.hypot(dd / nds, ss / nds) / 60 : 0 };
+                  }
+                  return { key: ins.key, color: ins.color, polys, lx, ly, off };
                 })
             : [];
           setApertures({ msa, ifu, field, slits, fieldIfu, fp });
@@ -2268,8 +2285,19 @@ export default function MapViewer({
               {ins.polys.map((pts, k) => (
                 <polygon key={k} points={pts} fill={`${ins.color}14`} stroke={ins.color} strokeWidth={1.3} />
               ))}
-              <text x={ins.lx} y={ins.ly} fill={ins.color} fontSize={11} textAnchor="middle"
-                fontFamily="'Space Mono', monospace" style={{ userSelect: "none" }}>{ins.key}</text>
+              {ins.off ? (
+                // Off-screen: an edge marker pointing at the (far) footprint + its offset in arcmin.
+                <g transform={`translate(${ins.off.x} ${ins.off.y})`} style={{ filter: "drop-shadow(0 0 2px rgba(0,0,0,0.9))" }}>
+                  <circle r={5} fill={ins.color} stroke="rgba(0,0,0,0.5)" strokeWidth={1} />
+                  <text x={0} y={16} fill={ins.color} fontSize={10} textAnchor="middle"
+                    fontFamily="'Space Mono', monospace" style={{ userSelect: "none" }}>
+                    {ins.key} · {ins.off.arcmin.toFixed(1)}′ out
+                  </text>
+                </g>
+              ) : (
+                <text x={ins.lx} y={ins.ly} fill={ins.color} fontSize={11} textAnchor="middle"
+                  fontFamily="'Space Mono', monospace" style={{ userSelect: "none" }}>{ins.key}</text>
+              )}
             </g>
           ))}
           {apertures.field.map((pts, k) => (
