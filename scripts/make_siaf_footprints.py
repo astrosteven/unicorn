@@ -31,7 +31,7 @@ PLAN = [
         "NRCA1_FULL", "NRCA2_FULL", "NRCA3_FULL", "NRCA4_FULL",
         "NRCB1_FULL", "NRCB2_FULL", "NRCB3_FULL", "NRCB4_FULL",
     ]),
-    ("MIRI", "MIRI", "#ff8a65", "MIRI (imager)", ["MIRIM_FULL"]),
+    ("MIRI", "MIRI", "#ff8a65", "MIRI (imager)", ["MIRIM_ILLUM"]),
     ("NIRISS", "NIRISS", "#ba68c8", "NIRISS", ["NIS_CEN"]),
     ("FGS", "FGS", "#aed581", "FGS", ["FGS1_FULL", "FGS2_FULL"]),
 ]
