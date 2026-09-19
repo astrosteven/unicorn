@@ -877,7 +877,12 @@ export default function SearchPage() {
   const [queryTotal, setQueryTotal] = useState(0);
   const [queryCard, setQueryCard] = useState<SourceResult | null>(null);
   const [queryCardId, setQueryCardId] = useState<number | null>(null);
-  const [searchField, setSearchField] = useState<string>("all");
+  // Field scope is PER-TAB: each search mode keeps its own field selection, so picking a field on
+  // the ID (or Name) tab doesn't silently scope the Upload / coord / query tabs — those have no
+  // field selector and must stay "all". Keyed by mode; a missing entry → "all".
+  const [searchFieldByMode, setSearchFieldByMode] = useState<Record<string, string>>({});
+  const searchField = searchFieldByMode[mode] ?? "all";
+  const setSearchField = (v: string) => setSearchFieldByMode(prev => ({ ...prev, [mode]: v }));
   const [status, setStatus] = useState<ResultState>("idle");
   const [results, setResults] = useState<SourceResult[]>([]);
   const [matchSummary, setMatchSummary] = useState("");
@@ -1013,7 +1018,10 @@ export default function SearchPage() {
           if (typeof s.uploadText === "string") setUploadText(s.uploadText);
           if (typeof s.queryInput === "string") setQueryInput(s.queryInput);
           if (typeof s.viewColsInput === "string") setViewColsInput(s.viewColsInput);
-          if (typeof s.searchField === "string") setSearchField(s.searchField);
+          if (s.searchFieldByMode && typeof s.searchFieldByMode === "object")
+            setSearchFieldByMode(s.searchFieldByMode as Record<string, string>);
+          else if (typeof s.searchField === "string" && typeof s.mode === "string")
+            setSearchFieldByMode({ [s.mode]: s.searchField });   // migrate old single-value snapshots
           setAutoRun(true);
         }
       }
@@ -1292,7 +1300,7 @@ export default function SearchPage() {
     // restores it and re-runs — otherwise an UPLOADED list is lost and must be re-uploaded.
     try {
       sessionStorage.setItem("unicorn_searchState", JSON.stringify({
-        mode, idInput, nameInput, coordInput, radiusInput, uploadText, queryInput, viewColsInput, searchField,
+        mode, idInput, nameInput, coordInput, radiusInput, uploadText, queryInput, viewColsInput, searchFieldByMode,
       }));
     } catch { /* quota — non-fatal */ }
     const avail = SEARCH_FIELDS.filter(f => f.available);
