@@ -533,6 +533,7 @@ export default function MapViewer({
   onReadyHandle,
   cameraTargetRef,
   primaryId,
+  rawMarkers,
 }: {
   /** The active field's config — drives which search index the overlay loads. */
   field: FieldConfig;
@@ -546,6 +547,9 @@ export default function MapViewer({
   queuedIds?: Set<number> | null;
   /** Ids (this field) that have a campfire spec-z — drawn green, overriding selected/not. */
   zspecIds?: Set<number> | null;
+  /** Upload → map: arbitrary user-supplied sky positions to plot as-is (not catalog objects),
+   *  drawn as bright diamonds pinned to sky. Used for MSA planning against an external target list. */
+  rawMarkers?: [number, number][] | null;
   onSourceClick: (id: number) => void;
   /** Report how many sources pass the active filters (total, not just on-screen). */
   onCount?: (n: number) => void;
@@ -650,6 +654,10 @@ export default function MapViewer({
   const [primaryMark, setPrimaryMark] = useState<{ cx: number; cy: number } | null>(null);
   const primaryIdRef = useRef<number | null>(primaryId ?? null);
   useEffect(() => { primaryIdRef.current = primaryId ?? null; setPrimaryMark(null); }, [primaryId]);
+  // Raw uploaded markers (arbitrary sky positions, not catalog objects) — projected each frame.
+  const [rawMarks, setRawMarks] = useState<{ cx: number; cy: number }[]>([]);
+  const rawMarkersRef = useRef<[number, number][] | null>(rawMarkers ?? null);
+  rawMarkersRef.current = rawMarkers ?? null;
   // PHOTOMETRY panel expand/collapse (its own section beside SCALING / NIRSpec).
   const [photoPanelOpen, setPhotoPanelOpen] = useState(false);
   // Monotonic aperture index; assigned on each measurement so its async result patch can
@@ -1515,7 +1523,27 @@ export default function MapViewer({
     } else {
       setPrimaryMark(prev => (prev ? null : prev));
     }
+
+    // Raw uploaded markers (arbitrary sky positions) — project each to screen, welded to sky.
+    const raw = rawMarkersRef.current;
+    if (raw && raw.length) {
+      const wcsR = h.getViewer()?.getWcs();
+      if (wcsR) {
+        const marks: { cx: number; cy: number }[] = [];
+        for (const [mra, mdec] of raw) {
+          const pw = skyToPix(wcsR, mra, mdec);
+          const ps = h.imageToScreen(pw.x, pw.y);
+          if (ps) marks.push({ cx: ps.x - rect.left, cy: ps.y - rect.top });
+        }
+        setRawMarks(marks);
+      }
+    } else {
+      setRawMarks(prev => (prev.length ? [] : prev));
+    }
   }, []);
+
+  // Re-project when the raw uploaded markers change (arrive / clear) — no camera move otherwise.
+  useEffect(() => { project(); }, [rawMarkers, project]);
 
   // Re-project when aperture settings change — toggling/PA don't move the camera, so
   // onFrame won't fire; poke project directly so the overlay updates immediately.
@@ -2381,6 +2409,26 @@ export default function MapViewer({
             rx={2} fill="none" stroke="#ffffff" strokeWidth={2}
             style={{ filter: "drop-shadow(0 0 2px rgba(0,0,0,0.9))" }}
           />
+        </svg>
+      )}
+
+      {/* Raw uploaded markers — arbitrary sky positions plotted as bright diamonds (not catalog
+          objects). Sized up when few are shown so they're findable when zoomed out. */}
+      {rawMarks.length > 0 && (
+        <svg
+          data-overlay="raw-markers"
+          width="100%" height="100%"
+          style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
+        >
+          {(() => {
+            const r = rawMarks.length > 2000 ? 5 : Math.min(11, 5 * Math.sqrt(2000 / Math.max(rawMarks.length, 1)));
+            return rawMarks.map((m, k) => (
+              <g key={k} transform={`translate(${m.cx} ${m.cy}) rotate(45)`}
+                style={{ filter: "drop-shadow(0 0 2px rgba(0,0,0,0.9))" }}>
+                <rect x={-r} y={-r} width={2 * r} height={2 * r} fill="none" stroke="#ffe14d" strokeWidth={2} />
+              </g>
+            ));
+          })()}
         </svg>
       )}
 

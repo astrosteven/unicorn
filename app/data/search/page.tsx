@@ -143,6 +143,37 @@ function fmtCell(v: number | string | null): string {
   return String(v);
 }
 
+// Parse an uploaded list into [ra,dec] pairs (decimal deg) for "plot as-is" mode. Mirrors the
+// upload cross-match parser's header logic: a first row that NAMES columns auto-maps RA/Dec;
+// otherwise bare "RA Dec" lines. Lines that don't yield two finite numbers (e.g. ID-only) are
+// skipped — an all-ID file yields [].
+const UPLOAD_RA_NAMES = new Set(["ra", "raj2000", "radeg", "ra2000", "alpha", "alphaj2000", "rightascension", "raj", "cra"]);
+const UPLOAD_DEC_NAMES = new Set(["dec", "de", "decj2000", "decdeg", "dec2000", "delta", "deltaj2000", "declination", "cdec"]);
+function parseUploadCoords(text: string): [number, number][] {
+  const splitRow = (l: string) => l.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  const rawLines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  if (!rawLines.length) return [];
+  let raCol = -1, decCol = -1, headerConsumed = false;
+  const head = splitRow(rawLines[0].replace(/^#+\s*/, ""));
+  if (head.length > 0 && head.every(t => !Number.isFinite(parseFloat(t)))) {
+    head.forEach((t, i) => {
+      const k = t.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (raCol < 0 && UPLOAD_RA_NAMES.has(k)) raCol = i;
+      else if (decCol < 0 && UPLOAD_DEC_NAMES.has(k)) decCol = i;
+    });
+    headerConsumed = true;
+  }
+  const dataLines = (headerConsumed ? rawLines.slice(1) : rawLines).filter(l => !l.startsWith("#"));
+  const out: [number, number][] = [];
+  for (const line of dataLines) {
+    const parts = splitRow(line);
+    const ra = raCol >= 0 && decCol >= 0 ? parseFloat(parts[raCol]) : (parts.length >= 2 ? parseFloat(parts[0]) : NaN);
+    const dec = raCol >= 0 && decCol >= 0 ? parseFloat(parts[decCol]) : (parts.length >= 2 ? parseFloat(parts[1]) : NaN);
+    if (Number.isFinite(ra) && Number.isFinite(dec)) out.push([ra, dec]);
+  }
+  return out;
+}
+
 // ---- Sortable results table -------------------------------------------------
 // One entry of the FULL retained match set (queryAllRef): field cfg + index row + campfire.
 // (Exported so the Plot view can scatter the full matched set.)
@@ -702,6 +733,13 @@ export default function SearchPage() {
   const [coordInput, setCoordInput] = useState("");   // single "RA, Dec" (deg) entry
   const [radiusInput, setRadiusInput] = useState("0.2");
   const [uploadText, setUploadText] = useState("");
+  // Upload "plot as-is": skip the UNICORN cross-match and drop the raw RA/Dec straight on a
+  // chosen field's map (a general MSA-planning canvas for any external target list).
+  const [uploadRaw, setUploadRaw] = useState(false);
+  const [uploadRawField, setUploadRawField] = useState<string>(() => {
+    const f = SEARCH_FIELDS.find(x => x.available && FITSGL_BASE[x.field]);
+    return f ? f.field : "";
+  });
   const [queryInput, setQueryInput] = useState(() =>
     (typeof window !== "undefined" && localStorage.getItem("unicorn_lastQuery")) || "za > 9 and m444 < 28 and selected = 1");
   const [viewColsInput, setViewColsInput] = useState("");   // extra columns to SHOW (not filter on)
@@ -1303,6 +1341,32 @@ export default function SearchPage() {
         mode, idInput, nameInput, coordInput, radiusInput, uploadText, queryInput, viewColsInput, searchFieldByMode,
       }));
     } catch { /* quota — non-fatal */ }
+
+    // Upload "plot as-is": no cross-match, no index load — parse the coords and hand them to the
+    // chosen field's map (new tab), where MapViewer draws them as bright diamonds over the
+    // instrument footprints. ID-only files can't be plotted this way (no coordinates).
+    if (mode === "upload" && uploadRaw) {
+      const coords = parseUploadCoords(uploadText);
+      if (!coords.length) {
+        setStatus("notfound");
+        setMatchSummary("No RA/Dec found — need RA/Dec columns or 'RA Dec' lines (ID-only lists can't be plotted as-is).");
+        return;
+      }
+      if (!uploadRawField) {
+        setStatus("notfound");
+        setMatchSummary("Pick a field to plot the coordinates on.");
+        return;
+      }
+      try {
+        localStorage.setItem("mapRawMarkers", JSON.stringify({ field: uploadRawField, ts: Date.now(), coords }));
+      } catch { /* quota — non-fatal */ }
+      logUsage("upload_raw", { field: uploadRawField, n: coords.length });
+      window.open(`/unicorn/data/map?field=${encodeURIComponent(uploadRawField)}&raw=1`, "_blank");
+      setStatus("idle");
+      setMatchSummary(`Plotting ${coords.length} coordinate${coords.length === 1 ? "" : "s"} on the ${uploadRawField} map (new tab) ↗`);
+      return;
+    }
+
     const avail = SEARCH_FIELDS.filter(f => f.available);
     const fields = searchField === "all" ? avail : avail.filter(f => f.field === searchField);
     // Re-apply LIVE inspection decisions to any already-loaded indices so a fresh Search picks up
@@ -1770,6 +1834,27 @@ export default function SearchPage() {
               <span>• ID list: <span style={{ color: "var(--text-muted)" }}>6613</span></span>
               <span>• RA/Dec: <span style={{ color: "var(--text-muted)" }}>214.943 52.942</span></span>
             </div>
+
+            {/* Cross-match (default) vs. plot-as-is. As-is skips the UNICORN cross-match and drops
+                the raw RA/Dec straight on a chosen field's map — for planning against footprints. */}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: uploadRaw ? 10 : "1rem", fontSize: "0.82rem", color: "var(--text-muted)", cursor: "pointer" }}>
+              <input type="checkbox" checked={uploadRaw} onChange={e => setUploadRaw(e.target.checked)}
+                style={{ accentColor: "var(--accent)", width: 15, height: 15 }} />
+              Plot coordinates as-is on the map <span style={{ color: "var(--text-dim)" }}>(skip cross-match — for MSA/footprint planning)</span>
+            </label>
+            {uploadRaw && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: "1rem", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "0.78rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace" }}>Plot on field:</span>
+                <select value={uploadRawField} onChange={e => setUploadRawField(e.target.value)}
+                  style={{ background: "var(--bg)", border: "1px solid var(--border-bright)", borderRadius: 4,
+                    padding: "7px 10px", color: "var(--text)", fontSize: "0.82rem", fontFamily: "'Space Mono', monospace", cursor: "pointer" }}>
+                  {SEARCH_FIELDS.filter(f => f.available && FITSGL_BASE[f.field]).map(f => (
+                    <option key={f.field} value={f.field}>{f.field}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
               <input ref={fileRef} type="file" accept=".txt,.csv,.cat" onChange={handleUpload} style={{ display: "none" }} />
               <button onClick={() => fileRef.current?.click()} style={{
@@ -1785,7 +1870,19 @@ export default function SearchPage() {
                   {uploadText.trim().split("\n").length} entries loaded
                 </span>
               )}
-              <SearchButton onClick={doSearch} loading={status === "searching"} />
+              {uploadRaw ? (
+                <button onClick={doSearch} disabled={status === "searching" || !uploadText}
+                  style={{
+                    background: !uploadText ? "var(--bg-card2)" : "linear-gradient(135deg, var(--purple-mid), var(--lavender))",
+                    color: !uploadText ? "var(--text-dim)" : "var(--text)", border: "none", borderRadius: 4,
+                    padding: "9px 24px", fontFamily: "'Space Mono', monospace", fontSize: "0.85rem", fontWeight: 700,
+                    cursor: !uploadText ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+                  }}>
+                  ▸ Plot on map ↗
+                </button>
+              ) : (
+                <SearchButton onClick={doSearch} loading={status === "searching"} />
+              )}
             </div>
           </div>
         )}

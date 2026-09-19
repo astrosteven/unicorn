@@ -139,6 +139,30 @@ function queueIdsForField(q: MapQueue | null, field: string): Set<number> | null
   return ids.size ? ids : null;
 }
 
+// ---- Upload → map: raw coordinate markers -----------------------------------
+// The Upload tab (plot-as-is mode) stashes arbitrary sky coords in localStorage["mapRawMarkers"]
+// for one field, and opens /data/map?field=<f>&raw=1. These are NOT catalog objects — MapViewer
+// draws them as bright diamonds so an external target list can be planned against the footprints.
+type RawMarkers = { field: string; ts: number; coords: [number, number][] };
+function readRawMarkers(): RawMarkers | null {
+  if (typeof window === "undefined") return null;
+  const sp = new URLSearchParams(window.location.search);
+  if (sp.get("raw") !== "1") return null;
+  let raw: string | null = null;
+  try { raw = localStorage.getItem("mapRawMarkers"); localStorage.removeItem("mapRawMarkers"); } catch { return null; }
+  if (!raw) return null;
+  try {
+    const m = JSON.parse(raw) as RawMarkers;
+    if (!m || !Array.isArray(m.coords) || !m.coords.length) return null;
+    if (typeof m.ts === "number" && Date.now() - m.ts > MAP_QUEUE_MAX_AGE_MS) return null;
+    return m;
+  } catch { return null; }
+}
+function rawFieldConfig(m: RawMarkers | null): FieldConfig | null {
+  if (!m) return null;
+  return FITSGL_FIELDS.find(x => x.field === m.field || x.prefix === m.field.toLowerCase()) ?? null;
+}
+
 type PanelState =
   | { kind: "hidden" }
   | { kind: "loading"; id: number }
@@ -153,7 +177,15 @@ export default function MapPage() {
     (mapQueueRef as { __mapQueueRead?: boolean }).__mapQueueRead = true;
     mapQueueRef.current = readMapQueue();
   }
-  const initialActive = (): FieldConfig => queueTopField(mapQueueRef.current ?? { label: "", ts: 0, objects: [] }) ?? initialField();
+  // Upload → map: raw coordinate markers (read + cleared once, like the queue).
+  const rawRef = useRef<RawMarkers | null>(null);
+  if (rawRef.current === null && typeof window !== "undefined" && !("__rawRead" in rawRef)) {
+    (rawRef as { __rawRead?: boolean }).__rawRead = true;
+    rawRef.current = readRawMarkers();
+  }
+  const initialActive = (): FieldConfig =>
+    rawFieldConfig(rawRef.current) ??
+    queueTopField(mapQueueRef.current ?? { label: "", ts: 0, objects: [] }) ?? initialField();
 
   const [activeField, setActiveField] = useState<FieldConfig>(initialActive);
   // Only honour the queue while the user hasn't cleared it via "show all".
@@ -167,6 +199,12 @@ export default function MapPage() {
   // Whether the CURRENT field has any queued objects (drives the banner + auto-fit).
   const queuedHereRef = useRef<Set<number> | null>(null);
   queuedHereRef.current = queueIdsForField(mapQueueRef.current, activeField.field);
+
+  // Raw uploaded markers for the ACTIVE field (null on other fields).
+  const rawMarkers = useMemo<[number, number][] | null>(() => {
+    const fc = rawFieldConfig(rawRef.current);
+    return fc && fc.field === activeField.field ? rawRef.current!.coords : null;
+  }, [activeField]);
 
   // Campfire spec-z ids for the active field: ellipses with a spec-z draw green. Loaded
   // from the same per-field sidecar the cards use (cached); null until it lands / if absent.
@@ -359,6 +397,52 @@ export default function MapPage() {
     return () => clearTimeout(timer);
   }, [ready, queueOn, activeField, fitToQueued]);
 
+  // Same auto-fit, for raw uploaded markers (plot-as-is upload has no queue).
+  const fitToRaw = useCallback((): boolean => {
+    const coords = rawMarkers;
+    if (!coords || !coords.length) return true;
+    const h = handleRef.current;
+    if (!h) return false;
+    const wcs = h.getViewer()?.getWcs();
+    if (!wcs) return false;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
+    for (const [ra, dec] of coords) {
+      if (!Number.isFinite(ra) || !Number.isFinite(dec)) continue;
+      const p = skyToPix(wcs, ra, dec);
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      n++;
+    }
+    if (!n) return true;
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const spanX = Math.max(maxX - minX, 0), spanY = Math.max(maxY - minY, 0);
+    const minNativePx = 5 / PIXSCALE_ARCSEC;
+    const fitX = Math.max(spanX * 1.24, minNativePx), fitY = Math.max(spanY * 1.24, minNativePx);
+    const box = viewerBoxRef.current;
+    const cssW = box?.clientWidth ?? (typeof window !== "undefined" ? window.innerWidth : 1000);
+    const cssH = box?.clientHeight ?? (typeof window !== "undefined" ? window.innerHeight : 700);
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    const zoom = Math.min((cssW * dpr) / fitX, (cssH * dpr) / fitY);
+    if (!Number.isFinite(zoom) || zoom <= 0) return true;
+    cameraTargetRef.current = { cx, cy, zoom, until: Date.now() + 4000 };
+    h.setCenter(cx, cy);
+    h.setZoom(zoom);
+    return true;
+  }, [rawMarkers]);
+
+  useEffect(() => {
+    if (!ready || !rawMarkers?.length || pendingGotoRef.current) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      if (fitToRaw()) return;
+      if (++tries < 30) timer = setTimeout(tick, 200);
+    };
+    timer = setTimeout(tick, 150);
+    return () => clearTimeout(timer);
+  }, [ready, rawMarkers, fitToRaw]);
+
   const panelOpen = panel.kind !== "hidden";
   const queuedShownHere = queueOn ? (queuedHereRef.current?.size ?? 0) : 0;
 
@@ -450,6 +534,7 @@ export default function MapPage() {
             onReadyHandle={onReadyHandle}
             cameraTargetRef={cameraTargetRef}
             primaryId={primaryId}
+            rawMarkers={rawMarkers}
           />
         </div>
 
