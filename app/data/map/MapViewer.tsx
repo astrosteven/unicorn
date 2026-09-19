@@ -2369,7 +2369,7 @@ export default function MapViewer({
           with the NIRSpec + PHOTOMETRY panels in one top-right column so they never overlap.
           maxHeight + overflow lets the (potentially tall) PHOTOMETRY panel scroll rather
           than run off the bottom of the map. */}
-      <div style={{ position: "absolute", top: 12, right: 12, bottom: 12, zIndex: 20, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", overflowY: "auto", pointerEvents: "none" }}>
+      <div style={{ position: "absolute", top: 12, right: 12, bottom: 12, zIndex: 20, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", overflowY: "auto", paddingBottom: 28, pointerEvents: "none" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", pointerEvents: "auto" }}>
         <FitsglControls
           title="DISPLAY"
