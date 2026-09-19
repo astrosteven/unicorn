@@ -1164,6 +1164,10 @@ export default function MapViewer({
     const list = qids ? sourcesRef.current.filter(s => qids.has(s.id)) : sourcesRef.current;
     const zids = zspecIdsRef.current;
     const asDot = zoom < DOT_ZOOM;
+    // Scale marker size by HOW MANY are shown: the full catalog (thousands) stays small, but a
+    // small uploaded list or query result is enlarged so the sources stay findable when zoomed
+    // out — the case that matters for MSA planning. Grows ~1→3× as the shown count shrinks.
+    const markerScale = list.length > 2000 ? 1 : Math.min(3, Math.sqrt(2000 / Math.max(list.length, 1)));
 
     // Adaptive scale bar + NIRSpec apertures both need CSS px per native px: measure it
     // empirically from imageToScreen over a 100-native-px span at the view centre (robust
@@ -1436,7 +1440,7 @@ export default function MapViewer({
 
       const zspec = zids?.has(s.id) ?? false;
       if (asDot || !(s.semiA > 0 && s.semiB > 0) || Number.isNaN(s.th)) {
-        out.push({ id: s.id, sel: s.sel, zspec, cx: scx, cy: scy, r: asDot ? 1.6 : 4 });
+        out.push({ id: s.id, sel: s.sel, zspec, cx: scx, cy: scy, r: (asDot ? 1.6 : 4) * markerScale });
         continue;
       }
       // Project the ellipse's world-space rim vertices → screen (handles North-up too).
@@ -1445,7 +1449,7 @@ export default function MapViewer({
       let bad = false;
       for (let j = 0; j < ELLIPSE_SEGMENTS; j++) {
         const phi = (2 * Math.PI * j) / ELLIPSE_SEGMENTS;
-        const ex = s.semiA * Math.cos(phi), ey = s.semiB * Math.sin(phi);
+        const ex = s.semiA * markerScale * Math.cos(phi), ey = s.semiB * markerScale * Math.sin(phi);
         const wx = s.x + ex * ct - ey * st;
         const wy = s.y + ex * st + ey * ct;
         const p = h.imageToScreen(wx, wy);
