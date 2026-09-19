@@ -2623,7 +2623,7 @@ export default function MapViewer({
 function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
-  instruments, footprints, onToggleFootprint,
+  instruments, footprints, onToggleFootprint, onFitFootprints,
 }: {
   msaOn: boolean;
   ifuOn: boolean;
