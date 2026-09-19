@@ -2614,6 +2614,14 @@ function NIRSpecPanel({
 
       {open && (
         <div style={{ padding: "2px 12px 12px" }}>
+          {/* Quick how-to — keeps footprint planning discoverable without a separate help page. */}
+          <p style={{ fontSize: "0.64rem", lineHeight: 1.55, color: "var(--text-dim)", margin: "0 0 11px" }}>
+            Overlay JWST apertures, set the <b style={{ color: "var(--text-muted)" }}>PA</b> (the V3PA to
+            request in APT is shown), and drag the handle to place them. To plan against your own
+            targets, upload a list on{" "}
+            <a href="/unicorn/data/search" style={{ color: "var(--accent)" }}>Search → Upload</a>{" "}
+            with <i>“plot as-is”</i>.
+          </p>
           <label style={row}>
             <input type="checkbox" checked={msaOn} onChange={e => onMsa(e.target.checked)}
               style={{ accentColor: "#5ee0e0", width: 15, height: 15 }} />
