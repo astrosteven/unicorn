@@ -174,6 +174,15 @@ const MSA_SLITS_DS: { label: string; ds: [number, number][] }[] = [
 ];
 // NIRSpec IFU 3″×3″ aperture (NRS_FULL_IFU), in its true position beyond the A slits.
 const MSA_IFU_DS: [number, number][] = [[103.527, 1.916], [103.506, -1.284], [106.603, -1.268], [106.625, 1.932]];
+
+// Other JWST instruments' footprints, precomputed in the SAME (d,s) frame as the MSA above
+// (scripts/make_siaf_footprints.py → public/nirspec/siaf_footprints.json). Each aperture is a
+// polygon of [d,s] arcsec corners; instruments sit at their true focal-plane offsets from the
+// MSA reference, so drawing them at the MSA pin + PA reproduces the real JWST field layout.
+type SiafFootprints = {
+  instruments: { key: string; label: string; color: string;
+    apertures: { name: string; ds: [number, number][] }[] }[];
+};
 // Centre (d,s arcsec) of a named fixed slit — used to place the map-centred galaxy in a slit.
 function slitCenterDS(label: string): [number, number] {
   const sl = MSA_SLITS_DS.find((x) => x.label === label);
@@ -580,7 +589,23 @@ export default function MapViewer({
     msa: string[]; ifu: string | null; field: string[];
     slits: { label: string; pts: string; lx: number; ly: number }[];
     fieldIfu: { pts: string; lx: number; ly: number } | null;
-  }>({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
+    fp: { key: string; color: string; polys: string[]; lx: number; ly: number }[];
+  }>({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null, fp: [] });
+  // ---- JWST instrument footprints (SIAF, all in the NRS_FULL_MSA ideal frame) --------------
+  // The whole focal plane pins at one sky point and rotates by the shared aperture PA, so every
+  // instrument co-registers with the NIRSpec MSA and rolls correctly with V3PA. Data:
+  // public/nirspec/siaf_footprints.json (scripts/make_siaf_footprints.py). `footprints` = the
+  // set of instrument keys currently shown.
+  const [siaf, setSiaf] = useState<SiafFootprints | null>(null);
+  const [footprints, setFootprints] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    fetch("/unicorn/nirspec/siaf_footprints.json")
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => { if (alive && j?.instruments) setSiaf(j as SiafFootprints); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   // Catalog sources whose world-px position falls inside any of the 4 MSA quadrants at the
   // current centre + PA. Collected in WORLD/pixel space (ALL sources tested, not just the
   // on-screen ones) whenever the MSA-field overlay is on; drives the "N in MSA" readout +
@@ -837,15 +862,15 @@ export default function MapViewer({
   const pixelScaleRef = useRef(pixelScale);
   pixelScaleRef.current = pixelScale;
   // Aperture-overlay settings, in a ref for the same reason (project runs per frame).
-  const apRef = useRef({ msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, rotateAbout });
-  apRef.current = { msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, rotateAbout };
+  const apRef = useRef({ msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, rotateAbout, footprints, siaf });
+  apRef.current = { msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, rotateAbout, footprints, siaf };
 
   // When an aperture is first switched on, PLACE it (a fixed sky pos) so it's a positioned,
   // draggable object — not something that follows the view. For the MSA field, offset the
   // reference so the S200A1 fixed slit lands on the view centre (the galaxy the map is centred
   // on); otherwise centre the aperture itself. Once set it stays put.
   useEffect(() => {
-    if (!(msaOn || ifuOn || msaFieldOn) || apertureSky) return;
+    if (!(msaOn || ifuOn || msaFieldOn || footprints.size > 0) || apertureSky) return;
     const h = handleRef.current;
     const cam = h?.getCameraState();
     const wcs = h?.getViewer()?.getWcs();
@@ -860,7 +885,7 @@ export default function MapViewer({
     const cy = cam.centerY - (fr.disp.y * sd + fr.spat.y * ss);
     const s = pixToSky(wcs, cx, cy);
     if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
-  }, [msaOn, ifuOn, msaFieldOn, apertureSky, paDeg]);
+  }, [msaOn, ifuOn, msaFieldOn, footprints, apertureSky, paDeg]);
 
   // Rotate ABOUT a chosen pivot: on a PA change, keep one point fixed on the sky and swing the
   // rest of the MSA around it. The pivot (per the "Rotate about" dropdown) is either the point
@@ -1189,7 +1214,7 @@ export default function MapViewer({
       // 3-shutter slitlet (3 open shutters along the spatial axis, ~0.07" bars between)
       // and/or the 3"×3" IFU square. All in arcsec, so they scale with zoom.
       const ap = apRef.current;
-      const anyAperture = ap.msaOn || ap.ifuOn || ap.msaFieldOn;
+      const anyAperture = ap.msaOn || ap.ifuOn || ap.msaFieldOn || ap.footprints.size > 0;
       if (anyAperture && arcsecPerCssPx > 0) {
         // Aperture centre world pixel: the pinned sky position (locked under pan/zoom) if
         // set, else the live view centre. apertureFrame anchors on this exact pixel via the
@@ -1230,7 +1255,22 @@ export default function MapViewer({
                 return { pts: apPoly(frame, MSA_IFU_DS), lx: c.x, ly: c.y };
               })()
             : null;
-          setApertures({ msa, ifu, field, slits, fieldIfu });
+          // Other-instrument footprints: each selected instrument's SIAF aperture polygons,
+          // drawn in the SAME pinned+rotated frame so the whole JWST focal plane co-registers
+          // with the MSA and rolls with the shared PA. Label sits at the centroid of all corners.
+          const fp = (ap.footprints.size && ap.siaf)
+            ? ap.siaf.instruments
+                .filter(ins => ap.footprints.has(ins.key))
+                .map(ins => {
+                  let sx = 0, sy = 0, nc = 0;
+                  const polys = ins.apertures.map(a => {
+                    for (const [d, s] of a.ds) { const c = apXY(frame, d, s); sx += c.x; sy += c.y; nc++; }
+                    return apPoly(frame, a.ds);
+                  });
+                  return { key: ins.key, color: ins.color, polys, lx: nc ? sx / nc : 0, ly: nc ? sy / nc : 0 };
+                })
+            : [];
+          setApertures({ msa, ifu, field, slits, fieldIfu, fp });
           setApCenterScreen({ cx: frame.cx, cy: frame.cy });   // drives the drag handle
 
           // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
@@ -1288,7 +1328,7 @@ export default function MapViewer({
         // keep the last-good overlay so the slits/quads/IFU stay persistent (no blink).
       } else if (!anyAperture) {
         // Toggles all off — clear. (A toggle on but arcsecPerCssPx transiently 0 keeps the last.)
-        setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null });
+        setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null, fp: [] });
         setApCenterScreen(null);
         setMsaSources(prev => (prev.length ? [] : prev));
       }
@@ -1479,7 +1519,7 @@ export default function MapViewer({
 
   // Re-project when aperture settings change — toggling/PA don't move the camera, so
   // onFrame won't fire; poke project directly so the overlay updates immediately.
-  useEffect(() => { project(); }, [msaOn, ifuOn, msaFieldOn, paDeg, apertureSky, project]);
+  useEffect(() => { project(); }, [msaOn, ifuOn, msaFieldOn, footprints, siaf, paDeg, apertureSky, project]);
 
   // Re-project when the drawn photometry apertures change (drag / commit / clear) — no
   // camera move, so onFrame won't fire on its own. Includes the in-progress polygon so its
@@ -2185,12 +2225,23 @@ export default function MapViewer({
           full MSA 4-quadrant field (amber), centred on the view (or pinned sky pos),
           rotated by PA. Non-interactive. */}
       {(apertures.msa.length > 0 || apertures.ifu || apertures.field.length > 0 ||
-        apertures.fieldIfu || apertures.slits.length > 0) && (
+        apertures.fieldIfu || apertures.slits.length > 0 || apertures.fp.length > 0) && (
         <svg
           data-overlay="apertures"
           width="100%" height="100%"
           style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}
         >
+          {/* Other-instrument footprints (NIRCam / MIRI / NIRISS / FGS) — SIAF-exact, at their
+              true focal-plane offsets, one colour each, with a label at the assembly centroid. */}
+          {apertures.fp.map(ins => (
+            <g key={`fp${ins.key}`}>
+              {ins.polys.map((pts, k) => (
+                <polygon key={k} points={pts} fill={`${ins.color}14`} stroke={ins.color} strokeWidth={1.3} />
+              ))}
+              <text x={ins.lx} y={ins.ly} fill={ins.color} fontSize={11} textAnchor="middle"
+                fontFamily="'Space Mono', monospace" style={{ userSelect: "none" }}>{ins.key}</text>
+            </g>
+          ))}
           {apertures.field.map((pts, k) => (
             <polygon key={`f${k}`} points={pts} fill="rgba(240,176,80,0.06)" stroke="#f0b050" strokeWidth={1.4} />
           ))}
@@ -2224,7 +2275,7 @@ export default function MapViewer({
       {/* Drag handle at the aperture centre — grab it to move the whole NIRSpec assembly to a
           new sky position. Only the handle is pointer-eventful (the rest of the overlay lets
           the map pan through). Hidden when the aperture is pinned/locked. */}
-      {apCenterScreen && !apLocked && (msaOn || ifuOn || msaFieldOn) && (
+      {apCenterScreen && !apLocked && (msaOn || ifuOn || msaFieldOn || footprints.size > 0) && (
         <svg width="100%" height="100%" data-overlay="aperture-handle"
           style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "visible" }}>
           <circle
@@ -2402,6 +2453,13 @@ export default function MapViewer({
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
           rotateAbout={rotateAbout} onRotateAbout={setRotateAbout}
           paAchieve={paAchieve} onPickPa={handlePaChange}
+          instruments={siaf?.instruments ?? []}
+          footprints={footprints}
+          onToggleFootprint={(key, on) => setFootprints(prev => {
+            const next = new Set(prev);
+            if (on) next.add(key); else next.delete(key);
+            return next;
+          })}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
           onTogglePin={() => setApLocked(l => !l)}
@@ -2448,6 +2506,7 @@ export default function MapViewer({
 function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
+  instruments, footprints, onToggleFootprint,
 }: {
   msaOn: boolean;
   ifuOn: boolean;
@@ -2472,9 +2531,14 @@ function NIRSpecPanel({
   onMsaTable: () => void;
   /** Jump the PA to a value (used by the "nearest achievable" shortcut). */
   onPickPa: (v: number) => void;
+  /** Other JWST instruments available to overlay (from siaf_footprints.json). */
+  instruments: SiafFootprints["instruments"];
+  /** Instrument keys currently shown. */
+  footprints: Set<string>;
+  onToggleFootprint: (key: string, on: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const anyOn = msaOn || ifuOn || msaFieldOn;
+  const anyOn = msaOn || ifuOn || msaFieldOn || footprints.size > 0;
   const row: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 9 };
   return (
     <div
@@ -2497,7 +2561,7 @@ function NIRSpecPanel({
         }}
       >
         <span style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s", display: "inline-block", fontSize: "0.7rem" }}>▸</span>
-        NIRSpec{anyOn ? " ●" : ""}
+        JWST Footprints{anyOn ? " ●" : ""}
       </button>
 
       {open && (
@@ -2517,6 +2581,26 @@ function NIRSpecPanel({
               style={{ accentColor: "#f0b050", width: 15, height: 15 }} />
             <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>MSA field (4 quadrants)</span>
           </label>
+
+          {/* Other JWST instruments — SIAF-exact footprints at their true focal-plane offsets from
+              the NIRSpec MSA. Check any number; they all share the pin + PA below, so one V3PA rolls
+              the whole focal plane together. */}
+          {instruments.length > 0 && (
+            <div style={{ marginTop: 2, marginBottom: 4, borderTop: "1px solid var(--border-bright)", paddingTop: 9 }}>
+              <div className="mono" style={{ fontSize: "0.6rem", letterSpacing: "0.08em", color: "var(--text-dim)", marginBottom: 8 }}>
+                OTHER INSTRUMENTS
+              </div>
+              {instruments.map(ins => (
+                <label key={ins.key} style={row}>
+                  <input type="checkbox" checked={footprints.has(ins.key)}
+                    onChange={e => onToggleFootprint(ins.key, e.target.checked)}
+                    style={{ accentColor: ins.color, width: 15, height: 15 }} />
+                  <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: ins.color, flexShrink: 0 }} />
+                  <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>{ins.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
 
           {/* In-MSA catalog readout + handoffs — shown only while the MSA-field overlay is on.
               The count updates live as the centre / PA change (project() re-collects each frame).
