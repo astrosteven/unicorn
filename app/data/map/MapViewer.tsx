@@ -934,6 +934,44 @@ export default function MapViewer({
     setPaDeg(newPa);
   }, []);
 
+  // Zoom/pan so EVERY enabled overlay (MSA field + checked instrument footprints) fits the
+  // viewport — the JWST focal plane spans ~15′, so distant instruments (MIRI ~14′) need a wide
+  // view. Bbox the world-px corners of all enabled apertures at the current pin + PA, then hand a
+  // centre+zoom to the same adopt-and-hold cameraTargetRef the deep-link/goto use.
+  const fitFootprints = useCallback(() => {
+    const h = handleRef.current;
+    const wcs = h?.getViewer()?.getWcs();
+    const wrap = wrapRef.current;
+    if (!h || !wcs || !wrap) return;
+    const ap = apRef.current;
+    let sky = ap.apertureSky;
+    const cam = h.getCameraState();
+    if (!sky && cam) { const s = pixToSky(wcs, cam.centerX, cam.centerY); if (Number.isFinite(s.ra)) sky = { ra: s.ra, dec: s.dec }; }
+    if (!sky) return;
+    const fw = apertureFrameWorld(wcs, sky, ap.paDeg);
+    if (!fw) return;
+    const dsPolys: (readonly (readonly [number, number])[])[] = [];
+    if (ap.msaFieldOn) { dsPolys.push(...MSA_QUADS_DS, MSA_IFU_DS, ...MSA_SLITS_DS.map(s => s.ds)); }
+    if (ap.msaOn || ap.ifuOn) dsPolys.push([[-2, -2], [2, -2], [2, 2], [-2, 2]]);   // small box at the pin
+    if (ap.footprints.size && ap.siaf) for (const ins of ap.siaf.instruments) if (ap.footprints.has(ins.key)) for (const a of ins.apertures) dsPolys.push(a.ds);
+    if (!dsPolys.length) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const poly of dsPolys) for (const c of polyCornersWorld(fw, poly)) {
+      if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
+      if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
+    }
+    if (!Number.isFinite(minX)) return;
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const rect = wrap.getBoundingClientRect();
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    const fitX = Math.max((maxX - minX) * 1.15, 10), fitY = Math.max((maxY - minY) * 1.15, 10);
+    const zoom = Math.min((rect.width * dpr) / fitX, (rect.height * dpr) / fitY);
+    if (!Number.isFinite(zoom) || zoom <= 0) return;
+    if (cameraTargetRef) cameraTargetRef.current = { cx, cy, zoom, until: Date.now() + 4000 };
+    h.setCenter(cx, cy);
+    h.setZoom(zoom);
+  }, [cameraTargetRef]);
+
   // Is the current PA (= aperture PA, APA) achievable at this field on some observable date?
   // null when no lookup is loaded for the field (panel then hides the flag).
   const paAchieve = useMemo(
@@ -2538,6 +2576,7 @@ export default function MapViewer({
             if (on) next.add(key); else next.delete(key);
             return next;
           })}
+          onFitFootprints={fitFootprints}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
           onTogglePin={() => setApLocked(l => !l)}
@@ -2614,6 +2653,8 @@ function NIRSpecPanel({
   /** Instrument keys currently shown. */
   footprints: Set<string>;
   onToggleFootprint: (key: string, on: boolean) => void;
+  /** Zoom/pan the map to fit every enabled overlay. */
+  onFitFootprints: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const anyOn = msaOn || ifuOn || msaFieldOn || footprints.size > 0;
@@ -2687,6 +2728,21 @@ function NIRSpecPanel({
                 </label>
               ))}
             </div>
+          )}
+
+          {anyOn && (
+            <button
+              onClick={onFitFootprints}
+              className="mono"
+              title="Zoom out so every enabled overlay (MSA field + checked instruments) fits — the JWST focal plane spans ~15′."
+              style={{
+                width: "100%", marginBottom: 9, background: "none",
+                border: "1px solid var(--border-bright)", borderRadius: 5,
+                color: "var(--text-muted)", cursor: "pointer", fontSize: "0.68rem", padding: "6px 10px",
+              }}
+            >
+              ⤢ Zoom to fit all footprints
+            </button>
           )}
 
           {/* In-MSA catalog readout + handoffs — shown only while the MSA-field overlay is on.
