@@ -176,8 +176,18 @@ function Inspector({ email }: { email: string }) {
     // Best-effort: table may be empty/absent → degrade to all-not_inspected.
     const byKey = new Map<string, Inspection>();
     try {
-      const { data, error } = await supabase.from("inspections").select("*");
-      if (!error && data) for (const r of data as Inspection[]) byKey.set(`${r.field}:${r.obj_id}`, r);
+      // Page past PostgREST's default 1000-row cap — otherwise, once >1000 decisions exist,
+      // already-inspected objects silently show as not-inspected (and removed objects as still
+      // selected). Ordered by (field,obj_id) so paging is deterministic.
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await supabase.from("inspections").select("*")
+          .order("field", { ascending: true }).order("obj_id", { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (error || !data) break;
+        for (const r of data as Inspection[]) byKey.set(`${r.field}:${r.obj_id}`, r);
+        if (data.length < PAGE) break;
+      }
     } catch { /* table missing / offline */ }
 
     const acc: QueueRow[] = [];

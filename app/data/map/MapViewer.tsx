@@ -1241,6 +1241,8 @@ export default function MapViewer({
     // Scale marker size by HOW MANY are shown: the full catalog (thousands) stays small, but a
     // small uploaded list or query result is enlarged so the sources stay findable when zoomed
     // out — the case that matters for MSA planning. Grows ~1→3× as the shown count shrinks.
+    // NB: applied ONLY to the dot/circle glyphs (visibility aid), never to the Kron ellipse
+    // semi-axes — the ellipses stay true-size so aperture/morphology comparisons aren't distorted.
     const markerScale = list.length > 2000 ? 1 : Math.min(3, Math.sqrt(2000 / Math.max(list.length, 1)));
 
     // Adaptive scale bar + NIRSpec apertures both need CSS px per native px: measure it
@@ -1496,11 +1498,13 @@ export default function MapViewer({
 
     // Tiled fields: the catalog x,y are per-tile and don't line up with the fitsgl virtual
     // grid, so resolve each source's world px from its ra/dec via the viewer WCS (once per
-    // source list). Single-mosaic fields keep their index x,y (already world px).
-    if (tiledRef.current && !resolvedRef.current && list.length) {
+    // source list). Resolve the FULL list (sourcesRef), not the possibly queue-narrowed `list` —
+    // otherwise sources revealed later by "show all" / catalog mode keep raw per-tile x,y and
+    // draw (and get MSA-collected) at wrong sky positions. Single-mosaic fields keep index x,y.
+    if (tiledRef.current && !resolvedRef.current && sourcesRef.current.length) {
       const wcs = h.getViewer()?.getWcs();
       if (wcs) {
-        for (const s of list) {
+        for (const s of sourcesRef.current) {
           const p = skyToPix(wcs, s.ra, s.dec);
           if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) { s.x = p.x; s.y = p.y; }
         }
@@ -1554,7 +1558,7 @@ export default function MapViewer({
       let bad = false;
       for (let j = 0; j < ELLIPSE_SEGMENTS; j++) {
         const phi = (2 * Math.PI * j) / ELLIPSE_SEGMENTS;
-        const ex = s.semiA * markerScale * Math.cos(phi), ey = s.semiB * markerScale * Math.sin(phi);
+        const ex = s.semiA * Math.cos(phi), ey = s.semiB * Math.sin(phi);
         const wx = s.x + ex * ct - ey * st;
         const wy = s.y + ex * st + ey * ct;
         const p = h.imageToScreen(wx, wy);

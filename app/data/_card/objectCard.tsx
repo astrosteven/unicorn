@@ -466,9 +466,14 @@ export async function loadInspect(fc: FieldConfig): Promise<InspectOverride | nu
   const inspected = new Set<number>();
   // Merge LIVE decisions from Supabase (best-effort — skipped if signed out / RLS denies).
   try {
-    const { data: rows, error } = await supabase
-      .from("inspections").select("obj_id, decision").eq("field", fc.field);
-    if (!error && rows) {
+    // Page past PostgREST's 1000-row cap so a field with >1000 decisions doesn't silently drop
+    // some (which would revert removed objects to selected in the overlay). Ordered by obj_id.
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data: rows, error } = await supabase
+        .from("inspections").select("obj_id, decision").eq("field", fc.field)
+        .order("obj_id", { ascending: true }).range(from, from + PAGE - 1);
+      if (error || !rows) break;
       for (const r of rows as { obj_id: number; decision: string }[]) {
         const id = Number(r.obj_id);
         if (!Number.isFinite(id) || !r.decision || r.decision === "not_inspected") continue;
@@ -476,6 +481,7 @@ export async function loadInspect(fc: FieldConfig): Promise<InspectOverride | nu
         if (r.decision === "remove") { removed.add(id); kept.delete(id); }
         else if (r.decision === "keep") { kept.add(id); removed.delete(id); }
       }
+      if (rows.length < PAGE) break;
     }
   } catch { /* not signed in / offline — static override only */ }
   const res: InspectOverride | null =

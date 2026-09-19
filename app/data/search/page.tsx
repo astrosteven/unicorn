@@ -914,7 +914,10 @@ export default function SearchPage() {
   }
   const [queryTotal, setQueryTotal] = useState(0);
   const [queryCard, setQueryCard] = useState<SourceResult | null>(null);
-  const [queryCardId, setQueryCardId] = useState<number | null>(null);
+  // Keyed by "field:id" — a bare id collides across fields (an all-fields ID search can match e.g.
+  // CEERS 6613 AND GOODS-S 6613, which would open/toggle both rows and mismatch the card).
+  const [queryCardId, setQueryCardId] = useState<string | null>(null);
+  const queryCardReqRef = useRef<string | null>(null);   // latest requested key — guards a slow fetch from overwriting a newer click
   // Field scope is PER-TAB: each search mode keeps its own field selection, so picking a field on
   // the ID (or Name) tab doesn't silently scope the Upload / coord / query tabs — those have no
   // field selector and must stay "all". Keyed by mode; a missing entry → "all".
@@ -1169,11 +1172,12 @@ export default function SearchPage() {
   }
 
   async function viewQueryRow(fc: typeof SEARCH_FIELDS[0], id: number) {
-    if (queryCardId === id) { setQueryCard(null); setQueryCardId(null); return; }  // toggle off
-    setQueryCard(null); setQueryCardId(id);   // show a loading slot immediately under the row
+    const key = `${fc.field}:${id}`;
+    if (queryCardId === key) { setQueryCard(null); setQueryCardId(null); queryCardReqRef.current = null; return; }  // toggle off
+    setQueryCard(null); setQueryCardId(key); queryCardReqRef.current = key;   // loading slot under the row
     const { zg } = await loadField(fc);
     const src = await fetchObject(fc, id, zg);
-    if (src) {
+    if (src && queryCardReqRef.current === key) {   // ignore a stale fetch if the user has since clicked elsewhere
       setQueryCard(src);
       requestAnimationFrame(() => cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
     }
@@ -1290,7 +1294,7 @@ export default function SearchPage() {
     queryAllRef.current = eff;
     const shown = dedupeRef.current ? eff.length : (rawTotal ?? all.length);
     setSort({ col: null, dir: "asc" });
-    setResults([]); setQueryCard(null); setQueryCardId(null);
+    setResults([]); setQueryCard(null); setQueryCardId(null); queryCardReqRef.current = null;
     setQueryRows(eff.slice(0, TABLE_CAP).map(m => toQueryRow(m.fc, m.id, m.r, m.cz, getters)));
     setQueryCols(cols);
     setQueryTotal(shown);
@@ -2065,7 +2069,7 @@ export default function SearchPage() {
       {status === "found" && (
         <>
           <DownloadControls resolveRows={async () => results} count={results.length} />
-          {results.map((src, i) => <ResultCard key={i} src={src} />)}
+          {results.map((src) => <ResultCard key={`${src.field}_${src.row["ID"]}`} src={src} />)}
         </>
       )}
 
@@ -2076,7 +2080,7 @@ export default function SearchPage() {
             <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>{matchSummary}</span>
           </div>
           <DownloadControls resolveRows={async () => results} count={results.length} />
-          {results.map((src, i) => <ResultCard key={i} src={src} />)}
+          {results.map((src) => <ResultCard key={`${src.field}_${src.row["ID"]}`} src={src} />)}
         </div>
       )}
 
@@ -2189,7 +2193,7 @@ export default function SearchPage() {
               </thead>
               <tbody>
                 {queryRows.map((r, i) => {
-                  const open = queryCardId === r.id;
+                  const open = queryCardId === `${r.fc.field}:${r.id}`;
                   return (
                   <Fragment key={i}>
                   <tr
@@ -2228,8 +2232,8 @@ export default function SearchPage() {
                   {open && (
                     <tr ref={cardRef}>
                       <td colSpan={9 + queryCols.length} style={{ padding: "0.5rem 0.75rem 1rem", background: "rgba(176,124,198,0.04)" }}>
-                        {queryCard && queryCard.row["ID"] === r.id
-                          ? <ResultCard src={queryCard} />
+                        {queryCard && queryCard.field === r.fc.field && queryCard.row["ID"] === r.id
+                          ? <ResultCard key={queryCardId ?? undefined} src={queryCard} />
                           : <div style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>Loading…</div>}
                       </td>
                     </tr>
