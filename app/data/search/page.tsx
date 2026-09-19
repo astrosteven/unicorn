@@ -1708,7 +1708,7 @@ export default function SearchPage() {
           for fast in-browser search — per-filter queries use the native catalog flux to 4 significant figures
           (derived mag/S/N/color match the catalog to ≲10⁻³; colors use a 1σ upper limit where S/N&lt;1); redshifts,
           M_UV, β and sizes to 3–4 decimals. For full-precision, science-grade values use the FITS catalogs on the{" "}
-          <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page. See “Field Search Options”
+          <a href="/unicorn/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page. See “Field Search Options”
           below for the per-quantity detail.
         </p>
       </div>
@@ -1993,7 +1993,7 @@ export default function SearchPage() {
                   stored to 4 significant figures — derived mag/S/N/color match the catalog to ≲10⁻³. Redshifts, M_UV,
                   β, sizes and positions are stored to 3–4 decimals. Colors use a 1σ upper limit for any band with
                   S/N&lt;1. For full-precision values use the FITS catalogs on the{" "}
-                  <a href="/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page.
+                  <a href="/unicorn/data/catalogs" style={{ color: "var(--accent2)" }}>Catalogs</a> page.
                 </div>
               )}
               </div>

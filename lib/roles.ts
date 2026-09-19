@@ -18,7 +18,9 @@ export type Role = "pending" | "general" | "key" | "admin";
 // PREFIX-matched via under(), so the overview "/data" must NOT go here — it would
 // prefix-match every /data/* route and make the whole site public. The overview is
 // exact-matched separately in routeAllowed().
-export const PUBLIC_ROUTES = ["/data/fields"];
+// NOTE: keep in sync with NAV_LINKS `min: null` in app/data/layout.tsx — a route shown to all
+// in the nav must be listed here, or anon/general users get bounced to login / "needs access".
+export const PUBLIC_ROUTES = ["/data/fields", "/data/readme"];
 
 // General tier adds these; key adds the two after; admin gets its own page too.
 const GENERAL_ROUTES = ["/data/catalogs", "/data/map", "/data/search"];
