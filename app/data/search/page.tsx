@@ -1479,23 +1479,40 @@ export default function SearchPage() {
         return;
       }
 
-      // Name mode: match the typed text against the curated famous-object labels.
+      // Name mode: match the typed text against the curated famous-object labels — a tiny JSON, so
+      // the search itself is instant. Render results STRAIGHT from that names DB (make_labels.py
+      // enriches each with za/m444/zspec/selected), so no multi-MB field index is downloaded. Only
+      // an un-enriched entry (e.g. a name just added by a user) falls back to loading its field.
       if (mode === "name") {
         const q = nameInput.trim().toLowerCase();
         if (!q) { setStatus("notfound"); setMatchSummary("Type a name, e.g. Maisie or GN-z11."); return; }
         const labels = await loadLabels();
         const hits = labels.filter(l =>
           l.name.toLowerCase().includes(q) || (l.aka ?? []).some(a => a.toLowerCase().includes(q)));
-        const matches: { fc: typeof SEARCH_FIELDS[0]; idx: Awaited<ReturnType<typeof loadField>>["idx"]; i: number }[] = [];
+        const entries: MatchEntry[] = [];
+        const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
         for (const l of hits) {
           const fc = avail.find(f => f.field === l.field);
           if (!fc) continue;
-          const { idx } = await loadField(fc);
-          const i = idx.id.indexOf(l.id);
-          if (i >= 0) matches.push({ fc, idx, i });
+          const enriched = typeof l.za === "number" || typeof l.m444 === "number"
+            || typeof l.zspec === "number" || typeof l.selected === "number";
+          if (enriched) {
+            const r: IdxRow = {
+              za: l.za ?? null, m444: l.m444 ?? null, zspec: l.zspec ?? null,
+              selected: typeof l.selected === "number" ? l.selected : null,
+            };
+            entries.push({ fc, id: l.id, r, cz: null });
+          } else {
+            const { idx } = await loadField(fc);   // fallback: un-enriched (just-added) name
+            const i = idx.id.indexOf(l.id);
+            if (i < 0) continue;
+            if (!speczByField.has(fc.field)) speczByField.set(fc.field, await loadSpecz(fc));
+            const cz = speczByField.get(fc.field)?.[String(l.id)] ?? null;
+            entries.push({ fc, id: l.id, r: indexRowAt(idx, i, cz), cz });
+          }
         }
-        if (matches.length === 0) { setStatus("notfound"); setMatchSummary(`No named object matches "${nameInput.trim()}".`); return; }
-        await showMatchTable(matches, t => `${t.toLocaleString()} named match${t === 1 ? "" : "es"} for "${nameInput.trim()}"`);
+        if (entries.length === 0) { setStatus("notfound"); setMatchSummary(`No named object matches "${nameInput.trim()}".`); return; }
+        commitMatches(entries, [], [], t => `${t.toLocaleString()} named match${t === 1 ? "" : "es"} for "${nameInput.trim()}"`);
         return;
       }
 

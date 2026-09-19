@@ -102,6 +102,9 @@ export type LabelRec = {
   name: string; aka?: string[]; field: string; id: number;
   ra?: number; dec?: number; z?: number; z_type?: string; ref?: string; note?: string;
   reference?: string;  // free-form citation (paper / arXiv id / URL) for user-submitted labels
+  // Display columns embedded by make_labels.py so the "By Name" results render without loading the
+  // full field index (see the name branch in search/page.tsx). Absent on just-added user labels.
+  za?: number; m444?: number; zspec?: number; selected?: number;
 };
 
 // Build the "why not selected" breakdown for object at index position `pos`.

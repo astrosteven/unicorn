@@ -82,27 +82,41 @@ def main():
         # Emit a label for EVERY field that detects the object within tol — overlapping
         # fields (COSMOS/PRIMER-COSMOS, CEERS/EGS) both cover the same sky, so a famous
         # object should flag in each catalog it appears in, not just the nearest.
-        matches = []  # (sep, prefix, id)
+        matches = []  # (sep, prefix, id, j)
         for prefix, (idx, tree) in trees.items():
             d, j = tree.query(v, k=1, distance_upper_bound=chord)
             d, j = float(d[0]), int(j[0])
             if not np.isfinite(d) or j >= len(idx["id"]):
                 continue
             sep = 2.0 * np.degrees(np.arcsin(min(d / 2.0, 1.0))) * 3600.0
-            matches.append((sep, prefix, int(idx["id"][j])))
+            matches.append((sep, prefix, int(idx["id"][j]), j))
         if not matches:
             unresolved.append((obj.get("name"), f"no object within {args.tol}\""))
             continue
         matches.sort()
-        for sep, prefix, oid in matches:
+        for sep, prefix, oid, j in matches:
             rec = {"name": obj["name"], "field": PREFIX_FIELD[prefix], "id": oid,
                    "ra": ra, "dec": dec, "sep": round(sep, 3)}
             for k in ("aka", "z", "z_type", "ref", "note"):
                 if obj.get(k) not in (None, "", []):
                     rec[k] = obj[k]
+            # Embed the display columns (za/m444/zspec/selected) from the matched index row so the
+            # site's "By Name" search renders results without downloading the multi-MB field index.
+            idxp = trees[prefix][0]
+            for col in ("za", "m444", "zspec", "selected"):
+                arr = idxp.get(col)
+                if arr is None or j >= len(arr) or arr[j] is None:
+                    continue
+                try:
+                    fval = float(arr[j])
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(fval):
+                    continue
+                rec[col] = int(fval) if col == "selected" else round(fval, 4)
             out.append(rec)
         print(f"  {obj['name']:26s} -> " +
-              ", ".join(f"{PREFIX_FIELD[p]}:{oid}({s:.2f}\")" for s, p, oid in matches))
+              ", ".join(f"{PREFIX_FIELD[p]}:{oid}({s:.2f}\")" for s, p, oid, _ in matches))
 
     print(f"\nresolved {len(out)}/{len(named)} named objects")
     for name, why in unresolved:
