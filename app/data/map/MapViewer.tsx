@@ -155,7 +155,9 @@ const IFU_SIDE = 3.0;            // arcsec, NIRSpec IFU field of view (3"×3")
 // Full NIRSpec focal plane, SIAF-exact (pysiaf NIRSpec PRD, extracted in the MSA ideal frame
 // and mapped to our (dispersion d, spatial s) arcsec axes via d = −Xidl, s = +Yidl — the
 // handedness calibrated against pysiaf's Idl→sky transform: at aperture PA=0, +s is North and
-// +d is West). All positions are relative to the NRS_FULL_MSA reference, so the whole assembly
+// +d is EAST (+Xidl points West, so d=−Xidl points East — verified end-to-end against a pysiaf
+// attitude transform, worst-case overlay error 0.017″). Do NOT "correct" this to West: that
+// would mirror the entire overlay. All positions are relative to the NRS_FULL_MSA reference, so the whole assembly
 // pins to one sky point + PA. The 4 MSA quadrants (2×2, each ≈98″×92″, in the corners), the
 // central band of fixed slits, and the 3″×3″ IFU all sit in fixed relative positions.
 const MSA_QUADS_DS: [number, number][][] = [
@@ -2616,11 +2618,12 @@ function NIRSpecPanel({
         <div style={{ padding: "2px 12px 12px" }}>
           {/* Quick how-to — keeps footprint planning discoverable without a separate help page. */}
           <p style={{ fontSize: "0.64rem", lineHeight: 1.55, color: "var(--text-dim)", margin: "0 0 11px" }}>
-            Overlay JWST apertures, set the <b style={{ color: "var(--text-muted)" }}>PA</b> (the V3PA to
-            request in APT is shown), and drag the handle to place them. To plan against your own
-            targets, upload a list on{" "}
+            Overlay JWST apertures, set the <b style={{ color: "var(--text-muted)" }}>PA</b> (this is the
+            Aperture PA — request it as the APT ORIENT; the pointing V3PA is also shown), and drag the
+            handle to place them. To plan against your own targets, upload a list on{" "}
             <a href="/unicorn/data/search" style={{ color: "var(--accent)" }}>Search → Upload</a>{" "}
-            with <i>“plot as-is”</i>.
+            with <i>“plot as-is”</i>. Overlay accuracy ≈0.1″ (set by the imagery); shutter-level MSA
+            design still needs MPT.
           </p>
           <label style={row}>
             <input type="checkbox" checked={msaOn} onChange={e => onMsa(e.target.checked)}
@@ -2711,10 +2714,14 @@ function NIRSpecPanel({
               onChange={e => onPa(Number(e.target.value))}
               style={{ width: "100%", accentColor: "var(--accent)", cursor: "pointer", height: 4 }}
             />
-            {/* Live JWST V3PA for this aperture PA (V3PA = aperture PA − NIRSpec MSA V3IdlYAngle). */}
+            {/* Live JWST V3PA at the NIRSpec pointing (V3PA = aperture PA − NIRSpec MSA V3IdlYAngle),
+                shown to 2 decimals (0.1° ≈ 0.7″ at MIRI). The EXACT round-trip is to request the
+                slider PA below as the APT Aperture PA (ORIENT); this V3PA uses the jwst_gtvt
+                pointing convention and can differ from a V1-referenced V3PA by ~0.1–0.3°. */}
             <div className="mono" style={{ fontSize: "0.62rem", color: "var(--text-dim)", marginTop: 3 }}
-              title="JWST V3 position angle to request in APT = aperture PA − NIRSpec MSA V3IdlYAngle (138.57°). Verify against APT.">
-              V3PA ≈ <span style={{ color: "var(--accent2)" }}>{((((paDeg - NRS_MSA_V3IDLYANGLE) % 360) + 360) % 360).toFixed(1)}°</span>
+              title="V3 position angle AT THE NIRSpec pointing (aperture PA − 138.5746°), jwst_gtvt convention — matches the achievability check below. For an exact overlay in APT, request the Aperture PA (the slider value) as the ORIENT special requirement; a V1-referenced V3PA can differ by up to ~0.3° (a few arcsec at MIRI).">
+              V3PA ≈ <span style={{ color: "var(--accent2)" }}>{((((paDeg - NRS_MSA_V3IDLYANGLE) % 360) + 360) % 360).toFixed(2)}°</span>
+              <span style={{ color: "var(--text-dim)" }}> (at pointing)</span>
             </div>
             <input
               type="number" aria-label="Position angle degrees" value={paDeg}
@@ -2725,7 +2732,7 @@ function NIRSpecPanel({
                 fontFamily: "'Space Mono', monospace", fontSize: "0.72rem", padding: "4px 7px",
               }}
             />
-            <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 2 }}>east of north · orients the slit long axis</div>
+            <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 2 }}>east of north · this IS the Aperture PA — request it as the APT ORIENT</div>
 
             {/* Pivot for PA rotation: keep this point fixed on the sky as you roll. "View centre"
                 (your target) is the default; a fixed slit keeps that slit pinned so a source stays
