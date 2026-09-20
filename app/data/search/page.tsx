@@ -45,7 +45,7 @@ type IdxRow = Record<string, number | string | null>;
 // Numeric queryable columns (must exist in the index).
 const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m1500", "m1300", "mabs", "beta", "zspec",
   "czspec", "czqual",
-  ...DB_COLS,   // dense-basis physical properties (CEERS): mass/av/sfr10/sfr100 + _16/_84
+  ...DB_COLS,   // Dense Basis physical properties (CEERS, A2744, NGDEEP, PRIMER-UDS, PRIMER-COSMOS): mass/av/sfr10/sfr100 + _16/_84
   "rh_277", "rh_444", "kron_radius", "a_image", "b_image", "x", "y", "depthtier",
   "ra", "dec", "selected", "inspected", "sample"];
 const QUERY_STR = ["field", "detectcat", "tile"];
@@ -1964,9 +1964,9 @@ export default function SearchPage() {
                   ["zspec", "spectroscopic redshift (>0 if known)"],
                   ["czspec", "campfire spec-z (has a campfire spectrum)"],
                   ["czqual", "campfire z quality 0–4 (4=Secure, 3=Probable)"],
-                  ["mass", "log₁₀ stellar mass (dense-basis, CEERS); mass_16/mass_84 = 16/84th %ile"],
+                  ["mass", "log₁₀ stellar mass (Dense Basis: CEERS, A2744, NGDEEP, PRIMER-UDS/COSMOS); mass_16/mass_84 = 16/84th %ile"],
                   ["av", "dust attenuation A_V (mag); av_16/av_84 too"],
-                  ["sfr10 / sfr100", "log SFR over 10/100 Myr; each has _16/_84"],
+                  ["sfr10 / sfr100", "log SFR over 10/100 Myr (Dense Basis); each has _16/_84"],
                   ["rh_277 / rh_444", "half-light radius (pixels)"],
                   ["kron_radius", "Kron radius (pixels)"],
                   ["a_image / b_image", "major / minor axis (pixels)"],

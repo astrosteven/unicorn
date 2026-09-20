@@ -385,8 +385,9 @@ export async function loadFilters(fc: FieldConfig): Promise<Record<string, NumCo
   }
 }
 
-// Dense-basis physical properties (<prefix>_db_v<ver>.json[.gz]): parallel arrays aligned
-// to index order, exposed as queryable columns. Currently CEERS only; absent → null.
+// Dense Basis physical properties (<prefix>_db_v<ver>.json[.gz]): parallel arrays aligned
+// to index order, exposed as queryable columns. Available for CEERS, A2744, NGDEEP, PRIMER-UDS
+// and PRIMER-COSMOS (scripts/make_db_sidecar.py); a field without a sidecar → null.
 export const DB_COLS = [
   "mass", "mass_16", "mass_84", "av", "av_16", "av_84",
   "sfr10", "sfr10_16", "sfr10_84", "sfr100", "sfr100_16", "sfr100_84",
