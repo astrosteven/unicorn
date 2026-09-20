@@ -51,10 +51,20 @@ html, body {
   font-family: var(--sans);
   font-size: 17px;
   line-height: 1.65;
-  min-height: 100vh;
+  min-height: 100dvh;
+  /* Kill horizontal overflow: without this, one over-wide child makes the document wider than the
+     phone screen, so iOS Safari zooms OUT to fit — content ends up jammed in the left ~55% with
+     dead space at right and the max-width:768px mobile layout never triggers. */
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* The map's WebGL canvas must not claim touch gestures for the browser (touch-action isn't
+   inherited, so setting it on the wrapper alone doesn't reach the canvas) — our JS does pan/zoom. */
+.mapwrap canvas { touch-action: none; }
 
 .mono { font-family: 'Space Mono', monospace; }
 /* Display serif for large headings — the biggest single "modern" lever */

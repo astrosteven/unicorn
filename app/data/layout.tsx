@@ -70,11 +70,14 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
     <div style={{ minHeight: "100dvh", display: "flex", flexDirection: "column" }}>
       <nav style={{
         borderBottom: "1px solid var(--border)",
-        padding: "0 clamp(1.25rem, 4vw, 2.5rem)",
-        height: "64px",
+        padding: "10px clamp(1.25rem, 4vw, 2.5rem)",
+        minHeight: "64px",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        gap: "8px",
+        flexWrap: "wrap",
+        rowGap: "8px",
         background: "rgba(11,8,23,0.72)",
         backdropFilter: "blur(14px)",
         WebkitBackdropFilter: "blur(14px)",

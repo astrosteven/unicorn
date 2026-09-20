@@ -2284,7 +2284,7 @@ export default function MapViewer({
   const glyphSW = glyphs.length <= 40 ? 3 : glyphs.length <= 200 ? 2.3 : glyphs.length <= 1200 ? 1.7 : 1.3;
 
   return (
-    <div ref={wrapRef} style={{ width: "100%", height: "100%", position: "relative", touchAction: "none" }}>
+    <div ref={wrapRef} className="mapwrap" style={{ width: "100%", height: "100%", position: "relative", touchAction: "none" }}>
       <FitsViewer
         key={viewerKey}
         config={viewerConfig}
