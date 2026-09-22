@@ -699,7 +699,7 @@ export default function MapViewer({
   // Selected transfer curve. trilogy is the default; the panel can switch to any mode
   // @fitsgl/core supports (log/asinh/sqrt/linear), applied over the same per-band levels.
   const [stretchMode, setStretchMode] = useState<StretchMode>(DEFAULT_STRETCH_MODE);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);   // DISPLAY panel starts collapsed
   // View mode: RGB-weighted composite (default) / simple 3-band RGB / a single band by name.
   // Switching swaps the viewer's render source; single-band adds colormap + a percentile
   // black/white window (null = auto from the band's precomputed trilogy stats).
