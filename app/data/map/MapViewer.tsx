@@ -2612,7 +2612,7 @@ export default function MapViewer({
         {/* The INNER column is the scroller and the only pointer/touch target — the outer box stays
             pointer-transparent so the map pans/zooms in the empty space around the panels, while
             this column can be dragged to scroll (touch) and doesn't block map gestures elsewhere. */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", overscrollBehavior: "contain", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
         <NIRSpecPanel
           msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
           msaCount={msaSources.length}
@@ -2759,7 +2759,7 @@ function NIRSpecPanel({
       </button>
 
       {open && (
-        <div style={{ padding: "2px 12px 12px" }}>
+        <div style={{ padding: "2px 12px 12px", maxHeight: "calc(100dvh - 150px)", overflowY: "auto", overscrollBehavior: "contain", touchAction: "pan-y" }}>
           {/* Quick how-to — keeps footprint planning discoverable without a separate help page. */}
           <p style={{ fontSize: "0.64rem", lineHeight: 1.55, color: "var(--text-dim)", margin: "0 0 11px" }}>
             Overlay JWST apertures, set the <b style={{ color: "var(--text-muted)" }}>PA</b> (this is the
