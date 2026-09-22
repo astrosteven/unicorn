@@ -936,6 +936,29 @@ export default function MapViewer({
     setPaDeg(newPa);
   }, []);
 
+  // Choosing "rotate about" = a fixed slit ALSO snaps that slit onto the current target (view
+  // centre), so "put my slit on my target, then roll the PA" works in one step — after this,
+  // handlePaChange pivots about that slit so it stays locked on the target as the mask rotates.
+  // ("View centre" / "MSA centre" don't reposition — they only set the pivot.)
+  const handleRotateAbout = useCallback((v: string) => {
+    setRotateAbout(v);
+    if (v === "view" || v === "ref") return;
+    const h = handleRef.current;
+    const wcs = h?.getViewer()?.getWcs();
+    const cam = h?.getCameraState();
+    if (!h || !wcs || !cam) return;
+    const vsky = pixToSky(wcs, cam.centerX, cam.centerY);   // the target under the view centre
+    if (!Number.isFinite(vsky.ra) || !Number.isFinite(vsky.dec)) return;
+    const fr = apertureFrameWorld(wcs, vsky, apRef.current.paDeg);
+    if (!fr) return;
+    const [dP, sP] = slitCenterDS(v);
+    // Place the aperture reference so the chosen slit's (d,s) lands exactly on the view centre.
+    const cx = cam.centerX - (fr.disp.x * dP + fr.spat.x * sP);
+    const cy = cam.centerY - (fr.disp.y * dP + fr.spat.y * sP);
+    const s = pixToSky(wcs, cx, cy);
+    if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
+  }, []);
+
   // Zoom/pan so EVERY enabled overlay (MSA field + checked instrument footprints) fits the
   // viewport — the JWST focal plane spans ~15′, so distant instruments (MIRI ~14′) need a wide
   // view. Bbox the world-px corners of all enabled apertures at the current pin + PA, then hand a
@@ -2623,7 +2646,7 @@ export default function MapViewer({
           msaCount={msaSources.length}
           onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
-          rotateAbout={rotateAbout} onRotateAbout={setRotateAbout}
+          rotateAbout={rotateAbout} onRotateAbout={handleRotateAbout}
           paAchieve={paAchieve} onPickPa={handlePaChange}
           instruments={siaf?.instruments ?? []}
           footprints={footprints}
