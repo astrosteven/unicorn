@@ -2617,6 +2617,25 @@ export default function MapViewer({
             pointer-transparent so the map pans/zooms in the empty space around the panels, while
             this column can be dragged to scroll (touch) and doesn't block map gestures elsewhere. */}
         <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
+        <NIRSpecPanel
+          msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
+          msaCount={msaSources.length}
+          onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
+          onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
+          rotateAbout={rotateAbout} onRotateAbout={handleRotateAbout}
+          paAchieve={paAchieve} onPickPa={handlePaChange}
+          instruments={siaf?.instruments ?? []}
+          footprints={footprints}
+          onToggleFootprint={(key, on) => setFootprints(prev => {
+            const next = new Set(prev);
+            if (on) next.add(key); else next.delete(key);
+            return next;
+          })}
+          onFitFootprints={fitFootprints}
+          // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
+          // so pinning/unpinning leaves it exactly where you left it.
+          onTogglePin={() => setApLocked(l => !l)}
+        />
         <FitsglControls
           title="DISPLAY"
           bands={controlBands}
@@ -2640,25 +2659,6 @@ export default function MapViewer({
           }}
           open={panelOpen}
           onToggle={() => setPanelOpen(o => !o)}
-        />
-        <NIRSpecPanel
-          msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
-          msaCount={msaSources.length}
-          onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
-          onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
-          rotateAbout={rotateAbout} onRotateAbout={handleRotateAbout}
-          paAchieve={paAchieve} onPickPa={handlePaChange}
-          instruments={siaf?.instruments ?? []}
-          footprints={footprints}
-          onToggleFootprint={(key, on) => setFootprints(prev => {
-            const next = new Set(prev);
-            if (on) next.add(key); else next.delete(key);
-            return next;
-          })}
-          onFitFootprints={fitFootprints}
-          // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
-          // so pinning/unpinning leaves it exactly where you left it.
-          onTogglePin={() => setApLocked(l => !l)}
         />
       </div>
       </div>
@@ -2788,41 +2788,6 @@ function NIRSpecPanel({
               style={{ accentColor: "#f0b050", width: 15, height: 15 }} />
             <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>MSA field (4 quadrants)</span>
           </label>
-
-          {/* Other JWST instruments — SIAF-exact footprints at their true focal-plane offsets from
-              the NIRSpec MSA. Check any number; they all share the pin + PA below, so one V3PA rolls
-              the whole focal plane together. */}
-          {instruments.length > 0 && (
-            <div style={{ marginTop: 2, marginBottom: 4, borderTop: "1px solid var(--border-bright)", paddingTop: 9 }}>
-              <div className="mono" style={{ fontSize: "0.6rem", letterSpacing: "0.08em", color: "var(--text-dim)", marginBottom: 8 }}>
-                OTHER INSTRUMENTS
-              </div>
-              {instruments.map(ins => (
-                <label key={ins.key} style={row}>
-                  <input type="checkbox" checked={footprints.has(ins.key)}
-                    onChange={e => onToggleFootprint(ins.key, e.target.checked)}
-                    style={{ accentColor: ins.color, width: 15, height: 15 }} />
-                  <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: ins.color, flexShrink: 0 }} />
-                  <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>{ins.label}</span>
-                </label>
-              ))}
-            </div>
-          )}
-
-          {anyOn && (
-            <button
-              onClick={onFitFootprints}
-              className="mono"
-              title="Zoom out so every enabled overlay (MSA field + checked instruments) fits — the JWST focal plane spans ~15′."
-              style={{
-                width: "100%", marginBottom: 9, background: "none",
-                border: "1px solid var(--border-bright)", borderRadius: 5,
-                color: "var(--text-muted)", cursor: "pointer", fontSize: "0.68rem", padding: "6px 10px",
-              }}
-            >
-              ⤢ Zoom to fit all footprints
-            </button>
-          )}
 
           {/* In-MSA catalog readout + handoffs — shown only while the MSA-field overlay is on.
               The count updates live as the centre / PA change (project() re-collects each frame).
@@ -2979,6 +2944,42 @@ function NIRSpecPanel({
           >
             {pinned ? "🔒 Locked · click to move" : "⠿ Drag to move · click to lock"}
           </button>
+
+          {/* Other JWST instruments — SIAF-exact footprints at their true focal-plane offsets from
+              the NIRSpec MSA. Kept BELOW the MSA + PA controls so the "rotate about" pivot stays
+              reachable without scrolling past four instrument checkboxes. Check any number; they
+              share the pin + PA above, so one V3PA rolls the whole focal plane together. */}
+          {instruments.length > 0 && (
+            <div style={{ marginTop: 11, borderTop: "1px solid var(--border-bright)", paddingTop: 9 }}>
+              <div className="mono" style={{ fontSize: "0.6rem", letterSpacing: "0.08em", color: "var(--text-dim)", marginBottom: 8 }}>
+                OTHER INSTRUMENTS
+              </div>
+              {instruments.map(ins => (
+                <label key={ins.key} style={row}>
+                  <input type="checkbox" checked={footprints.has(ins.key)}
+                    onChange={e => onToggleFootprint(ins.key, e.target.checked)}
+                    style={{ accentColor: ins.color, width: 15, height: 15 }} />
+                  <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 2, background: ins.color, flexShrink: 0 }} />
+                  <span style={{ fontSize: "0.72rem", color: "var(--text)" }}>{ins.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
+
+          {anyOn && (
+            <button
+              onClick={onFitFootprints}
+              className="mono"
+              title="Zoom out so every enabled overlay (MSA field + checked instruments) fits — the JWST focal plane spans ~15′."
+              style={{
+                width: "100%", marginTop: 9, background: "none",
+                border: "1px solid var(--border-bright)", borderRadius: 5,
+                color: "var(--text-muted)", cursor: "pointer", fontSize: "0.68rem", padding: "6px 10px",
+              }}
+            >
+              ⤢ Zoom to fit all footprints
+            </button>
+          )}
         </div>
       )}
     </div>
