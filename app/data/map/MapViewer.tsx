@@ -936,28 +936,11 @@ export default function MapViewer({
     setPaDeg(newPa);
   }, []);
 
-  // Choosing "rotate about" = a fixed slit ALSO snaps that slit onto the current target (view
-  // centre), so "put my slit on my target, then roll the PA" works in one step — after this,
-  // handlePaChange pivots about that slit so it stays locked on the target as the mask rotates.
-  // ("View centre" / "MSA centre" don't reposition — they only set the pivot.)
-  const handleRotateAbout = useCallback((v: string) => {
-    setRotateAbout(v);
-    if (v === "view" || v === "ref") return;
-    const h = handleRef.current;
-    const wcs = h?.getViewer()?.getWcs();
-    const cam = h?.getCameraState();
-    if (!h || !wcs || !cam) return;
-    const vsky = pixToSky(wcs, cam.centerX, cam.centerY);   // the target under the view centre
-    if (!Number.isFinite(vsky.ra) || !Number.isFinite(vsky.dec)) return;
-    const fr = apertureFrameWorld(wcs, vsky, apRef.current.paDeg);
-    if (!fr) return;
-    const [dP, sP] = slitCenterDS(v);
-    // Place the aperture reference so the chosen slit's (d,s) lands exactly on the view centre.
-    const cx = cam.centerX - (fr.disp.x * dP + fr.spat.x * sP);
-    const cy = cam.centerY - (fr.disp.y * dP + fr.spat.y * sP);
-    const s = pixToSky(wcs, cx, cy);
-    if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
-  }, []);
+  // The (d,s) offset of the current pivot from the aperture reference: a fixed slit's centre, else
+  // the reference itself (view/ref). Drives BOTH the drag handle position and the drag placement so
+  // the handle sits ON the pivot and dragging moves the pivot (e.g. drag the slit onto your source).
+  const pivotDS = (about: string): [number, number] =>
+    about === "ref" || about === "view" ? [0, 0] : slitCenterDS(about);
 
   // Zoom/pan so EVERY enabled overlay (MSA field + checked instrument footprints) fits the
   // viewport — the JWST focal plane spans ~15′, so distant instruments (MIRI ~14′) need a wide
@@ -1061,7 +1044,16 @@ export default function MapViewer({
       if (!h || !wcs) return;
       const w = h.screenToImage(e.clientX, e.clientY);
       if (!w) return;
-      const s = pixToSky(wcs, w.x, w.y);
+      // Move so the PIVOT (slit, when chosen) lands under the cursor — not the reference — so you
+      // drag the slit itself onto your source. Then place the reference = cursor − pivot offset.
+      const [dP, sP] = pivotDS(apRef.current.rotateAbout);
+      let rx = w.x, ry = w.y;
+      if (dP !== 0 || sP !== 0) {
+        const cursorSky = pixToSky(wcs, w.x, w.y);
+        const fw = apertureFrameWorld(wcs, cursorSky, apRef.current.paDeg);
+        if (fw) { rx = w.x - (fw.disp.x * dP + fw.spat.x * sP); ry = w.y - (fw.disp.y * dP + fw.spat.y * sP); }
+      }
+      const s = pixToSky(wcs, rx, ry);
       if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
     };
     const up = () => { apDragRef.current = false; };
@@ -1410,7 +1402,11 @@ export default function MapViewer({
                 })
             : [];
           setApertures({ msa, ifu, field, slits, fieldIfu, fp });
-          setApCenterScreen({ cx: frame.cx, cy: frame.cy });   // drives the drag handle
+          // Drag handle rides on the PIVOT (the fixed slit when one is chosen, else the reference)
+          // so you grab the point you're rotating about and place it on your source.
+          const [hdP, hsP] = pivotDS(ap.rotateAbout);
+          const hpos = apXY(frame, hdP, hsP);
+          setApCenterScreen({ cx: hpos.x, cy: hpos.y });   // drives the drag handle
 
           // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
           // EVERY source is tested (not just the on-screen ones the screen `field` polygons
@@ -2622,7 +2618,7 @@ export default function MapViewer({
           msaCount={msaSources.length}
           onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
-          rotateAbout={rotateAbout} onRotateAbout={handleRotateAbout}
+          rotateAbout={rotateAbout} onRotateAbout={setRotateAbout}
           paAchieve={paAchieve} onPickPa={handlePaChange}
           instruments={siaf?.instruments ?? []}
           footprints={footprints}
