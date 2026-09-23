@@ -877,7 +877,9 @@ export function PZPlot({ zgrid, pz, za, zgridLowz, pzLowz, alt }: {
   let peak = arrMax(pz);
   for (const a of (alt ?? [])) if (a.pz.length === zgrid.length) peak = Math.max(peak, arrMax(a.pz));
   const pzMax = 1.1 * (peak || 1);
-  const zmax = 16;
+  // Extend the x-axis for very-high-z objects so the P(z) peak isn't clamped off the right edge
+  // (e.g. z_a ~ 30). Round up to a multiple of 4 for clean ticks; default 16 for normal redshifts.
+  const zmax = (Number.isFinite(za) && za > 15) ? Math.ceil((za + 1) / 4) * 4 : 16;
   const cx = (z: number) => pad.l + (Math.min(z,zmax)/zmax)*pw;
   const cy = (p: number) => Math.max(pad.t, Math.min(pad.t + ph, pad.t + ph - (p/pzMax)*ph));
 
@@ -913,7 +915,7 @@ export function PZPlot({ zgrid, pz, za, zgridLowz, pzLowz, alt }: {
         );
       })}
       {/* X axis */}
-      {[0,4,8,12,16].map(v => (
+      {[0, zmax / 4, zmax / 2, (3 * zmax) / 4, zmax].map(v => (
         <g key={v}>
           <line x1={cx(v)} x2={cx(v)} y1={pad.t+ph} y2={pad.t+ph+5} stroke="var(--text-dim)" strokeWidth={0.8}/>
           <text x={cx(v)} y={pad.t+ph+18} textAnchor="middle" fontSize={11} fill="var(--text-muted)" fontFamily="monospace">{v}</text>
