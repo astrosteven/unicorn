@@ -458,13 +458,13 @@ export async function loadInspect(fc: FieldConfig): Promise<InspectOverride | nu
   const name = `${fc.prefix}_inspect_v${fc.version}.json`;
   const primary = override ? `${override}/${fieldCatDir(fc)}/web` : INDEX_BASE;
   let data: { removed?: number[]; kept?: number[] } | null = null;
+  // The static inspect-projection override (<prefix>_inspect) isn't generated yet, so it 404s on
+  // Pages. Do NOT fall back to Corral for it: when Corral is slow/down that fallback hangs ~20s
+  // PER FIELD (loadField awaits this), which stalls the whole search. Live decisions come from
+  // Supabase below regardless. Restore a (timeout-guarded) fallback once the projector publishes.
   try {
     data = await fetchJsonMaybeGz(`${primary}/${name}`);
-  } catch {
-    if (!override) {
-      try { data = await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fieldCatDir(fc)}/web/${name}`); } catch { /* absent */ }
-    }
-  }
+  } catch { /* no static projection published — live Supabase decisions below still apply */ }
   const removed = new Set<number>((data?.removed ?? []).map(Number));
   const kept = new Set<number>((data?.kept ?? []).map(Number));
   const inspected = new Set<number>();
