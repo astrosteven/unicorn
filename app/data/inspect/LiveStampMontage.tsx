@@ -29,8 +29,11 @@ function loadK(): number {
 }
 
 export function LiveStampMontage({
-  field, ra, dec, bands, fallbackUrl,
-}: { field: string; ra: number; dec: number; bands?: string[]; fallbackUrl?: string }) {
+  field, ra, dec, bands, fallbackUrl, aperSNR,
+}: { field: string; ra: number; dec: number; bands?: string[]; fallbackUrl?: string;
+  /** Per-band 0.2" native-aperture S/N (flux_aper_native / fluxerr_aper_empirical), keyed by
+   *  lowercase band — shown under each cell so the detection significance sits with the cutout. */
+  aperSNR?: Record<string, number> }) {
   const [stamp, setStamp] = useState<StampResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [k, setK] = useState<number>(DEFAULT_K);
@@ -114,7 +117,8 @@ export function LiveStampMontage({
           <>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
               {stamp.bands.map(b => (
-                <StampCell key={b.band} band={b.band} w={b.w} h={b.h} noise={b.noise} pixels={b.pixels} k={k} />
+                <StampCell key={b.band} band={b.band} w={b.w} h={b.h} noise={b.noise} pixels={b.pixels} k={k}
+                  snr={aperSNR?.[b.band.toLowerCase()]} />
               ))}
             </div>
             {stamp.errors && stamp.errors.length > 0 && (
@@ -133,8 +137,8 @@ export function LiveStampMontage({
 // the w×h float patch into an ImageData at native resolution, then upscales nearest-neighbor
 // (imageSmoothingEnabled=false) to CELL_PX. Re-runs whenever k (the slider) changes.
 function StampCell({
-  band, w, h, noise, pixels, k,
-}: { band: string; w: number; h: number; noise: number; pixels: Float32Array; k: number }) {
+  band, w, h, noise, pixels, k, snr,
+}: { band: string; w: number; h: number; noise: number; pixels: Float32Array; k: number; snr?: number }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -184,6 +188,14 @@ function StampCell({
         ref={canvasRef}
         style={{ width: `${CELL_PX}px`, height: `${CELL_PX}px`, background: "#fff", border: "1px solid var(--border)", borderRadius: "4px", display: "block", imageRendering: "pixelated" }}
       />
+      {/* 0.2" native-aperture S/N (native flux / empirical err) — muted; amber when a non-detection (<3σ). */}
+      {snr != null && Number.isFinite(snr) && (
+        <div className="mono" title="0.2″-aperture S/N (native flux / empirical error)"
+          style={{ fontSize: "0.58rem", marginTop: "2px", whiteSpace: "nowrap",
+            color: snr >= 3 ? "var(--text-muted)" : "var(--amber)" }}>
+          S/N {snr.toFixed(1)}
+        </div>
+      )}
     </div>
   );
 }

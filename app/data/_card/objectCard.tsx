@@ -1113,7 +1113,7 @@ export function ResultCard({ src }: { src: SourceResult }) {
       {/* Live per-band cutouts (Worker /stamp) with a stretch slider — same as the inspector;
           falls back to the pre-baked PNG for fields the Worker doesn't serve yet. */}
       {Number.isFinite(Number(src.row["RA"])) && Number.isFinite(Number(src.row["DEC"]))
-        ? <LiveStampMontage field={src.field} ra={Number(src.row["RA"])} dec={Number(src.row["DEC"])} bands={CARD_STAMP_BANDS} fallbackUrl={src.stampUrl} />
+        ? <LiveStampMontage field={src.field} ra={Number(src.row["RA"])} dec={Number(src.row["DEC"])} bands={CARD_STAMP_BANDS} fallbackUrl={src.stampUrl} aperSNR={src.aperSNR} />
         : (src.stampUrl ? <StampMontage url={src.stampUrl} /> : null)}
       {src.aperSNR && <AperSnrTable snr={src.aperSNR} />}
 

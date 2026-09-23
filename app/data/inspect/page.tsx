@@ -622,7 +622,7 @@ function InspectCard({ src }: { src: SourceResult }) {
         )}
       </div>
       {ra != null && dec != null && Number.isFinite(Number(ra)) && Number.isFinite(Number(dec)) && (
-        <LiveStampMontage field={src.field} ra={Number(ra)} dec={Number(dec)} bands={INSPECT_STAMP_BANDS} fallbackUrl={src.stampUrl} />
+        <LiveStampMontage field={src.field} ra={Number(ra)} dec={Number(dec)} bands={INSPECT_STAMP_BANDS} fallbackUrl={src.stampUrl} aperSNR={src.aperSNR} />
       )}
     </div>
   );
