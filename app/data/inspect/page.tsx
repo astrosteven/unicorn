@@ -15,7 +15,7 @@ import {
   SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot, clearInspectCaches,
   type SourceResult, type FieldConfig, type FieldIndex,
 } from "@/app/data/_card/objectCard";
-import { fetchStamp } from "@/lib/photometry";
+import { precacheStamp } from "@/lib/fitsglStamp";
 import { LiveStampMontage } from "@/app/data/inspect/LiveStampMontage";
 
 // On-the-fly WebGL color cutout (client-only), same as the card uses.
@@ -293,7 +293,10 @@ function Inspector({ email }: { email: string }) {
         const pra = Number(src.row["RA"]), pdec = Number(src.row["DEC"]);
         if (Number.isFinite(pra) && Number.isFinite(pdec)) {
           // AWAIT so this worker holds one slot until the stamp is warm (bounds concurrency).
-          try { await fetchStamp(src.field, pra, pdec, undefined, INSPECT_STAMP_BANDS); } catch { /* best-effort */ }
+          // Use precacheStamp (fitsgl-first, then Worker) — the SAME path LiveStampMontage renders
+          // from, so it warms the cache the display actually reads. (Previously called fetchStamp =
+          // Worker-only, which warmed the wrong cache for fitsgl fields, so prefetch did nothing.)
+          try { await precacheStamp(src.field, pra, pdec, INSPECT_STAMP_BANDS); } catch { /* best-effort */ }
         }
       }
     };
