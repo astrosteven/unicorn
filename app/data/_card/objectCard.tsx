@@ -852,6 +852,7 @@ export const PZ_ALT_META: Record<string, { label: string; color: string }> = {
   circles: { label: "Circles", color: "#f0c070" },
   bbonly:  { label: "BB-only", color: "#6fb1ff" },
   wfc3:    { label: "+WFC3",   color: "#ef9fcd" },
+  lrd:     { label: "LRD",     color: "#e5645a" },
 };
 // Expand a sparse peak window { i, p } back into a dense array over the full z-grid (zeros outside).
 function densifyPz(sw: { i: number; p: number[] } | undefined, len: number): number[] | undefined {
