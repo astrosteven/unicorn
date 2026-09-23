@@ -2188,7 +2188,7 @@ export default function SearchPage() {
             )}
           </div>
 
-          <div className="card" style={{ overflow: "hidden" }}>
+          <div className="card" style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>
               <thead>
                 <tr style={{ background: "rgba(176,124,198,0.08)" }}>
