@@ -589,6 +589,9 @@ export default function MapViewer({
   // aperture's screen centre (from project()) drives the drag handle; apDragRef = mid-drag.
   const [apLocked, setApLocked] = useState(false);
   const [apCenterScreen, setApCenterScreen] = useState<{ cx: number; cy: number } | null>(null);
+  // The aperture/pointing centre in SKY coords (the reference the whole overlay is pinned to —
+  // what you'd request as the APT pointing), updated live as you drag. Shown in the panel.
+  const [apCenterSky, setApCenterSky] = useState<{ ra: number; dec: number } | null>(null);
   const apDragRef = useRef(false);
   // Screen-space polygons for the active apertures, recomputed each frame in project().
   const [apertures, setApertures] = useState<{
@@ -1407,6 +1410,17 @@ export default function MapViewer({
           const [hdP, hsP] = pivotDS(ap.rotateAbout);
           const hpos = apXY(frame, hdP, hsP);
           setApCenterScreen({ cx: hpos.x, cy: hpos.y });   // drives the drag handle
+          // Reference/pointing centre in sky coords (apertureSky if pinned, else the view-centre
+          // pixel cw → sky) — the schedulable coordinate, shown live in the panel.
+          {
+            const wcsC = h.getViewer()?.getWcs();
+            let cSky = ap.apertureSky;
+            if (!cSky && wcsC) {
+              const s = pixToSky(wcsC, cw.x, cw.y);
+              if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) cSky = { ra: s.ra, dec: s.dec };
+            }
+            setApCenterSky(cSky ?? null);
+          }
 
           // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
           // EVERY source is tested (not just the on-screen ones the screen `field` polygons
@@ -1465,6 +1479,7 @@ export default function MapViewer({
         // Toggles all off — clear. (A toggle on but arcsecPerCssPx transiently 0 keeps the last.)
         setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null, fp: [] });
         setApCenterScreen(null);
+        setApCenterSky(null);
         setMsaSources(prev => (prev.length ? [] : prev));
       }
 
@@ -2621,6 +2636,7 @@ export default function MapViewer({
           rotateAbout={rotateAbout} onRotateAbout={setRotateAbout}
           paAchieve={paAchieve} onPickPa={handlePaChange}
           instruments={siaf?.instruments ?? []}
+          centerSky={apCenterSky}
           footprints={footprints}
           onToggleFootprint={(key, on) => setFootprints(prev => {
             const next = new Set(prev);
@@ -2695,11 +2711,23 @@ export default function MapViewer({
 // the slitlet long axis), and a pin that fixes the aperture at the current view centre's
 // sky position (so panning no longer drags it) vs following the view centre. (The custom
 // photometry draw tool lives in its own separate PHOTOMETRY panel below this one.)
+// Format an (RA,Dec) pair in degrees as sexagesimal (RA h:m:s, Dec ±d:m:s) for APT-style planning.
+function fmtSexagesimal(ra: number, dec: number): string {
+  const p2 = (n: number) => String(Math.floor(n)).padStart(2, "0");
+  const rh = ((ra % 360) + 360) % 360 / 15;
+  const h = Math.floor(rh), rmm = (rh - h) * 60, mm = Math.floor(rmm), rss = (rmm - mm) * 60;
+  const sg = dec < 0 ? "−" : "+", ad = Math.abs(dec);
+  const dd = Math.floor(ad), dmf = (ad - dd) * 60, dm = Math.floor(dmf), dss = (dmf - dm) * 60;
+  return `${p2(h)}:${p2(mm)}:${rss.toFixed(2).padStart(5, "0")}  ${sg}${p2(dd)}:${p2(dm)}:${dss.toFixed(1).padStart(4, "0")}`;
+}
+
 function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
-  instruments, footprints, onToggleFootprint, onFitFootprints,
+  instruments, footprints, onToggleFootprint, onFitFootprints, centerSky,
 }: {
+  /** Live pointing/aperture centre in sky coords (null when no overlay is active). */
+  centerSky: { ra: number; dec: number } | null;
   msaOn: boolean;
   ifuOn: boolean;
   msaFieldOn: boolean;
@@ -2759,7 +2787,10 @@ function NIRSpecPanel({
       </button>
 
       {open && (
-        <div style={{ padding: "2px 12px 12px", maxHeight: "calc(100dvh - 150px)", overflowY: "auto", overscrollBehavior: "contain", touchAction: "pan-y" }}>
+        // No own scroller here: the top-right column (parent) is the single scroll container.
+        // A nested overflow:auto + overscroll:contain used to EAT the wheel when this panel's
+        // content fit but the whole column overflowed ("can't scroll through the instruments").
+        <div style={{ padding: "2px 12px 12px" }}>
           {/* Quick how-to — keeps footprint planning discoverable without a separate help page. */}
           <p style={{ fontSize: "0.64rem", lineHeight: 1.55, color: "var(--text-dim)", margin: "0 0 11px" }}>
             Overlay JWST apertures, set the <b style={{ color: "var(--text-muted)" }}>PA</b> (this is the
@@ -2769,6 +2800,20 @@ function NIRSpecPanel({
             with <i>“plot as-is”</i>. Overlay accuracy ≈0.1″ (set by the imagery); shutter-level MSA
             design still needs MPT.
           </p>
+          {/* Live pointing/aperture centre — the reference the whole overlay is pinned to, updated
+              every frame (so it reflects exactly where you dragged it). Use as the APT pointing. */}
+          {centerSky && (
+            <div className="mono"
+              title="Pointing / aperture centre (the reference the overlay is pinned to). Updates live as you drag — request this as the APT pointing."
+              style={{ margin: "0 0 11px", padding: "7px 9px", background: "rgba(94,224,224,0.09)",
+                border: "1px solid var(--border-bright)", borderRadius: 6, fontSize: "0.63rem", lineHeight: 1.55 }}>
+              <div style={{ color: "#5ee0e0", letterSpacing: "0.06em", marginBottom: 3 }}>
+                CENTRE {pinned ? "· locked" : "· drag to move"}
+              </div>
+              <div style={{ color: "var(--text)" }}>{centerSky.ra.toFixed(5)}, {centerSky.dec.toFixed(5)}</div>
+              <div style={{ color: "var(--text-dim)", marginTop: 1 }}>{fmtSexagesimal(centerSky.ra, centerSky.dec)}</div>
+            </div>
+          )}
           <label style={row}>
             <input type="checkbox" checked={msaOn} onChange={e => onMsa(e.target.checked)}
               style={{ accentColor: "#5ee0e0", width: 15, height: 15 }} />
