@@ -2353,6 +2353,23 @@ export default function MapViewer({
   // sparse sources pop; thin out when the field is dense.
   const glyphSW = glyphs.length <= 40 ? 3 : glyphs.length <= 200 ? 2.3 : glyphs.length <= 1200 ? 1.7 : 1.3;
 
+  // Start moving the whole aperture assembly. Same as grabbing the centre handle, but fired from
+  // anywhere on an outline (see grabStroke) so the footprints themselves are draggable. preventDefault
+  // on pointerdown suppresses the canvas's compat mousedown, so the map doesn't pan under the grab.
+  const startApDrag = (e: React.PointerEvent) => {
+    if (apLocked) return;
+    e.preventDefault(); e.stopPropagation();
+    apDragRef.current = true;
+  };
+  // A fat, invisible stroke laid over an aperture outline so you can grab the OUTLINE (not just the
+  // tiny handle) to drag. pointerEvents:"stroke" keeps the interior click-through (sources inside a
+  // footprint stay clickable, the map still pans there); rendered only while unlocked.
+  const grabStroke = (pts: string, key: string) => (
+    <polygon key={key} points={pts} fill="none" stroke="transparent" strokeWidth={16}
+      style={{ pointerEvents: apLocked ? "none" : "stroke", cursor: "move" }}
+      onPointerDown={startApDrag} />
+  );
+
   return (
     <div ref={wrapRef} className="mapwrap" style={{ width: "100%", height: "100%", position: "relative", touchAction: "none" }}>
       <FitsViewer
@@ -2446,6 +2463,8 @@ export default function MapViewer({
               {ins.polys.map((pts, k) => (
                 <polygon key={k} points={pts} fill={`${ins.color}14`} stroke={ins.color} strokeWidth={1.3} />
               ))}
+              {/* Grab the outline to drag the whole assembly (on-screen footprints only). */}
+              {!ins.off && ins.polys.map((pts, k) => grabStroke(pts, `fpg${ins.key}${k}`))}
               {ins.off ? (
                 // Off-screen: an edge marker pointing at the (far) footprint + its offset in arcmin.
                 <g transform={`translate(${ins.off.x} ${ins.off.y})`} style={{ filter: "drop-shadow(0 0 2px rgba(0,0,0,0.9))" }}>
@@ -2464,6 +2483,7 @@ export default function MapViewer({
           {apertures.field.map((pts, k) => (
             <polygon key={`f${k}`} points={pts} fill="rgba(240,176,80,0.06)" stroke="#f0b050" strokeWidth={1.4} />
           ))}
+          {apertures.field.map((pts, k) => grabStroke(pts, `fg${k}`))}
           {/* NIRSpec IFU in its true focal-plane position (part of the MSA-field assembly). */}
           {apertures.fieldIfu && (
             <g>
@@ -2485,9 +2505,12 @@ export default function MapViewer({
           {apertures.ifu && (
             <polygon points={apertures.ifu} fill="rgba(224,120,224,0.08)" stroke="#e078e0" strokeWidth={1.6} />
           )}
+          {apertures.ifu && grabStroke(apertures.ifu, "ifug")}
+          {apertures.fieldIfu && grabStroke(apertures.fieldIfu.pts, "fifug")}
           {apertures.msa.map((pts, k) => (
             <polygon key={k} points={pts} fill="rgba(94,224,224,0.12)" stroke="#5ee0e0" strokeWidth={1.4} />
           ))}
+          {apertures.msa.map((pts, k) => grabStroke(pts, `msag${k}`))}
         </svg>
       )}
 
