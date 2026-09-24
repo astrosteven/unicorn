@@ -31,8 +31,15 @@ export default function AdminPage() {
   const [busy, setBusy] = useState<string | null>(null); // user_id currently updating
 
   const [hasActivity, setHasActivity] = useState(false);
+  // Per-day site activity (visits / searches / active users), from admin_daily_activity RPC.
+  type DailyRow = { day: string; n_visits: number; n_searches: number; n_downloads: number; n_active_users: number };
+  const [daily, setDaily] = useState<DailyRow[] | null>(null);
   const load = useCallback(async () => {
     setErr("");
+    // Daily activity rollup (best-effort; null if the RPC isn't installed yet).
+    supabase.rpc("admin_daily_activity", { days: 30 }).then(r => {
+      setDaily(!r.error && r.data ? (r.data as DailyRow[]) : null);
+    }, () => setDaily(null));
     // Prefer the enriched activity rollup (last sign-in + per-user counts); fall back to the plain
     // profiles select if the RPC isn't installed yet (supabase/usage.sql not run).
     const rpc = await supabase.rpc("admin_user_activity");
@@ -97,6 +104,51 @@ export default function AdminPage() {
       </div>
 
       {err && <div className="mono" style={{ color: "var(--red)", fontSize: "0.8rem", marginBottom: "1rem" }}>{err}</div>}
+
+      {/* Daily site activity — visits + searches per day (last 30 days). Hidden until the
+          admin_daily_activity RPC is installed (supabase/usage.sql). */}
+      {daily && daily.length > 0 && (() => {
+        const totV = daily.reduce((s, d) => s + d.n_visits, 0);
+        const totS = daily.reduce((s, d) => s + d.n_searches, 0);
+        const maxV = Math.max(1, ...daily.map(d => d.n_visits));
+        const maxS = Math.max(1, ...daily.map(d => d.n_searches));
+        const bar = (n: number, max: number, color: string) => (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 92 }}>
+            <span style={{ display: "inline-block", height: 8, width: `${Math.round((n / max) * 60)}px`, minWidth: n ? 3 : 0, background: color, borderRadius: 2 }} />
+            <span style={{ fontVariantNumeric: "tabular-nums" }}>{n}</span>
+          </span>
+        );
+        return (
+          <div className="card" style={{ padding: "1rem 1.2rem", marginBottom: "1.25rem" }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+              <h2 className="page-title" style={{ fontSize: "1.05rem", color: "var(--text)" }}>Daily activity</h2>
+              <span className="mono" style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>
+                last 30 days · {totV.toLocaleString()} visits · {totS.toLocaleString()} searches
+              </span>
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "collapse", fontSize: "0.8rem", fontFamily: "'Space Mono', monospace", minWidth: 480 }}>
+                <thead>
+                  <tr style={{ textAlign: "left", color: "var(--text-dim)", fontSize: "0.68rem", letterSpacing: "0.06em" }}>
+                    <th style={th}>DAY</th><th style={th}>VISITS</th><th style={th}>SEARCHES</th><th style={th}>DOWNLOADS</th><th style={th}>USERS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {daily.map(d => (
+                    <tr key={d.day} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ ...td, color: "var(--text-muted)" }}>{d.day}</td>
+                      <td style={td}>{bar(d.n_visits, maxV, "var(--accent2)")}</td>
+                      <td style={td}>{bar(d.n_searches, maxS, "var(--accent)")}</td>
+                      <td style={{ ...td, fontVariantNumeric: "tabular-nums", color: "var(--text-dim)" }}>{d.n_downloads}</td>
+                      <td style={{ ...td, fontVariantNumeric: "tabular-nums" }}>{d.n_active_users}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="card" style={{ padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.85rem" }}>

@@ -49,3 +49,28 @@ as $$
 $$;
 revoke all on function public.admin_user_activity() from public, anon;
 grant execute on function public.admin_user_activity() to authenticated;
+
+-- 3) admin_daily_activity: per-DAY rollup for the admin dashboard — site visits, searches,
+--    downloads, and distinct active users over the last `days` days. Admin-guarded like above.
+--    (Run this block once too; it's additive to the two objects above.)
+create or replace function public.admin_daily_activity(days int default 30)
+returns table (
+  day date, n_visits bigint, n_searches bigint, n_downloads bigint, n_active_users bigint
+)
+language sql
+security definer
+set search_path = public, auth
+as $$
+  select date_trunc('day', created_at)::date as day,
+         count(*) filter (where event = 'visit')    as n_visits,
+         count(*) filter (where event = 'search')   as n_searches,
+         count(*) filter (where event = 'download') as n_downloads,
+         count(distinct user_id)                    as n_active_users
+  from public.usage_events
+  where created_at >= (now() - make_interval(days => days))
+    and (select role from public.profiles where user_id = auth.uid()) = 'admin'
+  group by 1
+  order by 1 desc;
+$$;
+revoke all on function public.admin_daily_activity(int) from public, anon;
+grant execute on function public.admin_daily_activity(int) to authenticated;

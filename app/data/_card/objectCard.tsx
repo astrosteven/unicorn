@@ -267,7 +267,9 @@ export type FieldIndex = {
   id: number[]; ra: number[]; dec: number[]; za: (number | null)[];
   m277: NumCol; m444: NumCol; m1500?: NumCol; m1300?: NumCol; mabs?: NumCol; beta?: NumCol;
   selected: NumCol; inspected: NumCol; sample: NumCol;
-  zl68?: NumCol; zu68?: NumCol; z_lowz?: NumCol; chia?: NumCol; zspec?: NumCol;
+  zl68?: NumCol; zu68?: NumCol; z_lowz?: NumCol; chia?: NumCol; chia_lowz?: NumCol; zspec?: NumCol;
+  /** Names of the integrated-P(z) columns available in the lazy <prefix>_intpz sidecar. */
+  queryIntPz?: string[];
   rh_277?: NumCol; rh_444?: NumCol; kron_radius?: NumCol; a_image?: NumCol; b_image?: NumCol; theta?: NumCol;
   x?: NumCol; y?: NumCol; depthtier?: NumCol; detectcat?: (string | null)[] | null; tile?: (string | null)[] | null;
   detflag?: NumCol; pixflag?: NumCol; zflag?: NumCol; zsubBits?: NumCol; zsubCriteria?: string[] | null;
@@ -285,6 +287,9 @@ const _selBase: Record<string, { sel: (number | null)[] | null; ins: (number | n
 // references a mag/snr/flux/color term, and cached per field for the session.
 const _filtersCache: Record<string, Record<string, NumCol>> = {};
 const _filtersPromise: Record<string, Promise<Record<string, NumCol>>> = {};
+// Integrated-P(z) table (all INT_* columns): lazy — fetched only when an int_* query runs.
+const _intpzCache: Record<string, Record<string, NumCol>> = {};
+const _intpzPromise: Record<string, Promise<Record<string, NumCol>>> = {};
 
 // Fetch a JSON file, transparently handling a gzipped (.json.gz) sibling. The
 // large search index is served gzipped (~8x smaller) so it transfers reliably;
@@ -381,6 +386,32 @@ export async function loadFilters(fc: FieldConfig): Promise<Record<string, NumCo
     return fx;
   } catch {
     delete _filtersPromise[fc.field];  // allow retry on next search
+    return null;
+  }
+}
+
+// Fetch a field's integrated-P(z) table (<prefix>_intpz_v<ver>.json[.gz]) on demand — only
+// when an int_* query runs. Returns null (leaves int_ columns unmatched) if the file is absent.
+export async function loadIntPz(fc: FieldConfig): Promise<Record<string, NumCol> | null> {
+  if (fc.field in _intpzCache) return _intpzCache[fc.field];
+  if (fc.field in _intpzPromise) return _intpzPromise[fc.field];
+  _intpzPromise[fc.field] = (async () => {
+    const override = dataOverride();
+    const name = `${fc.prefix}_intpz_v${fc.version}.json`;
+    const primary = override ? `${override}/${fieldCatDir(fc)}/web` : INDEX_BASE;
+    try {
+      return await fetchJsonMaybeGz(`${primary}/${name}`);
+    } catch (e) {
+      if (override) throw e;
+      return await fetchJsonMaybeGz(`${CORRAL_DEFAULT}/${fieldCatDir(fc)}/web/${name}`);
+    }
+  })();
+  try {
+    const ip = await _intpzPromise[fc.field];
+    _intpzCache[fc.field] = ip;
+    return ip;
+  } catch {
+    delete _intpzPromise[fc.field];
     return null;
   }
 }

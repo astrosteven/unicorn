@@ -1,10 +1,11 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 import { useProfile, routeAllowed, type Role } from "@/lib/roles";
+import { logUsage } from "@/lib/usage";
 
 // Nav links + the minimum role that may see each. `null` → visible to everyone
 // (including logged-out public viewers). Overview/Fields are always public.
@@ -51,6 +52,14 @@ export default function DataLayout({ children }: { children: React.ReactNode }) 
     );
   };
   const hasKey = NAV_LINKS.some(l => l.group === "key" && meets(role, l.min));
+
+  // Log one "visit" per authenticated session load (the data layout mounts once per full page
+  // load; client-side nav between tabs doesn't remount it) → the admin daily-activity rollup
+  // counts site visits. Fires once, only when signed in (RLS drops anonymous inserts anyway).
+  const visitLogged = useRef(false);
+  useEffect(() => {
+    if (session && !visitLogged.current) { visitLogged.current = true; logUsage("visit"); }
+  }, [session]);
 
   // Not logged in and on a gated route → send to the sign-in / register page.
   // (Public routes render for anon with no redirect.)

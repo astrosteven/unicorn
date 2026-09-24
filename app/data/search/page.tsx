@@ -16,6 +16,7 @@ import {
   SEARCH_FIELDS,
   fieldCatDir,
   loadField,
+  loadIntPz,
   refreshInspections,
   loadFilters,
   loadSpecz,
@@ -43,7 +44,16 @@ type QueryRow = { fc: typeof SEARCH_FIELDS[0]; id: number; za: number | null; m4
 // ---- SQL-style query over the search index ---------------------------------
 type IdxRow = Record<string, number | string | null>;
 // Numeric queryable columns (must exist in the index).
-const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "m277", "m444", "m1500", "m1300", "mabs", "beta", "zspec",
+// Integrated-P(z) columns (INT_*), lazy-loaded from the <prefix>_intpz sidecar (not the base
+// index — there are ~40, too heavy to hold in memory for every field). Queryable like any column.
+const INT_PZ_COLS: string[] = [
+  "int_cen", "int_zgtza_2",
+  ...Array.from({ length: 21 }, (_, i) => `int_pz${i}`),        // int_pz0..int_pz20 (unit-z bins)
+  "int_pz9p5_12", "int_pz12_15", "int_pz15_20", "int_pz20_35",  // named high-z ranges
+  ...Array.from({ length: 15 }, (_, i) => `int_zgt${i + 1}`),   // int_zgt1..int_zgt15 (P(z>n))
+];
+const INT_PZ_SET = new Set(INT_PZ_COLS);
+const QUERY_NUM = ["za", "zl68", "zu68", "z_lowz", "chia", "chia_lowz", "m277", "m444", "m1500", "m1300", "mabs", "beta", "zspec",
   "czspec", "czqual",
   ...DB_COLS,   // Dense Basis physical properties (all fields except EGS/COSMOS): mass/av/sfr10/sfr100 + _16/_84
   "rh_277", "rh_444", "kron_radius", "a_image", "b_image", "x", "y", "depthtier",
@@ -69,7 +79,7 @@ const SENTINEL_ERR = 1e9;
 
 // Is `f` a queryable field name (built-in, per-filter, or color)?
 function isKnownField(f: string): boolean {
-  if (QUERY_NUM.includes(f) || QUERY_STR.includes(f)) return true;
+  if (QUERY_NUM.includes(f) || QUERY_STR.includes(f) || INT_PZ_SET.has(f)) return true;
   let m: RegExpMatchArray | null;
   if ((m = f.match(RE_MAGSNR))) return KNOWN_FILTERS.has(m[2]);
   if ((m = f.match(RE_COLOR)))  return KNOWN_FILTERS.has(m[1]) && KNOWN_FILTERS.has(m[2]);
@@ -120,6 +130,13 @@ function neededIndexCols(query: string): string[] {
   return cols;
 }
 
+// Integrated-P(z) columns a query references (as whole words) — attached on-demand from the
+// lazy <prefix>_intpz sidecar, exactly like the per-filter fluxes.
+function neededIntPz(query: string): string[] {
+  const q = query.toLowerCase();
+  return INT_PZ_COLS.filter(c => new RegExp(`\\b${c}\\b`).test(q));
+}
+
 // Columns the results table always shows; other queried columns are added dynamically.
 const TABLE_FIXED_COLS = new Set(["id", "za", "m444", "zspec", "selected"]);
 const TABLE_CAP = 500;   // rows rendered in the results table (full set is retained separately)
@@ -130,7 +147,7 @@ function queriedColumns(query: string): string[] {
   const q = query.toLowerCase();
   const out: string[] = [];
   const add = (c: string) => { if (!TABLE_FIXED_COLS.has(c) && !out.includes(c)) out.push(c); };
-  for (const c of [...QUERY_NUM, ...QUERY_STR]) if (new RegExp(`\\b${c}\\b`).test(q)) add(c);
+  for (const c of [...QUERY_NUM, ...QUERY_STR, ...INT_PZ_COLS]) if (new RegExp(`\\b${c}\\b`).test(q)) add(c);
   for (const m of q.matchAll(/\b(?:mag|snr|flux)_[a-z0-9]+\b/g)) { const c = m[0]; if (isKnownField(c)) add(c); }
   for (const m of q.matchAll(/\b[a-z][a-z0-9]*-[a-z][a-z0-9]*\b/g)) { const c = m[0]; if (isKnownField(c)) add(c); }
   return out;
@@ -1234,7 +1251,8 @@ export default function SearchPage() {
       m277: idx.m277?.[i] ?? null, m444: idx.m444?.[i] ?? null,
       m1500: idx.m1500?.[i] ?? null, m1300: idx.m1300?.[i] ?? null, mabs: idx.mabs?.[i] ?? null, beta: idx.beta?.[i] ?? null,
       zl68: idx.zl68?.[i] ?? null, zu68: idx.zu68?.[i] ?? null, z_lowz: idx.z_lowz?.[i] ?? null,
-      chia: idx.chia?.[i] ?? null, zspec: idx.zspec?.[i] ?? null,
+      chia: idx.chia?.[i] ?? null, chia_lowz: idx.chia_lowz?.[i] ?? null,
+      zspec: idx.zspec?.[i] ?? null,
       czspec: cz?.z ?? null, czqual: cz?.q ?? null,
       rh_277: idx.rh_277?.[i] ?? null, rh_444: idx.rh_444?.[i] ?? null,
       kron_radius: idx.kron_radius?.[i] ?? null, a_image: idx.a_image?.[i] ?? null, b_image: idx.b_image?.[i] ?? null,
@@ -1430,6 +1448,7 @@ export default function SearchPage() {
         const cols = [...new Set([...queriedColumns(queryInput), ...viewCols])];
         const need = [...new Set([...pred.need, ...neededIndexCols(viewCols.join(" "))])];  // flux cols to attach
         const needDb = DB_COLS.some(c => cols.includes(c));   // physical-properties sidecar (CEERS)
+        const needIntPz = cols.filter(c => INT_PZ_SET.has(c));   // integrated-P(z) sidecar cols referenced
         const getters = cols.map(c => colGetter(c));   // value-extractors for the dynamic table cols
         const CAP = TABLE_CAP;        // rows rendered in the table
         const DL_CAP = 100000;        // rows retained for the full-list download
@@ -1460,11 +1479,13 @@ export default function SearchPage() {
           const sz = await loadSpecz(fc);
           // dense-basis physical properties (parallel arrays aligned to index order), on demand.
           const db = needDb ? await loadDb(fc) : null;
+          const ip = needIntPz.length ? await loadIntPz(fc) : null;   // integrated-P(z) sidecar, on demand
           for (let i = 0; i < idx.n; i++) {
             const cz = sz[String(idx.id[i])] ?? null;
             const r = indexRowAt(idx, i, cz);
             if (fx) for (const c of need) r[c] = fx[c]?.[i] ?? null;   // native flux/fluxerr for this query
             if (db) for (const c of DB_COLS) r[c] = db[c]?.[i] ?? null;  // mass/av/sfr...
+            if (ip) for (const c of needIntPz) r[c] = ip[c]?.[i] ?? null;  // int_pz*/int_zgt*...
             if (pred.test(r)) {
               total++;
               const id = idx.id[i];
