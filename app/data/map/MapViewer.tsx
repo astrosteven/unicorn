@@ -589,10 +589,6 @@ export default function MapViewer({
   // aperture's screen centre (from project()) drives the drag handle; apDragRef = mid-drag.
   const [apLocked, setApLocked] = useState(false);
   const [apCenterScreen, setApCenterScreen] = useState<{ cx: number; cy: number } | null>(null);
-  // The right-hand panel column's scroll container. fitsgl's canvas eats/preventDefaults wheel
-  // globally on the map, so native scroll over the panels doesn't fire — we drive scrollTop
-  // ourselves via a non-passive listener (see effect below).
-  const panelScrollRef = useRef<HTMLDivElement | null>(null);
   // Guard so the per-frame instrument-centre recompute only triggers a React re-render when the
   // rounded values actually change (project() runs every frame; avoids churning the panel).
   const lastCentersRef = useRef("");
@@ -919,23 +915,6 @@ export default function MapViewer({
     const s = pixToSky(wcs, cx, cy);
     if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
   }, [msaOn, ifuOn, msaFieldOn, footprints, apertureSky, paDeg, siaf]);
-
-  // Panel scrolling: the map's WebGL canvas installs a global non-passive wheel handler that
-  // preventDefaults (for zoom), which suppresses NATIVE scroll of the right-hand panel column even
-  // though the wheel bubbles to it — so the JWST Footprints / DISPLAY panels wouldn't scroll. Drive
-  // the scroll ourselves: a non-passive wheel listener on the column consumes the event and moves
-  // scrollTop directly (and stops it reaching the canvas so the map doesn't zoom under the panel).
-  useEffect(() => {
-    const el = panelScrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (el.scrollHeight > el.clientHeight) { el.scrollTop += e.deltaY; }
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
 
   // Rotate ABOUT a chosen pivot: on a PA change, keep one point fixed on the sky and swing the
   // rest of the MSA around it. The pivot (per the "Rotate about" dropdown) is either the point
@@ -2684,7 +2663,7 @@ export default function MapViewer({
         {/* The INNER column is the scroller and the only pointer/touch target — the outer box stays
             pointer-transparent so the map pans/zooms in the empty space around the panels, while
             this column can be dragged to scroll (touch) and doesn't block map gestures elsewhere. */}
-        <div ref={panelScrollRef} style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", overscrollBehavior: "contain", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", overscrollBehavior: "contain", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
         <NIRSpecPanel
           msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
           msaCount={msaSources.length}
@@ -2845,10 +2824,10 @@ function NIRSpecPanel({
       </button>
 
       {open && (
-        // No own scroller here: the top-right column (parent) is the single scroll container.
-        // A nested overflow:auto + overscroll:contain used to EAT the wheel when this panel's
-        // content fit but the whole column overflowed ("can't scroll through the instruments").
-        <div style={{ padding: "2px 12px 12px" }}>
+        // Own internal scroller, capped like the DISPLAY panel (maxHeight min(78vh,640px)) so the
+        // content actually overflows and scrolls natively. An earlier calc(100dvh-150px) cap was
+        // taller than the available space, so it never overflowed → looked like "can't scroll".
+        <div style={{ padding: "2px 12px 12px", maxHeight: "min(78vh, 640px)", overflowY: "auto" }}>
           {/* Quick how-to — keeps footprint planning discoverable without a separate help page. */}
           <p style={{ fontSize: "0.64rem", lineHeight: 1.55, color: "var(--text-dim)", margin: "0 0 11px" }}>
             Overlay JWST apertures, set the <b style={{ color: "var(--text-muted)" }}>PA</b> (this is the
