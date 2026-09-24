@@ -589,6 +589,13 @@ export default function MapViewer({
   // aperture's screen centre (from project()) drives the drag handle; apDragRef = mid-drag.
   const [apLocked, setApLocked] = useState(false);
   const [apCenterScreen, setApCenterScreen] = useState<{ cx: number; cy: number } | null>(null);
+  // The right-hand panel column's scroll container. fitsgl's canvas eats/preventDefaults wheel
+  // globally on the map, so native scroll over the panels doesn't fire — we drive scrollTop
+  // ourselves via a non-passive listener (see effect below).
+  const panelScrollRef = useRef<HTMLDivElement | null>(null);
+  // Guard so the per-frame instrument-centre recompute only triggers a React re-render when the
+  // rounded values actually change (project() runs every frame; avoids churning the panel).
+  const lastCentersRef = useRef("");
   // Per-shown-instrument centres in SKY coords, updated live as you drag. NIRSpec (MSA/IFU/field)
   // sits at the pointing reference; each JWST instrument footprint reports its own module centroid.
   const [instCenters, setInstCenters] = useState<{ key: string; label: string; color: string; ra: number; dec: number }[]>([]);
@@ -893,15 +900,42 @@ export default function MapViewer({
     if (!cam || !wcs) return;
     const vsky = pixToSky(wcs, cam.centerX, cam.centerY);
     if (!Number.isFinite(vsky.ra) || !Number.isFinite(vsky.dec)) return;
-    if (!msaFieldOn) { setApertureSky({ ra: vsky.ra, dec: vsky.dec }); return; }
-    const [sd, ss] = slitCenterDS("S200A1");
+    // The (d,s) point to land on the view centre (the source the map is centred on):
+    //  - MSA field → the S200A1 fixed slit; - a footprint enabled first → THAT instrument's
+    //  centroid (so the instrument itself lands on the source, not the NIRSpec reference);
+    //  - else (bare MSA/IFU slitlet) → the reference (d=0,s=0).
+    let pd = 0, ps = 0;
+    if (msaFieldOn) {
+      [pd, ps] = slitCenterDS("S200A1");
+    } else if (footprints.size > 0 && siaf) {
+      const ins = siaf.instruments.find(i => footprints.has(i.key));
+      if (ins) { let dd = 0, sm = 0, n = 0; for (const a of ins.apertures) for (const [d, s] of a.ds) { dd += d; sm += s; n++; } if (n) { pd = dd / n; ps = sm / n; } }
+    }
+    if (pd === 0 && ps === 0) { setApertureSky({ ra: vsky.ra, dec: vsky.dec }); return; }
     const fr = apertureFrameWorld(wcs, vsky, paDeg);       // disp/spat directions at current PA
     if (!fr) { setApertureSky({ ra: vsky.ra, dec: vsky.dec }); return; }
-    const cx = cam.centerX - (fr.disp.x * sd + fr.spat.x * ss);   // ref px s.t. S200A1 = view centre
-    const cy = cam.centerY - (fr.disp.y * sd + fr.spat.y * ss);
+    const cx = cam.centerX - (fr.disp.x * pd + fr.spat.x * ps);   // ref px s.t. the chosen point = view centre
+    const cy = cam.centerY - (fr.disp.y * pd + fr.spat.y * ps);
     const s = pixToSky(wcs, cx, cy);
     if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) setApertureSky({ ra: s.ra, dec: s.dec });
-  }, [msaOn, ifuOn, msaFieldOn, footprints, apertureSky, paDeg]);
+  }, [msaOn, ifuOn, msaFieldOn, footprints, apertureSky, paDeg, siaf]);
+
+  // Panel scrolling: the map's WebGL canvas installs a global non-passive wheel handler that
+  // preventDefaults (for zoom), which suppresses NATIVE scroll of the right-hand panel column even
+  // though the wheel bubbles to it — so the JWST Footprints / DISPLAY panels wouldn't scroll. Drive
+  // the scroll ourselves: a non-passive wheel listener on the column consumes the event and moves
+  // scrollTop directly (and stops it reaching the canvas so the map doesn't zoom under the panel).
+  useEffect(() => {
+    const el = panelScrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollHeight > el.clientHeight) { el.scrollTop += e.deltaY; }
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Rotate ABOUT a chosen pivot: on a PA change, keep one point fixed on the sky and swing the
   // rest of the MSA around it. The pivot (per the "Rotate about" dropdown) is either the point
@@ -1440,7 +1474,9 @@ export default function MapViewer({
                 }
               }
             }
-            setInstCenters(centers);
+            // Only re-render when the (rounded) centres change — not every animation frame.
+            const key = centers.map(c => `${c.key}:${c.ra.toFixed(5)},${c.dec.toFixed(5)}`).join("|");
+            if (key !== lastCentersRef.current) { lastCentersRef.current = key; setInstCenters(centers); }
           }
 
           // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
@@ -2648,7 +2684,7 @@ export default function MapViewer({
         {/* The INNER column is the scroller and the only pointer/touch target — the outer box stays
             pointer-transparent so the map pans/zooms in the empty space around the panels, while
             this column can be dragged to scroll (touch) and doesn't block map gestures elsewhere. */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", overscrollBehavior: "contain", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
+        <div ref={panelScrollRef} style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-end", minHeight: 0, maxHeight: "100%", overflowY: "auto", overscrollBehavior: "contain", paddingBottom: 28, pointerEvents: "auto", touchAction: "pan-y" }}>
         <NIRSpecPanel
           msaOn={msaOn} ifuOn={ifuOn} msaFieldOn={msaFieldOn} paDeg={paDeg} pinned={apLocked}
           msaCount={msaSources.length}
