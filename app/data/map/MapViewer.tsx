@@ -589,9 +589,9 @@ export default function MapViewer({
   // aperture's screen centre (from project()) drives the drag handle; apDragRef = mid-drag.
   const [apLocked, setApLocked] = useState(false);
   const [apCenterScreen, setApCenterScreen] = useState<{ cx: number; cy: number } | null>(null);
-  // The aperture/pointing centre in SKY coords (the reference the whole overlay is pinned to —
-  // what you'd request as the APT pointing), updated live as you drag. Shown in the panel.
-  const [apCenterSky, setApCenterSky] = useState<{ ra: number; dec: number } | null>(null);
+  // Per-shown-instrument centres in SKY coords, updated live as you drag. NIRSpec (MSA/IFU/field)
+  // sits at the pointing reference; each JWST instrument footprint reports its own module centroid.
+  const [instCenters, setInstCenters] = useState<{ key: string; label: string; color: string; ra: number; dec: number }[]>([]);
   const apDragRef = useRef(false);
   // Screen-space polygons for the active apertures, recomputed each frame in project().
   const [apertures, setApertures] = useState<{
@@ -1410,16 +1410,37 @@ export default function MapViewer({
           const [hdP, hsP] = pivotDS(ap.rotateAbout);
           const hpos = apXY(frame, hdP, hsP);
           setApCenterScreen({ cx: hpos.x, cy: hpos.y });   // drives the drag handle
-          // Reference/pointing centre in sky coords (apertureSky if pinned, else the view-centre
-          // pixel cw → sky) — the schedulable coordinate, shown live in the panel.
+          // Per-shown-instrument centres in sky coords (for the panel readout), updated live as you
+          // drag. Reference/pointing centre = apertureSky if pinned, else the view-centre pixel cw→sky.
           {
             const wcsC = h.getViewer()?.getWcs();
-            let cSky = ap.apertureSky;
+            let cSky = ap.apertureSky ?? null;
             if (!cSky && wcsC) {
               const s = pixToSky(wcsC, cw.x, cw.y);
               if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) cSky = { ra: s.ra, dec: s.dec };
             }
-            setApCenterSky(cSky ?? null);
+            const centers: { key: string; label: string; color: string; ra: number; dec: number }[] = [];
+            const fwC = wcsC && cSky ? apertureFrameWorld(wcsC, cSky, ap.paDeg) : null;
+            if (wcsC && cSky && fwC) {
+              // NIRSpec overlays all sit at the pointing reference (d=0,s=0).
+              if (ap.msaOn || ap.ifuOn || ap.msaFieldOn)
+                centers.push({ key: "nirspec", label: "NIRSpec", color: "#5ee0e0", ra: cSky.ra, dec: cSky.dec });
+              // Each shown instrument footprint: centroid of all its aperture corners (ds) → sky.
+              if (ap.footprints.size && ap.siaf) {
+                for (const ins of ap.siaf.instruments) {
+                  if (!ap.footprints.has(ins.key)) continue;
+                  let dd = 0, ss = 0, n = 0;
+                  for (const a of ins.apertures) for (const [d, s] of a.ds) { dd += d; ss += s; n++; }
+                  if (!n) continue;
+                  const wx = fwC.cx + fwC.disp.x * (dd / n) + fwC.spat.x * (ss / n);
+                  const wy = fwC.cy + fwC.disp.y * (dd / n) + fwC.spat.y * (ss / n);
+                  const sky = pixToSky(wcsC, wx, wy);
+                  if (Number.isFinite(sky.ra) && Number.isFinite(sky.dec))
+                    centers.push({ key: ins.key, label: ins.label, color: ins.color, ra: sky.ra, dec: sky.dec });
+                }
+              }
+            }
+            setInstCenters(centers);
           }
 
           // Collect the catalog sources inside the 4 MSA quadrants — in WORLD/pixel space so
@@ -1479,7 +1500,7 @@ export default function MapViewer({
         // Toggles all off — clear. (A toggle on but arcsecPerCssPx transiently 0 keeps the last.)
         setApertures({ msa: [], ifu: null, field: [], slits: [], fieldIfu: null, fp: [] });
         setApCenterScreen(null);
-        setApCenterSky(null);
+        setInstCenters([]);
         setMsaSources(prev => (prev.length ? [] : prev));
       }
 
@@ -2636,7 +2657,7 @@ export default function MapViewer({
           rotateAbout={rotateAbout} onRotateAbout={setRotateAbout}
           paAchieve={paAchieve} onPickPa={handlePaChange}
           instruments={siaf?.instruments ?? []}
-          centerSky={apCenterSky}
+          instCenters={instCenters}
           footprints={footprints}
           onToggleFootprint={(key, on) => setFootprints(prev => {
             const next = new Set(prev);
@@ -2724,10 +2745,11 @@ function fmtSexagesimal(ra: number, dec: number): string {
 function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
-  instruments, footprints, onToggleFootprint, onFitFootprints, centerSky,
+  instruments, footprints, onToggleFootprint, onFitFootprints, instCenters,
 }: {
-  /** Live pointing/aperture centre in sky coords (null when no overlay is active). */
-  centerSky: { ra: number; dec: number } | null;
+  /** Live centre (sky) of each shown instrument — NIRSpec at the pointing, footprints at their
+   *  own module centroid. Updates every frame so it reflects exactly where you dragged. */
+  instCenters: { key: string; label: string; color: string; ra: number; dec: number }[];
   msaOn: boolean;
   ifuOn: boolean;
   msaFieldOn: boolean;
@@ -2800,18 +2822,24 @@ function NIRSpecPanel({
             with <i>“plot as-is”</i>. Overlay accuracy ≈0.1″ (set by the imagery); shutter-level MSA
             design still needs MPT.
           </p>
-          {/* Live pointing/aperture centre — the reference the whole overlay is pinned to, updated
-              every frame (so it reflects exactly where you dragged it). Use as the APT pointing. */}
-          {centerSky && (
+          {/* Live centre of every shown instrument — NIRSpec at the pointing reference, each JWST
+              footprint at its own module centroid. Updates every frame, so it reflects exactly
+              where you dragged. Each is the coordinate you'd request as that instrument's pointing. */}
+          {instCenters.length > 0 && (
             <div className="mono"
-              title="Pointing / aperture centre (the reference the overlay is pinned to). Updates live as you drag — request this as the APT pointing."
+              title="Live sky centre of each shown instrument (NIRSpec at the pointing; footprints at their module centroid). Updates as you drag."
               style={{ margin: "0 0 11px", padding: "7px 9px", background: "rgba(94,224,224,0.09)",
-                border: "1px solid var(--border-bright)", borderRadius: 6, fontSize: "0.63rem", lineHeight: 1.55 }}>
-              <div style={{ color: "#5ee0e0", letterSpacing: "0.06em", marginBottom: 3 }}>
-                CENTRE {pinned ? "· locked" : "· drag to move"}
+                border: "1px solid var(--border-bright)", borderRadius: 6, fontSize: "0.63rem", lineHeight: 1.5 }}>
+              <div style={{ color: "#5ee0e0", letterSpacing: "0.06em", marginBottom: 5 }}>
+                INSTRUMENT CENTRES {pinned ? "· locked" : "· drag to move"}
               </div>
-              <div style={{ color: "var(--text)" }}>{centerSky.ra.toFixed(5)}, {centerSky.dec.toFixed(5)}</div>
-              <div style={{ color: "var(--text-dim)", marginTop: 1 }}>{fmtSexagesimal(centerSky.ra, centerSky.dec)}</div>
+              {instCenters.map(c => (
+                <div key={c.key} style={{ marginBottom: 5 }}>
+                  <div style={{ color: c.color, fontSize: "0.6rem" }}>{c.label}</div>
+                  <div style={{ color: "var(--text)" }}>{c.ra.toFixed(5)}, {c.dec.toFixed(5)}</div>
+                  <div style={{ color: "var(--text-dim)" }}>{fmtSexagesimal(c.ra, c.dec)}</div>
+                </div>
+              ))}
             </div>
           )}
           <label style={row}>
