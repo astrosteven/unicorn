@@ -2420,29 +2420,42 @@ export default function MapViewer({
     const h = handleRef.current;
     const wcs = h?.getViewer()?.getWcs();
     const cam = h?.getCameraState();
-    const finish = (m: string) => { setOptMsg(m); window.setTimeout(() => setOptMsg(""), 9000); };
+    const finish = (m: string) => { setOptMsg(m); window.setTimeout(() => setOptMsg(""), 10000); };
     if (!wcs || !cam) return;
     if (!apRef.current.msaFieldOn) { finish("enable “MSA field” first"); return; }
     const srcs = sourcesRef.current;
     if (!srcs.length) { finish("no sources shown — run a query at left"); return; }
-    // Pivot to keep fixed = the current rotate-about point (the fixed slit on the target).
-    let centerSky = apRef.current.apertureSky;
-    if (!centerSky) { const s = pixToSky(wcs, cam.centerX, cam.centerY); if (Number.isFinite(s.ra)) centerSky = { ra: s.ra, dec: s.dec }; }
-    if (!centerSky) return;
-    const [pd, ps] = pivotDS(apRef.current.rotateAbout);
-    const fwNow = apertureFrameWorld(wcs, centerSky, apRef.current.paDeg);
-    if (!fwNow) return;
-    const pivotSky = pixToSky(wcs, fwNow.cx + fwNow.disp.x * pd + fwNow.spat.x * ps, fwNow.cy + fwNow.disp.y * pd + fwNow.spat.y * ps);
-    if (!Number.isFinite(pivotSky.ra) || !Number.isFinite(pivotSky.dec)) return;
-    let best = { pa: apRef.current.paDeg, count: -1 };          // best regardless of schedulability
-    let bestSched = { pa: -1, count: -1 };                       // best among schedulable APAs
+    const about = apRef.current.rotateAbout;
+    const [pd, ps] = pivotDS(about);   // the pivot's (d,s) — a fixed slit's centre, or (0,0) for view/ref
+    // The point to keep locked = YOUR TARGET. Use the deep-linked primary source's sky (the map was
+    // opened from it); fall back to the current pivot's sky if there's no primary.
+    let tSky: { ra: number; dec: number } | null = null;
+    const ix = idxRef.current;
+    if (primaryId != null && ix?.ra && ix?.dec) {
+      const pos = idToPosRef.current.get(primaryId);
+      if (pos != null) tSky = { ra: ix.ra[pos], dec: ix.dec[pos] };
+    }
+    if (!tSky) {
+      let centerSky = apRef.current.apertureSky;
+      if (!centerSky) { const s = pixToSky(wcs, cam.centerX, cam.centerY); if (Number.isFinite(s.ra)) centerSky = { ra: s.ra, dec: s.dec }; }
+      if (!centerSky) return;
+      const fwNow = apertureFrameWorld(wcs, centerSky, apRef.current.paDeg);
+      if (!fwNow) return;
+      const p = pixToSky(wcs, fwNow.cx + fwNow.disp.x * pd + fwNow.spat.x * ps, fwNow.cy + fwNow.disp.y * pd + fwNow.spat.y * ps);
+      if (Number.isFinite(p.ra) && Number.isFinite(p.dec)) tSky = { ra: p.ra, dec: p.dec };
+    }
+    if (!tSky) { finish("no target — open the map from your source"); return; }
+    // Scan every PA: keep the pivot (slit) locked on the target, count shown sources in the 4 quads.
+    let best = { pa: apRef.current.paDeg, count: -1 };
+    let bestSched = { pa: -1, count: -1 };
     for (let pa = 0; pa < 360; pa += 1) {
-      const fwP = apertureFrameWorld(wcs, pivotSky, pa);
-      if (!fwP) continue;
-      // The 4 MSA quads about the pivot: offset each corner by −(pd,ps) so the pivot stays put.
+      const fwT = apertureFrameWorld(wcs, tSky, pa);   // frame anchored at the target
+      if (!fwT) continue;
+      // Quads relative to the pivot: corner = target + disp·(cd−pd) + spat·(cs−ps), so the pivot
+      // (the fixed slit) sits exactly on the target at every PA.
       const quads = MSA_QUADS_DS.map(c => c.map(([d, s]) => ({
-        x: fwP.cx + fwP.disp.x * (d - pd) + fwP.spat.x * (s - ps),
-        y: fwP.cy + fwP.disp.y * (d - pd) + fwP.spat.y * (s - ps),
+        x: fwT.cx + fwT.disp.x * (d - pd) + fwT.spat.x * (s - ps),
+        y: fwT.cy + fwT.disp.y * (d - pd) + fwT.spat.y * (s - ps),
       })));
       let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
       for (const q of quads) for (const c of q) { if (c.x < bx0) bx0 = c.x; if (c.x > bx1) bx1 = c.x; if (c.y < by0) by0 = c.y; if (c.y > by1) by1 = c.y; }
@@ -2455,15 +2468,24 @@ export default function MapViewer({
       const sched = v3paData ? achievability(v3paData, pa).achievable : true;
       if (sched && count > bestSched.count) bestSched = { pa, count };
     }
-    // Prefer the best schedulable APA; fall back to the unconstrained best if none are schedulable.
     const pick = bestSched.count >= 0 ? bestSched : best;
-    handlePaChange(pick.pa);
+    // Apply: set PA and place the reference so the pivot (slit) lands exactly on the target.
+    const fwPick = apertureFrameWorld(wcs, tSky, pick.pa);
+    if (fwPick) {
+      const rx = fwPick.cx - (fwPick.disp.x * pd + fwPick.spat.x * ps);
+      const ry = fwPick.cy - (fwPick.disp.y * pd + fwPick.spat.y * ps);
+      const rs = pixToSky(wcs, rx, ry);
+      if (Number.isFinite(rs.ra) && Number.isFinite(rs.dec)) setApertureSky({ ra: rs.ra, dec: rs.dec });
+    }
+    setPaDeg(pick.pa);
+    const isSlit = about !== "view" && about !== "ref";
     let note = "";
     if (v3paData) {
       if (bestSched.count < 0) note = " · ⚠ none schedulable (showing max)";
-      else if (bestSched.count < best.count) note = ` · best schedulable (max ${best.count}@${best.pa}° isn’t schedulable)`;
+      else if (bestSched.count < best.count) note = ` · best schedulable (max ${best.count} @ ${best.pa}° not schedulable)`;
       else note = " · schedulable ✓";
     }
+    if (!isSlit) note += " · tip: set “rotate about” to a fixed slit to lock the target in it";
     finish(`PA ${pick.pa}° → ${pick.count} in MSA${note}`);
   };
 
