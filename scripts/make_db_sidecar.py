@@ -44,18 +44,30 @@ def main():
     db = fits.open(args.db)[1].data
     sid = np.asarray(db["src_id"])
 
-    # sanity: row-aligned to the index?
     idxpath = os.path.join(args.indexdir, f"{args.prefix}_search_v{args.version}.json.gz")
     idx = json.loads(gzip.open(idxpath, "rt").read())
     iid = np.asarray(idx["id"])
-    if not (len(sid) == len(iid) and np.array_equal(sid, iid)):
-        raise SystemExit(f"ERROR: {args.db} src_id is NOT row-aligned to {os.path.basename(idxpath)} "
-                         "— need an id-based join (not implemented).")
+
+    # Emit per-INDEX-position values so the sidecar stays row-aligned to the search index. Fast path
+    # when the DB is already in index order; otherwise join by src_id (the DB may cover a subset —
+    # e.g. a DB run on an earlier catalog version — leaving unmatched index objects null).
+    if len(sid) == len(iid) and np.array_equal(sid, iid):
+        order = np.arange(len(iid))
+    else:
+        pos = {int(s): i for i, s in enumerate(sid)}
+        order = np.array([pos.get(int(x), -1) for x in iid])
+        matched = int((order >= 0).sum())
+        print(f"  src_id join: {matched}/{len(iid)} index objects matched a DB row "
+              f"({100 * matched / len(iid):.1f}%); DB has {len(sid)} rows")
 
     def clean(col):
         a = np.asarray(db[col], dtype=float)
         out = []
-        for v in a:
+        for r in order:
+            if r < 0:
+                out.append(None)
+                continue
+            v = a[r]
             out.append(None if not np.isfinite(v) else round(float(v), args.ndp))
         return out
 
