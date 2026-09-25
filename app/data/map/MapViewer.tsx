@@ -1540,8 +1540,10 @@ export default function MapViewer({
                 if (c.y < by0) by0 = c.y; if (c.y > by1) by1 = c.y;
               }
               const ix = idxRef.current;
+              const qidsMsa = queuedIdsRef.current;   // count only what's shown (queued handoff, if any)
               const found: { id: number; ra: number; dec: number; za: number | null; mag: number | null }[] = [];
               for (const s of sourcesRef.current) {
+                if (qidsMsa && !qidsMsa.has(s.id)) continue;
                 if (s.x < bx0 || s.x > bx1 || s.y < by0 || s.y > by1) continue;
                 let inside = false;
                 for (const q of quads) { if (pointInPoly(s.x, s.y, q)) { inside = true; break; } }
@@ -2456,6 +2458,15 @@ export default function MapViewer({
     else { console.log("share link:", url); done("see console for link"); }
   };
 
+  // The sources actually DRAWN on the map = the filtered list, intersected with the search→map
+  // queued set when a handoff is active (so the planners count exactly what you see, not the raw
+  // whole-field filter). This is what the MSA planners must operate on.
+  const shownSources = (): Src[] => {
+    const all = sourcesRef.current;
+    const qids = queuedIdsRef.current;
+    return qids ? all.filter(s => qids.has(s.id)) : all;
+  };
+
   // Optimize roll: with the fixed slit pinned on the target (rotate-about = that slit), scan every
   // aperture PA and pick the one that puts the MOST currently-shown (query-filtered) sources inside
   // the 4 MSA quadrants — preferring a SCHEDULABLE APA (v3pa achievability). Pure client-side geometry
@@ -2468,7 +2479,7 @@ export default function MapViewer({
     const finish = (m: string) => { setOptMsg(m); window.setTimeout(() => setOptMsg(""), 10000); };
     if (!wcs || !cam) return;
     if (!apRef.current.msaFieldOn) { finish("enable “MSA field” first"); return; }
-    const srcs = sourcesRef.current;
+    const srcs = shownSources();
     if (!srcs.length) { finish("no sources shown — run a query at left"); return; }
     const about = apRef.current.rotateAbout;
     const [pd, ps] = pivotDS(about);   // the pivot's (d,s) — a fixed slit's centre, or (0,0) for view/ref
@@ -2544,10 +2555,12 @@ export default function MapViewer({
     const wcs = h?.getViewer()?.getWcs();
     const done = (m: string) => setMultiMsg(m);
     if (!wcs) return;
-    const allSrcs = sourcesRef.current;
+    const allSrcs = shownSources();
     if (!allSrcs.length) { setMultiResults([]); done("no sources shown — run a query at left"); return; }
     const capped = allSrcs.length > 3000;
-    const srcs = capped ? allSrcs.slice(0, 3000) : allSrcs;   // safety cap for the search
+    // Safety cap: EVENLY sample (not the first 3000 by id order, which would be spatially biased).
+    const stride = capped ? Math.ceil(allSrcs.length / 3000) : 1;
+    const srcs = capped ? allSrcs.filter((_, i) => i % stride === 0) : allSrcs;
     // Candidate PAs = schedulable APAs (sampled every 3°); all PAs if no achievability lookup.
     const candPAs: number[] = [];
     for (let pa = 0; pa < 360; pa += 3) if (!v3paData || achievability(v3paData, pa).achievable) candPAs.push(pa);
