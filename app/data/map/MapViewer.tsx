@@ -608,6 +608,11 @@ export default function MapViewer({
   const [shareMsg, setShareMsg] = useState("");
   // Result/feedback for the "Optimize roll" scan ("PA 137° → 23 in MSA · schedulable").
   const [optMsg, setOptMsg] = useState("");
+  // Multi-pointing planner: find N MSA pointings (each at a schedulable V3PA) covering the most
+  // queried sources. Results are clickable to jump the overlay to that pointing.
+  const [multiN, setMultiN] = useState(3);
+  const [multiResults, setMultiResults] = useState<{ ra: number; dec: number; pa: number; count: number }[]>([]);
+  const [multiMsg, setMultiMsg] = useState("");
   // Current vertical FOV (arcsec), updated each frame in project() — baked into the share link so a
   // colleague opens at the same zoom (seeing the whole MSA, not zoomed to 10" on the target).
   const currentFovRef = useRef(0);
@@ -2529,6 +2534,97 @@ export default function MapViewer({
     finish(`PA ${pick.pa}° → ${pick.count} in MSA${note}`);
   };
 
+  // Find the N MSA pointings (each at a schedulable V3PA) that together cover the most of the
+  // currently-shown (query-filtered) sources — a greedy maximum-coverage survey planner. Pure
+  // client-side geometry: for each candidate PA we transform the sources into the (d,s) MSA frame
+  // and slide the 4-quadrant footprint over them (grid search), counting coverage; the best pointing
+  // is taken, its sources removed, and we repeat. Returns pointings clickable to jump the overlay.
+  const findBestPointings = (N: number) => {
+    const h = handleRef.current;
+    const wcs = h?.getViewer()?.getWcs();
+    const done = (m: string) => setMultiMsg(m);
+    if (!wcs) return;
+    const allSrcs = sourcesRef.current;
+    if (!allSrcs.length) { setMultiResults([]); done("no sources shown — run a query at left"); return; }
+    const capped = allSrcs.length > 3000;
+    const srcs = capped ? allSrcs.slice(0, 3000) : allSrcs;   // safety cap for the search
+    // Candidate PAs = schedulable APAs (sampled every 3°); all PAs if no achievability lookup.
+    const candPAs: number[] = [];
+    for (let pa = 0; pa < 360; pa += 3) if (!v3paData || achievability(v3paData, pa).achievable) candPAs.push(pa);
+    if (!candPAs.length) { setMultiResults([]); done("no schedulable V3PAs at this field"); return; }
+    // Defer the heavy grid search so the "computing…" state paints first (it can take ~1–2 s).
+    setMultiResults([]);
+    done("computing…");
+    window.setTimeout(() => {
+    // Region centre (sky) to anchor the frame transform.
+    let cxs = 0, cys = 0; for (const s of srcs) { cxs += s.x; cys += s.y; }
+    const regionSky = pixToSky(wcs, cxs / srcs.length, cys / srcs.length);
+    if (!Number.isFinite(regionSky.ra)) { done("could not compute"); return; }
+    // The 4 MSA quads as (d,s) polygons + a combined bbox (for a cheap reject).
+    const quads = MSA_QUADS_DS.map(q => q.map(([d, s]) => ({ x: d, y: s })));
+    let qd0 = Infinity, qs0 = Infinity, qd1 = -Infinity, qs1 = -Infinity;
+    for (const q of quads) for (const c of q) { if (c.x < qd0) qd0 = c.x; if (c.x > qd1) qd1 = c.x; if (c.y < qs0) qs0 = c.y; if (c.y > qs1) qs1 = c.y; }
+
+    // Per-PA: sources in (d,s) arcsec relative to regionSky (cached across greedy rounds).
+    const perPA = candPAs.map(pa => {
+      const fw = apertureFrameWorld(wcs, regionSky, pa);
+      if (!fw) return null;
+      const k2 = fw.disp.x * fw.disp.x + fw.disp.y * fw.disp.y;
+      const pts = srcs.map(s => {
+        const dx = s.x - fw.cx, dy = s.y - fw.cy;
+        return { d: (dx * fw.disp.x + dy * fw.disp.y) / k2, s: (dx * fw.spat.x + dy * fw.spat.y) / k2 };
+      });
+      // (d,s) spread → adaptive grid step (~25 cells/axis, ≥30″).
+      let dmin = Infinity, dmax = -Infinity, smin = Infinity, smax = -Infinity;
+      for (const p of pts) { if (p.d < dmin) dmin = p.d; if (p.d > dmax) dmax = p.d; if (p.s < smin) smin = p.s; if (p.s > smax) smax = p.s; }
+      return { fw, pts, dmin, dmax, smin, smax };
+    });
+
+    const covered = new Array<boolean>(srcs.length).fill(false);
+    const results: { ra: number; dec: number; pa: number; count: number }[] = [];
+    for (let round = 0; round < Math.max(1, Math.min(10, N)); round++) {
+      let best: { pa: number; dd: number; ds: number; count: number; hit: number[] } | null = null;
+      for (let pi = 0; pi < candPAs.length; pi++) {
+        const P = perPA[pi]; if (!P) continue;
+        const spanD = P.dmax - P.dmin, spanS = P.smax - P.smin;
+        const stepD = Math.max(35, spanD / 18), stepS = Math.max(35, spanS / 18);
+        // Reference offset (Δd,Δs) grid: a source at (d,s) is covered when (d−Δd, s−Δs) ∈ a quad,
+        // so Δ must lie within [d−qd1 … d−qd0] etc. — grid that band.
+        for (let dd = P.dmin - qd1; dd <= P.dmax - qd0; dd += stepD) {
+          for (let ds = P.smin - qs1; ds <= P.smax - qs0; ds += stepS) {
+            let count = 0; const hit: number[] = [];
+            for (let i = 0; i < P.pts.length; i++) {
+              if (covered[i]) continue;
+              const rd = P.pts[i].d - dd, rs = P.pts[i].s - ds;
+              if (rd < qd0 || rd > qd1 || rs < qs0 || rs > qs1) continue;   // bbox reject
+              for (const q of quads) { if (pointInPoly(rd, rs, q)) { count++; hit.push(i); break; } }
+            }
+            if (!best || count > best.count) best = { pa: candPAs[pi], dd, ds, count, hit };
+          }
+        }
+      }
+      if (!best || best.count === 0) break;
+      best.hit.forEach(i => { covered[i] = true; });
+      const P = perPA[candPAs.indexOf(best.pa)]!;
+      const rs = pixToSky(wcs, P.fw.cx + P.fw.disp.x * best.dd + P.fw.spat.x * best.ds, P.fw.cy + P.fw.disp.y * best.dd + P.fw.spat.y * best.ds);
+      results.push({ ra: rs.ra, dec: rs.dec, pa: best.pa, count: best.count });
+    }
+    setMultiResults(results);
+    const total = covered.filter(Boolean).length;
+    done(results.length
+      ? `${results.length} pointings cover ${total}/${srcs.length}${capped ? " (capped)" : ""} sources`
+      : "no coverage found");
+    }, 30);
+  };
+
+  // Jump the MSA overlay to a planned pointing (its reference at ra/dec, at that PA).
+  const applyPointing = (r: { ra: number; dec: number; pa: number }) => {
+    setMsaFieldOn(true);
+    setRotateAbout("ref");           // the pointing centre IS the MSA reference
+    setPaDeg(r.pa);
+    setApertureSky({ ra: r.ra, dec: r.dec });
+  };
+
   return (
     <div ref={wrapRef} className="mapwrap" style={{ width: "100%", height: "100%", position: "relative", touchAction: "none" }}>
       <FitsViewer
@@ -2864,6 +2960,8 @@ export default function MapViewer({
           onFitFootprints={fitFootprints}
           onShare={shareConfig} shareMsg={shareMsg}
           onOptimize={optimizeRoll} optMsg={optMsg}
+          multiN={multiN} onMultiN={setMultiN} multiResults={multiResults} multiMsg={multiMsg}
+          onFindPointings={findBestPointings} onApplyPointing={applyPointing}
           defaultOpen={!!initialMsa}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
@@ -2946,6 +3044,7 @@ function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
   instruments, footprints, onToggleFootprint, onFitFootprints, instCenters, onShare, shareMsg, onOptimize, optMsg, defaultOpen,
+  multiN, onMultiN, multiResults, multiMsg, onFindPointings, onApplyPointing,
 }: {
   /** Live centre (sky) of each shown instrument — NIRSpec at the pointing, footprints at their
    *  own module centroid. Updates every frame so it reflects exactly where you dragged. */
@@ -2990,6 +3089,13 @@ function NIRSpecPanel({
   optMsg: string;
   /** Open the panel on mount (a shared MSA-planning link should land with it expanded). */
   defaultOpen?: boolean;
+  /** Multi-pointing survey planner: N, results, and callbacks. */
+  multiN: number;
+  onMultiN: (n: number) => void;
+  multiResults: { ra: number; dec: number; pa: number; count: number }[];
+  multiMsg: string;
+  onFindPointings: (n: number) => void;
+  onApplyPointing: (r: { ra: number; dec: number; pa: number; count: number }) => void;
 }) {
   const [open, setOpen] = useState(!!defaultOpen);
   const [copied, setCopied] = useState("");   // "copied ✓" feedback for the centre+V3PA button
@@ -3163,6 +3269,32 @@ function NIRSpecPanel({
               {optMsg && (
                 <div className="mono" style={{ fontSize: "0.63rem", color: "#f0b050", marginTop: 5, lineHeight: 1.5 }}>{optMsg}</div>
               )}
+
+              {/* Multi-pointing survey planner: the N MSA pointings (each at a schedulable V3PA) that
+                  together cover the most of the shown sources. Each result jumps the overlay there. */}
+              <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--border)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: "0.62rem", color: "var(--text-muted)" }}>find</span>
+                  <input type="number" min={1} max={10} value={multiN}
+                    onChange={e => onMultiN(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+                    aria-label="Number of pointings"
+                    style={{ width: 42, background: "var(--bg)", border: "1px solid var(--border-bright)", borderRadius: 5, color: "var(--text)", fontFamily: "'Space Mono', monospace", fontSize: "0.66rem", padding: "3px 5px" }} />
+                  <button onClick={() => onFindPointings(multiN)} className="mono"
+                    title="Find the N MSA pointings (each at a schedulable V3PA) that together cover the most of the shown sources — a greedy survey planner."
+                    style={{ flex: 1, background: "none", border: "1px solid #5ee0e0", borderRadius: 5, color: "#5ee0e0", cursor: "pointer", fontSize: "0.64rem", padding: "5px 6px" }}>
+                    best pointings
+                  </button>
+                </div>
+                {multiMsg && <div className="mono" style={{ fontSize: "0.62rem", color: "var(--text-dim)", marginTop: 4 }}>{multiMsg}</div>}
+                {multiResults.map((r, i) => (
+                  <button key={i} onClick={() => onApplyPointing(r)} className="mono"
+                    title={`Jump the MSA overlay to pointing #${i + 1}`}
+                    style={{ width: "100%", textAlign: "left", marginTop: 4, background: "rgba(94,224,224,0.06)", border: "1px solid var(--border-bright)", borderRadius: 5, color: "var(--text)", cursor: "pointer", fontSize: "0.62rem", padding: "5px 7px", lineHeight: 1.4 }}>
+                    <span style={{ color: "#5ee0e0" }}>#{i + 1}</span> · {r.count} src · PA {r.pa}°<br />
+                    <span style={{ color: "var(--text-dim)" }}>{r.ra.toFixed(5)}, {r.dec.toFixed(5)}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
