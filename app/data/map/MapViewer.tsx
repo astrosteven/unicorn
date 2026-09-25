@@ -977,6 +977,28 @@ export default function MapViewer({
   const pivotDS = (about: string): [number, number] =>
     about === "ref" || about === "view" ? [0, 0] : slitCenterDS(about);
 
+  // Changing "rotate about": keep the sky point the CURRENT pivot sits on (your target) fixed, and
+  // shift the aperture so the NEWLY-chosen slit lands on that same point — so picking a different
+  // fixed slit carries your source into it (rather than leaving it wherever that slit happened to be).
+  const handleRotateAbout = (newAbout: string) => {
+    const h = handleRef.current;
+    const wcs = h?.getViewer()?.getWcs();
+    const cam = h?.getCameraState();
+    if (!h || !wcs || !cam) { setRotateAbout(newAbout); return; }
+    let centerSky = apRef.current.apertureSky;
+    if (!centerSky) { const s = pixToSky(wcs, cam.centerX, cam.centerY); if (Number.isFinite(s.ra) && Number.isFinite(s.dec)) centerSky = { ra: s.ra, dec: s.dec }; }
+    if (!centerSky) { setRotateAbout(newAbout); return; }
+    const fw = apertureFrameWorld(wcs, centerSky, apRef.current.paDeg);
+    if (!fw) { setRotateAbout(newAbout); return; }
+    const [od, os] = pivotDS(apRef.current.rotateAbout);      // where the current pivot sits (the target)
+    const px = fw.cx + fw.disp.x * od + fw.spat.x * os;
+    const py = fw.cy + fw.disp.y * od + fw.spat.y * os;
+    const [nd, ns] = pivotDS(newAbout);                        // where the new pivot should land = that point
+    const rs = pixToSky(wcs, px - (fw.disp.x * nd + fw.spat.x * ns), py - (fw.disp.y * nd + fw.spat.y * ns));
+    setRotateAbout(newAbout);
+    if (Number.isFinite(rs.ra) && Number.isFinite(rs.dec)) setApertureSky({ ra: rs.ra, dec: rs.dec });
+  };
+
   // Zoom/pan so EVERY enabled overlay (MSA field + checked instrument footprints) fits the
   // viewport — the JWST focal plane spans ~15′, so distant instruments (MIRI ~14′) need a wide
   // view. Bbox the world-px corners of all enabled apertures at the current pin + PA, then hand a
@@ -2829,7 +2851,7 @@ export default function MapViewer({
           msaCount={msaSources.length}
           onMsaCsv={downloadMsaSources} onMsaTable={openMsaInTable}
           onMsa={setMsaOn} onIfu={setIfuOn} onMsaField={setMsaFieldOn} onPa={handlePaChange}
-          rotateAbout={rotateAbout} onRotateAbout={setRotateAbout}
+          rotateAbout={rotateAbout} onRotateAbout={handleRotateAbout}
           paAchieve={paAchieve} onPickPa={handlePaChange}
           instruments={siaf?.instruments ?? []}
           instCenters={instCenters}
