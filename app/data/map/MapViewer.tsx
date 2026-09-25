@@ -604,6 +604,8 @@ export default function MapViewer({
   const lastCentersRef = useRef("");
   // Transient "link copied" feedback for the Share button.
   const [shareMsg, setShareMsg] = useState("");
+  // Result/feedback for the "Optimize roll" scan ("PA 137° → 23 in MSA · schedulable").
+  const [optMsg, setOptMsg] = useState("");
   // Current vertical FOV (arcsec), updated each frame in project() — baked into the share link so a
   // colleague opens at the same zoom (seeing the whole MSA, not zoomed to 10" on the target).
   const currentFovRef = useRef(0);
@@ -2409,6 +2411,62 @@ export default function MapViewer({
     else { console.log("share link:", url); done("see console for link"); }
   };
 
+  // Optimize roll: with the fixed slit pinned on the target (rotate-about = that slit), scan every
+  // aperture PA and pick the one that puts the MOST currently-shown (query-filtered) sources inside
+  // the 4 MSA quadrants — preferring a SCHEDULABLE APA (v3pa achievability). Pure client-side geometry
+  // (point-in-polygon over the loaded sources); no server. The target stays in the slit at every PA
+  // by construction (we rotate about the pivot), so this maximises the *other* catches.
+  const optimizeRoll = () => {
+    const h = handleRef.current;
+    const wcs = h?.getViewer()?.getWcs();
+    const cam = h?.getCameraState();
+    const finish = (m: string) => { setOptMsg(m); window.setTimeout(() => setOptMsg(""), 9000); };
+    if (!wcs || !cam) return;
+    if (!apRef.current.msaFieldOn) { finish("enable “MSA field” first"); return; }
+    const srcs = sourcesRef.current;
+    if (!srcs.length) { finish("no sources shown — run a query at left"); return; }
+    // Pivot to keep fixed = the current rotate-about point (the fixed slit on the target).
+    let centerSky = apRef.current.apertureSky;
+    if (!centerSky) { const s = pixToSky(wcs, cam.centerX, cam.centerY); if (Number.isFinite(s.ra)) centerSky = { ra: s.ra, dec: s.dec }; }
+    if (!centerSky) return;
+    const [pd, ps] = pivotDS(apRef.current.rotateAbout);
+    const fwNow = apertureFrameWorld(wcs, centerSky, apRef.current.paDeg);
+    if (!fwNow) return;
+    const pivotSky = pixToSky(wcs, fwNow.cx + fwNow.disp.x * pd + fwNow.spat.x * ps, fwNow.cy + fwNow.disp.y * pd + fwNow.spat.y * ps);
+    if (!Number.isFinite(pivotSky.ra) || !Number.isFinite(pivotSky.dec)) return;
+    let best = { pa: apRef.current.paDeg, count: -1 };          // best regardless of schedulability
+    let bestSched = { pa: -1, count: -1 };                       // best among schedulable APAs
+    for (let pa = 0; pa < 360; pa += 1) {
+      const fwP = apertureFrameWorld(wcs, pivotSky, pa);
+      if (!fwP) continue;
+      // The 4 MSA quads about the pivot: offset each corner by −(pd,ps) so the pivot stays put.
+      const quads = MSA_QUADS_DS.map(c => c.map(([d, s]) => ({
+        x: fwP.cx + fwP.disp.x * (d - pd) + fwP.spat.x * (s - ps),
+        y: fwP.cy + fwP.disp.y * (d - pd) + fwP.spat.y * (s - ps),
+      })));
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      for (const q of quads) for (const c of q) { if (c.x < bx0) bx0 = c.x; if (c.x > bx1) bx1 = c.x; if (c.y < by0) by0 = c.y; if (c.y > by1) by1 = c.y; }
+      let count = 0;
+      for (const sc of srcs) {
+        if (sc.x < bx0 || sc.x > bx1 || sc.y < by0 || sc.y > by1) continue;
+        for (const q of quads) { if (pointInPoly(sc.x, sc.y, q)) { count++; break; } }
+      }
+      if (count > best.count) best = { pa, count };
+      const sched = v3paData ? achievability(v3paData, pa).achievable : true;
+      if (sched && count > bestSched.count) bestSched = { pa, count };
+    }
+    // Prefer the best schedulable APA; fall back to the unconstrained best if none are schedulable.
+    const pick = bestSched.count >= 0 ? bestSched : best;
+    handlePaChange(pick.pa);
+    let note = "";
+    if (v3paData) {
+      if (bestSched.count < 0) note = " · ⚠ none schedulable (showing max)";
+      else if (bestSched.count < best.count) note = ` · best schedulable (max ${best.count}@${best.pa}° isn’t schedulable)`;
+      else note = " · schedulable ✓";
+    }
+    finish(`PA ${pick.pa}° → ${pick.count} in MSA${note}`);
+  };
+
   return (
     <div ref={wrapRef} className="mapwrap" style={{ width: "100%", height: "100%", position: "relative", touchAction: "none" }}>
       <FitsViewer
@@ -2743,6 +2801,7 @@ export default function MapViewer({
           })}
           onFitFootprints={fitFootprints}
           onShare={shareConfig} shareMsg={shareMsg}
+          onOptimize={optimizeRoll} optMsg={optMsg}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
           onTogglePin={() => setApLocked(l => !l)}
@@ -2823,7 +2882,7 @@ function fmtSexagesimal(ra: number, dec: number): string {
 function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
-  instruments, footprints, onToggleFootprint, onFitFootprints, instCenters, onShare, shareMsg,
+  instruments, footprints, onToggleFootprint, onFitFootprints, instCenters, onShare, shareMsg, onOptimize, optMsg,
 }: {
   /** Live centre (sky) of each shown instrument — NIRSpec at the pointing, footprints at their
    *  own module centroid. Updates every frame so it reflects exactly where you dragged. */
@@ -2862,6 +2921,10 @@ function NIRSpecPanel({
   onShare: () => void;
   /** Transient feedback shown next to the Share button ("link copied ✓"). */
   shareMsg: string;
+  /** Scan all PAs (slit pinned on target) → jump to the one with the most shown sources in the MSA. */
+  onOptimize: () => void;
+  /** Transient result of the optimize-roll scan. */
+  optMsg: string;
 }) {
   const [open, setOpen] = useState(false);
   const anyOn = msaOn || ifuOn || msaFieldOn || footprints.size > 0;
@@ -2979,6 +3042,22 @@ function NIRSpecPanel({
                   ▤ table ↗
                 </button>
               </div>
+              {/* Optimize roll: pin the fixed slit on the target (rotate-about a slit), then this
+                  finds the PA that catches the most shown sources in the MSA (prefers a schedulable APA). */}
+              <button
+                onClick={onOptimize}
+                className="mono"
+                title="Scan every position angle (keeping the rotate-about slit fixed on your target) and jump to the PA that puts the most currently-shown sources in the MSA — preferring a schedulable APA. Set 'rotate about' to your fixed slit first."
+                style={{
+                  width: "100%", marginTop: 7, background: "none", border: "1px solid #f0b050", borderRadius: 5,
+                  color: "#f0b050", cursor: "pointer", fontSize: "0.66rem", padding: "6px 8px",
+                }}
+              >
+                ⟳ Optimize roll (max sources in MSA)
+              </button>
+              {optMsg && (
+                <div className="mono" style={{ fontSize: "0.63rem", color: "#f0b050", marginTop: 5, lineHeight: 1.5 }}>{optMsg}</div>
+              )}
             </div>
           )}
 
