@@ -158,6 +158,27 @@ function readRawMarkers(): RawMarkers | null {
     return m;
   } catch { return null; }
 }
+// Shared MSA-planning link (from the footprints panel's Share button): PA, which overlays are on
+// (ov=field,msa,ifu), the fixed slit rotated about, the exact pointing (aptra/aptdec), the shown
+// instrument footprints (fp), plus mq= for the left query. Read once on load → initialMsa.
+type InitialMsa = { pa?: number; msa?: boolean; ifu?: boolean; field?: boolean; slit?: string; aptra?: number; aptdec?: number; fp?: string[] };
+function readInitialMsa(): InitialMsa | null {
+  if (typeof window === "undefined") return null;
+  const sp = new URLSearchParams(window.location.search);
+  if (!(sp.has("pa") || sp.has("ov") || sp.has("slit") || sp.has("aptra"))) return null;
+  const ov = (sp.get("ov") || "").split(",").map(s => s.trim());
+  const num = (k: string) => { const v = parseFloat(sp.get(k) || ""); return Number.isFinite(v) ? v : undefined; };
+  return {
+    pa: num("pa"), field: ov.includes("field"), msa: ov.includes("msa"), ifu: ov.includes("ifu"),
+    slit: sp.get("slit") || undefined, aptra: num("aptra"), aptdec: num("aptdec"),
+    fp: (sp.get("fp") || "").split(",").map(s => s.trim()).filter(Boolean),
+  };
+}
+function readMapQuery(): string {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get("mq") || "";
+}
+
 function rawFieldConfig(m: RawMarkers | null): FieldConfig | null {
   if (!m) return null;
   return FITSGL_FIELDS.find(x => x.field === m.field || x.prefix === m.field.toLowerCase()) ?? null;
@@ -235,7 +256,10 @@ export default function MapPage() {
   const deeplinkFov = initialFov();   // ?fov= override (e.g. inspector's 5" link), else default
   const [ready, setReady] = useState(false);
   const [panel, setPanel] = useState<PanelState>({ kind: "hidden" });
-  const [filters, setFilters] = useState<MapFilters>(DEFAULT_FILTERS);
+  // Init the query filter from a shared link's mq= so the recipient sees the same filtered sources.
+  const [filters, setFilters] = useState<MapFilters>(() => ({ ...DEFAULT_FILTERS, query: readMapQuery() }));
+  // Shared MSA-planning setup to restore (PA/overlays/slit/pointing/footprints), read once.
+  const initialMsa = useMemo(() => readInitialMsa(), []);
   const [shown, setShown] = useState<number | null>(null);
   const [gotoMsg, setGotoMsg] = useState<string>("");
   // Narrow screens (phones): the 220px filter sidebar eats most of the width, so collapse it into
@@ -570,6 +594,7 @@ export default function MapPage() {
             cameraTargetRef={cameraTargetRef}
             primaryId={primaryId}
             rawMarkers={rawMarkers}
+            initialMsa={initialMsa}
           />
         </div>
 

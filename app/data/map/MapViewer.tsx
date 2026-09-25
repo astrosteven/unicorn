@@ -536,6 +536,7 @@ export default function MapViewer({
   cameraTargetRef,
   primaryId,
   rawMarkers,
+  initialMsa,
 }: {
   /** The active field's config — drives which search index the overlay loads. */
   field: FieldConfig;
@@ -559,6 +560,12 @@ export default function MapViewer({
   onReadyHandle?: (h: FitsViewerHandle, idx: FieldIndex) => void;
   /** A pending camera target to adopt-and-hold across auto-fit; null once satisfied. */
   cameraTargetRef?: React.MutableRefObject<CameraTarget | null>;
+  /** Restore a shared MSA-planning configuration from the URL: PA, which overlays are on, the
+   *  fixed slit to rotate about, the exact pointing (aptra/aptdec), and the instrument footprints. */
+  initialMsa?: {
+    pa?: number; msa?: boolean; ifu?: boolean; field?: boolean;
+    slit?: string; aptra?: number; aptdec?: number; fp?: string[];
+  } | null;
 }) {
   const [state, setState] = useState<LoadState>("loading");
   const [config, setConfig] = useState<FitsglConfig | null>(null);
@@ -571,18 +578,21 @@ export default function MapViewer({
   const [scaleBar, setScaleBar] = useState<{ px: number; label: string } | null>(null);
   // NIRSpec aperture overlays (MSA 3-shutter slitlet + IFU). Toggles + a shared PA (deg,
   // east-of-north). Optionally pinned to a fixed sky position; null = follow view centre.
-  const [msaOn, setMsaOn] = useState(false);
-  const [ifuOn, setIfuOn] = useState(false);
-  const [msaFieldOn, setMsaFieldOn] = useState(false);
-  const [paDeg, setPaDeg] = useState(0);
+  const [msaOn, setMsaOn] = useState(() => !!initialMsa?.msa);
+  const [ifuOn, setIfuOn] = useState(() => !!initialMsa?.ifu);
+  const [msaFieldOn, setMsaFieldOn] = useState(() => !!initialMsa?.field);
+  const [paDeg, setPaDeg] = useState(() => (Number.isFinite(initialMsa?.pa) ? (initialMsa!.pa as number) : 0));
   // What point the MSA rotates ABOUT when PA changes: "view" (screen centre — your target, the
   // default), "ref" (the MSA reference / field centre, d=s=0), or a fixed-slit label (keep that
   // slit pinned on the sky as you roll). Held-fixed point is resolved in handlePaChange.
-  const [rotateAbout, setRotateAbout] = useState<string>("view");
+  const [rotateAbout, setRotateAbout] = useState<string>(() => initialMsa?.slit || "view");
   // Per-field allowed-PA lookup (public/nirspec/v3pa/<id>.json). null = none / still loading;
   // when absent the panel behaves exactly as before (no achievability flag).
   const [v3paData, setV3paData] = useState<V3paData | null>(null);
-  const [apertureSky, setApertureSky] = useState<{ ra: number; dec: number } | null>(null);
+  const [apertureSky, setApertureSky] = useState<{ ra: number; dec: number } | null>(
+    () => (Number.isFinite(initialMsa?.aptra) && Number.isFinite(initialMsa?.aptdec))
+      ? { ra: initialMsa!.aptra as number, dec: initialMsa!.aptdec as number } : null,
+  );
   // NIRSpec aperture is now always PLACED at a sky position (apertureSky, set to the view
   // centre when first enabled) rather than following the view. `apLocked` (the pin button)
   // just hides the drag handle so the map pans freely — it never moves the aperture. The
@@ -592,6 +602,11 @@ export default function MapViewer({
   // Guard so the per-frame instrument-centre recompute only triggers a React re-render when the
   // rounded values actually change (project() runs every frame; avoids churning the panel).
   const lastCentersRef = useRef("");
+  // Transient "link copied" feedback for the Share button.
+  const [shareMsg, setShareMsg] = useState("");
+  // Current vertical FOV (arcsec), updated each frame in project() — baked into the share link so a
+  // colleague opens at the same zoom (seeing the whole MSA, not zoomed to 10" on the target).
+  const currentFovRef = useRef(0);
   // Per-shown-instrument centres in SKY coords, updated live as you drag. NIRSpec (MSA/IFU/field)
   // sits at the pointing reference; each JWST instrument footprint reports its own module centroid.
   const [instCenters, setInstCenters] = useState<{ key: string; label: string; color: string; ra: number; dec: number }[]>([]);
@@ -610,7 +625,7 @@ export default function MapViewer({
   // public/nirspec/siaf_footprints.json (scripts/make_siaf_footprints.py). `footprints` = the
   // set of instrument keys currently shown.
   const [siaf, setSiaf] = useState<SiafFootprints | null>(null);
-  const [footprints, setFootprints] = useState<Set<string>>(new Set());
+  const [footprints, setFootprints] = useState<Set<string>>(() => new Set(initialMsa?.fp ?? []));
   useEffect(() => {
     let alive = true;
     fetch("/unicorn/nirspec/siaf_footprints.json")
@@ -1337,6 +1352,7 @@ export default function MapViewer({
         if (cssPxPer100 > 0) {
           arcsecPerCssPx = (pixelScaleRef.current * 100) / cssPxPer100;
           setScaleBar(niceScaleBar(arcsecPerCssPx));
+          currentFovRef.current = arcsecPerCssPx * rect.height;   // vertical FOV in arcsec (for the share link)
         }
       }
 
@@ -2370,6 +2386,29 @@ export default function MapViewer({
       onPointerDown={startApDrag} />
   );
 
+  // Build a shareable link that reproduces the current MSA-planning setup: field + target (?id),
+  // aperture PA, which overlays are on, the fixed slit rotated about, the exact pointing
+  // (aptra/aptdec), the shown footprints, and the left query (mq) so the recipient sees the same
+  // filtered sources in the MSA. Copies to the clipboard.
+  const shareConfig = () => {
+    const sp = new URLSearchParams();
+    sp.set("field", field.field);
+    if (primaryId != null) sp.set("id", String(primaryId));
+    sp.set("pa", paDeg.toFixed(3));
+    const ov = [msaFieldOn && "field", msaOn && "msa", ifuOn && "ifu"].filter(Boolean).join(",");
+    if (ov) sp.set("ov", ov);
+    if (footprints.size) sp.set("fp", [...footprints].join(","));
+    if (rotateAbout && rotateAbout !== "view") sp.set("slit", rotateAbout);
+    if (apertureSky) { sp.set("aptra", apertureSky.ra.toFixed(6)); sp.set("aptdec", apertureSky.dec.toFixed(6)); }
+    if (currentFovRef.current > 0) sp.set("fov", Math.round(currentFovRef.current).toString());  // open at the same zoom
+    const q = filters.query?.trim();
+    if (q) sp.set("mq", q);
+    const url = `${window.location.origin}/unicorn/data/map?${sp.toString()}`;
+    const done = (msg: string) => { setShareMsg(msg); window.setTimeout(() => setShareMsg(""), 3500); };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(() => done("link copied ✓"), () => { console.log("share link:", url); done("copy failed — see console"); });
+    else { console.log("share link:", url); done("see console for link"); }
+  };
+
   return (
     <div ref={wrapRef} className="mapwrap" style={{ width: "100%", height: "100%", position: "relative", touchAction: "none" }}>
       <FitsViewer
@@ -2703,6 +2742,7 @@ export default function MapViewer({
             return next;
           })}
           onFitFootprints={fitFootprints}
+          onShare={shareConfig} shareMsg={shareMsg}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
           onTogglePin={() => setApLocked(l => !l)}
@@ -2783,7 +2823,7 @@ function fmtSexagesimal(ra: number, dec: number): string {
 function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
-  instruments, footprints, onToggleFootprint, onFitFootprints, instCenters,
+  instruments, footprints, onToggleFootprint, onFitFootprints, instCenters, onShare, shareMsg,
 }: {
   /** Live centre (sky) of each shown instrument — NIRSpec at the pointing, footprints at their
    *  own module centroid. Updates every frame so it reflects exactly where you dragged. */
@@ -2818,6 +2858,10 @@ function NIRSpecPanel({
   onToggleFootprint: (key: string, on: boolean) => void;
   /** Zoom/pan the map to fit every enabled overlay. */
   onFitFootprints: () => void;
+  /** Copy a shareable link that reproduces this whole MSA-planning setup. */
+  onShare: () => void;
+  /** Transient feedback shown next to the Share button ("link copied ✓"). */
+  shareMsg: string;
 }) {
   const [open, setOpen] = useState(false);
   const anyOn = msaOn || ifuOn || msaFieldOn || footprints.size > 0;
@@ -3050,6 +3094,22 @@ function NIRSpecPanel({
             }}
           >
             {pinned ? "🔒 Locked · click to move" : "⠿ Drag to move · click to lock"}
+          </button>
+
+          {/* Share the exact setup (target in slit + PA + overlays + the left query's sources) as a
+              link a colleague can open to see the same MSA-planning view. */}
+          <button
+            onClick={onShare}
+            className="mono"
+            title="Copy a link that reproduces this view: the target, PA, overlays, fixed slit, pointing, and the left query's sources — so a colleague opens the exact same MSA plan."
+            style={{
+              width: "100%", marginTop: 7, background: "none",
+              border: "1px solid var(--accent2)", borderRadius: 5,
+              color: shareMsg ? "var(--accent2)" : "var(--text-muted)", cursor: "pointer",
+              fontSize: "0.68rem", padding: "6px 10px",
+            }}
+          >
+            {shareMsg || "🔗 Share this configuration"}
           </button>
 
           {/* Other JWST instruments — SIAF-exact footprints at their true focal-plane offsets from
