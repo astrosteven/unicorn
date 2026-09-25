@@ -260,6 +260,9 @@ export default function MapPage() {
   const [filters, setFilters] = useState<MapFilters>(() => ({ ...DEFAULT_FILTERS, query: readMapQuery() }));
   // Shared MSA-planning setup to restore (PA/overlays/slit/pointing/footprints), read once.
   const initialMsa = useMemo(() => readInitialMsa(), []);
+  // Safety-net: re-apply a shared link's mq after mount (covers the static-prerender case where the
+  // useState initializer above ran with window undefined). Only if the box is still empty.
+  useEffect(() => { const q = readMapQuery(); if (q) setFilters(f => (f.query ? f : { ...f, query: q })); }, []);
   const [shown, setShown] = useState<number | null>(null);
   const [gotoMsg, setGotoMsg] = useState<string>("");
   // Narrow screens (phones): the 220px filter sidebar eats most of the width, so collapse it into
@@ -693,6 +696,10 @@ function FilterSidebar({
 }) {
   const num = (s: string): number | null => (s.trim() === "" ? null : (Number.isFinite(+s) ? +s : null));
   const patch = (p: Partial<MapFilters>) => setFilters(f => ({ ...f, ...p }));
+  // Controlled query text, committed on blur/Enter (so we don't re-filter every keystroke). Synced
+  // from filters.query so a shared link's restored query — and the Reset button — show in the box.
+  const [qLocal, setQLocal] = useState(filters.query);
+  useEffect(() => { setQLocal(filters.query); }, [filters.query]);
 
   const labelStyle: React.CSSProperties = { fontSize: "0.68rem", color: "var(--text-dim)", letterSpacing: "0.04em", marginBottom: "4px", textTransform: "uppercase" };
   const inputStyle: React.CSSProperties = {
@@ -714,9 +721,10 @@ function FilterSidebar({
       <div style={{ marginBottom: "1.2rem" }}>
         <div style={labelStyle}>Query <span style={{ textTransform: "none", letterSpacing: 0, color: "var(--text-dim)" }}>za · zspec · m444 · mabs…</span></div>
         <textarea
-          defaultValue={filters.query}
-          onBlur={e => patch({ query: e.target.value })}
-          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); patch({ query: (e.target as HTMLTextAreaElement).value }); } }}
+          value={qLocal}
+          onChange={e => setQLocal(e.target.value)}
+          onBlur={() => patch({ query: qLocal })}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); patch({ query: qLocal }); } }}
           placeholder="za > 8 and zspec = none"
           rows={2}
           style={{ ...inputStyle, resize: "vertical", minHeight: "42px", fontSize: "0.74rem" }}

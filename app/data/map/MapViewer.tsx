@@ -585,7 +585,9 @@ export default function MapViewer({
   // What point the MSA rotates ABOUT when PA changes: "view" (screen centre — your target, the
   // default), "ref" (the MSA reference / field centre, d=s=0), or a fixed-slit label (keep that
   // slit pinned on the sky as you roll). Held-fixed point is resolved in handlePaChange.
-  const [rotateAbout, setRotateAbout] = useState<string>(() => initialMsa?.slit || "view");
+  // Default the rotation pivot to the S200A1 fixed slit (the common NIRSpec fixed-slit target),
+  // so "optimize roll" keeps the target in that slit out of the box.
+  const [rotateAbout, setRotateAbout] = useState<string>(() => initialMsa?.slit || "S200A1");
   // Per-field allowed-PA lookup (public/nirspec/v3pa/<id>.json). null = none / still loading;
   // when absent the panel behaves exactly as before (no achievability flag).
   const [v3paData, setV3paData] = useState<V3paData | null>(null);
@@ -2824,6 +2826,7 @@ export default function MapViewer({
           onFitFootprints={fitFootprints}
           onShare={shareConfig} shareMsg={shareMsg}
           onOptimize={optimizeRoll} optMsg={optMsg}
+          defaultOpen={!!initialMsa}
           // Pin = LOCK: hide the drag handle so the map pans freely. Never moves the aperture,
           // so pinning/unpinning leaves it exactly where you left it.
           onTogglePin={() => setApLocked(l => !l)}
@@ -2904,7 +2907,7 @@ function fmtSexagesimal(ra: number, dec: number): string {
 function NIRSpecPanel({
   msaOn, ifuOn, msaFieldOn, paDeg, pinned, msaCount, paAchieve, rotateAbout, onRotateAbout,
   onMsa, onIfu, onMsaField, onPa, onTogglePin, onMsaCsv, onMsaTable, onPickPa,
-  instruments, footprints, onToggleFootprint, onFitFootprints, instCenters, onShare, shareMsg, onOptimize, optMsg,
+  instruments, footprints, onToggleFootprint, onFitFootprints, instCenters, onShare, shareMsg, onOptimize, optMsg, defaultOpen,
 }: {
   /** Live centre (sky) of each shown instrument — NIRSpec at the pointing, footprints at their
    *  own module centroid. Updates every frame so it reflects exactly where you dragged. */
@@ -2947,8 +2950,11 @@ function NIRSpecPanel({
   onOptimize: () => void;
   /** Transient result of the optimize-roll scan. */
   optMsg: string;
+  /** Open the panel on mount (a shared MSA-planning link should land with it expanded). */
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!defaultOpen);
+  const [copied, setCopied] = useState("");   // "copied ✓" feedback for the centre+V3PA button
   const anyOn = msaOn || ifuOn || msaFieldOn || footprints.size > 0;
   const row: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 9 };
   return (
@@ -3007,6 +3013,26 @@ function NIRSpecPanel({
                   <div style={{ color: "var(--text-dim)" }}>{fmtSexagesimal(c.ra, c.dec)}</div>
                 </div>
               ))}
+              {/* One-click copy of the NIRSpec pointing (field centre) + V3PA + Aperture PA (ORIENT),
+                  the numbers you drop into APT. */}
+              {(() => {
+                const ns = instCenters.find(c => c.key === "nirspec") ?? instCenters[0];
+                if (!ns) return null;
+                const v3pa = ((((paDeg - NRS_MSA_V3IDLYANGLE) % 360) + 360) % 360);
+                const copy = () => {
+                  const txt = `NIRSpec pointing  RA=${ns.ra.toFixed(6)}  Dec=${ns.dec.toFixed(6)}  (${fmtSexagesimal(ns.ra, ns.dec)})  V3PA=${v3pa.toFixed(3)}  APA/ORIENT=${(((paDeg % 360) + 360) % 360).toFixed(3)}`;
+                  const done = (m: string) => { setCopied(m); window.setTimeout(() => setCopied(""), 3000); };
+                  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(txt).then(() => done("copied ✓"), () => { console.log(txt); done("see console"); });
+                  else { console.log(txt); done("see console"); }
+                };
+                return (
+                  <button onClick={copy} className="mono"
+                    title="Copy the NIRSpec field centre (RA/Dec) + V3PA + Aperture PA (request as the APT ORIENT)"
+                    style={{ width: "100%", marginTop: 4, background: "none", border: "1px solid var(--border-bright)", borderRadius: 5, color: copied ? "#5ee0e0" : "var(--text-muted)", cursor: "pointer", fontSize: "0.63rem", padding: "5px 8px" }}>
+                    {copied || "⧉ copy centre + V3PA"}
+                  </button>
+                );
+              })()}
             </div>
           )}
           <label style={row}>
@@ -3077,6 +3103,25 @@ function NIRSpecPanel({
               >
                 ⟳ Optimize roll (max sources in MSA)
               </button>
+              {/* Pivot for the roll: the fixed slit that stays locked on your target while the mask
+                  swings. Default S200A1. "View/MSA centre" pivot about the target/field instead. */}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 7, fontSize: "0.62rem", color: "var(--text-muted)" }}>
+                <span style={{ whiteSpace: "nowrap" }}>rotate about</span>
+                <select
+                  value={rotateAbout}
+                  onChange={e => onRotateAbout(e.target.value)}
+                  aria-label="Rotate MSA about"
+                  style={{
+                    flex: 1, background: "var(--bg)", border: "1px solid var(--border-bright)",
+                    borderRadius: 5, color: "var(--text)", fontFamily: "'Space Mono', monospace",
+                    fontSize: "0.66rem", padding: "3px 6px", cursor: "pointer",
+                  }}
+                >
+                  {MSA_SLITS_DS.map(sl => <option key={sl.label} value={sl.label}>{sl.label} slit</option>)}
+                  <option value="view">View centre (target)</option>
+                  <option value="ref">MSA centre (field)</option>
+                </select>
+              </label>
               {optMsg && (
                 <div className="mono" style={{ fontSize: "0.63rem", color: "#f0b050", marginTop: 5, lineHeight: 1.5 }}>{optMsg}</div>
               )}
@@ -3113,27 +3158,6 @@ function NIRSpecPanel({
               }}
             />
             <div style={{ fontSize: "0.58rem", color: "var(--text-dim)", marginTop: 2 }}>east of north · this IS the Aperture PA — request it as the APT ORIENT</div>
-
-            {/* Pivot for PA rotation: keep this point fixed on the sky as you roll. "View centre"
-                (your target) is the default; a fixed slit keeps that slit pinned so a source stays
-                in it while the rest of the mask swings; "MSA centre" pivots about the field centre. */}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 7, fontSize: "0.62rem", color: "var(--text-muted)" }}>
-              <span style={{ whiteSpace: "nowrap" }}>rotate about</span>
-              <select
-                value={rotateAbout}
-                onChange={e => onRotateAbout(e.target.value)}
-                aria-label="Rotate MSA about"
-                style={{
-                  flex: 1, background: "var(--bg)", border: "1px solid var(--border-bright)",
-                  borderRadius: 5, color: "var(--text)", fontFamily: "'Space Mono', monospace",
-                  fontSize: "0.66rem", padding: "3px 6px", cursor: "pointer",
-                }}
-              >
-                <option value="view">View centre (target)</option>
-                <option value="ref">MSA centre (field)</option>
-                {MSA_SLITS_DS.map(sl => <option key={sl.label} value={sl.label}>{sl.label} slit</option>)}
-              </select>
-            </label>
 
             {/* Achievability of this PA at the field (from public/nirspec/v3pa/<id>.json,
                 jwst_gtvt over 1 yr). Green = some observable date can roll to this APA;
