@@ -1015,6 +1015,14 @@ export default function MapViewer({
     h.setZoom(zoom);
   }, [cameraTargetRef]);
 
+  // Auto-zoom to fit the MSA field when it's switched ON, so you immediately see the whole
+  // ~few-arcmin footprint. Skips the very first run so a shared link's own fov wins on load.
+  const msaFitSkipRef = useRef(true);
+  useEffect(() => {
+    if (msaFitSkipRef.current) { msaFitSkipRef.current = false; return; }
+    if (msaFieldOn) { const t = window.setTimeout(() => fitFootprints(), 200); return () => window.clearTimeout(t); }
+  }, [msaFieldOn, fitFootprints]);
+
   // Touch pan + pinch-zoom. @fitsgl/core only wires MOUSE + wheel, so on phones/iPads the map
   // wouldn't pan or zoom at all. Bridge touch → the camera handle here: one finger pans (keep the
   // world point under the finger), two fingers pinch-zoom about the midpoint. preventDefault (with
@@ -2405,8 +2413,16 @@ export default function MapViewer({
     if (rotateAbout && rotateAbout !== "view") sp.set("slit", rotateAbout);
     if (apertureSky) { sp.set("aptra", apertureSky.ra.toFixed(6)); sp.set("aptdec", apertureSky.dec.toFixed(6)); }
     if (currentFovRef.current > 0) sp.set("fov", Math.round(currentFovRef.current).toString());  // open at the same zoom
+    // Full filter state so the recipient sees the SAME sources however they were filtered (query
+    // text, the z/mag sliders, or selected-only) — not just the query box.
     const q = filters.query?.trim();
     if (q) sp.set("mq", q);
+    if (filters.selectedOnly) sp.set("sel", "1");
+    if (filters.zMin != null) sp.set("zmin", String(filters.zMin));
+    if (filters.zMax != null) sp.set("zmax", String(filters.zMax));
+    if (filters.magMin != null) sp.set("magmin", String(filters.magMin));
+    if (filters.magMax != null) sp.set("magmax", String(filters.magMax));
+    if (filters.magFilter && filters.magFilter !== DEFAULT_FILTERS.magFilter) sp.set("magfilt", filters.magFilter);
     const url = `${window.location.origin}/unicorn/data/map?${sp.toString()}`;
     const done = (msg: string) => { setShareMsg(msg); window.setTimeout(() => setShareMsg(""), 3500); };
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(() => done("link copied ✓"), () => { console.log("share link:", url); done("copy failed — see console"); });

@@ -81,7 +81,9 @@ function initialGotoId(): string | null {
 function initialFov(): number {
   if (typeof window !== "undefined") {
     const f = parseFloat(new URLSearchParams(window.location.search).get("fov") || "");
-    if (Number.isFinite(f) && f > 0 && f <= 120) return f;
+    // Up to 30′ — a shared MSA-planning link zooms out to the whole focal plane (~a few arcmin),
+    // well beyond the inspector's 5″ deep-links.
+    if (Number.isFinite(f) && f > 0 && f <= 1800) return f;
   }
   return DEEPLINK_FOV_ARCSEC;
 }
@@ -174,9 +176,18 @@ function readInitialMsa(): InitialMsa | null {
     fp: (sp.get("fp") || "").split(",").map(s => s.trim()).filter(Boolean),
   };
 }
-function readMapQuery(): string {
-  if (typeof window === "undefined") return "";
-  return new URLSearchParams(window.location.search).get("mq") || "";
+// Restore the full filter state from a shared link (query + z/mag sliders + selected-only).
+function readSharedFilters(): MapFilters {
+  if (typeof window === "undefined") return DEFAULT_FILTERS;
+  const sp = new URLSearchParams(window.location.search);
+  const n = (k: string): number | null => { const v = parseFloat(sp.get(k) || ""); return Number.isFinite(v) ? v : null; };
+  return {
+    ...DEFAULT_FILTERS,
+    query: sp.get("mq") || "",
+    selectedOnly: sp.get("sel") === "1",
+    zMin: n("zmin"), zMax: n("zmax"), magMin: n("magmin"), magMax: n("magmax"),
+    magFilter: sp.get("magfilt") || DEFAULT_FILTERS.magFilter,
+  };
 }
 
 function rawFieldConfig(m: RawMarkers | null): FieldConfig | null {
@@ -256,13 +267,18 @@ export default function MapPage() {
   const deeplinkFov = initialFov();   // ?fov= override (e.g. inspector's 5" link), else default
   const [ready, setReady] = useState(false);
   const [panel, setPanel] = useState<PanelState>({ kind: "hidden" });
-  // Init the query filter from a shared link's mq= so the recipient sees the same filtered sources.
-  const [filters, setFilters] = useState<MapFilters>(() => ({ ...DEFAULT_FILTERS, query: readMapQuery() }));
+  // Init the full filter state from a shared link so the recipient sees the same filtered sources.
+  const [filters, setFilters] = useState<MapFilters>(readSharedFilters);
   // Shared MSA-planning setup to restore (PA/overlays/slit/pointing/footprints), read once.
   const initialMsa = useMemo(() => readInitialMsa(), []);
-  // Safety-net: re-apply a shared link's mq after mount (covers the static-prerender case where the
-  // useState initializer above ran with window undefined). Only if the box is still empty.
-  useEffect(() => { const q = readMapQuery(); if (q) setFilters(f => (f.query ? f : { ...f, query: q })); }, []);
+  // Safety-net: re-apply a shared link's filters after mount (covers the static-prerender case where
+  // the useState initializer above ran with window undefined → defaults). Only if still at defaults.
+  useEffect(() => {
+    const s = readSharedFilters();
+    if (s.query || s.selectedOnly || s.zMin != null || s.zMax != null || s.magMin != null || s.magMax != null) {
+      setFilters(f => (f.query || f.selectedOnly || f.zMin != null || f.zMax != null ? f : s));
+    }
+  }, []);
   const [shown, setShown] = useState<number | null>(null);
   const [gotoMsg, setGotoMsg] = useState<string>("");
   // Narrow screens (phones): the 220px filter sidebar eats most of the width, so collapse it into
