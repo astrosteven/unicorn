@@ -576,6 +576,8 @@ export default function MapViewer({
   // Adaptive scale bar (bottom-left): pixel length on screen + its human label. Recomputed
   // every frame from the live zoom; null until the first projection has a camera.
   const [scaleBar, setScaleBar] = useState<{ px: number; label: string } | null>(null);
+  // Toggle the catalog source markers on/off — hide them for a clean color-image screenshot.
+  const [showSources, setShowSources] = useState(true);
   // NIRSpec aperture overlays (MSA 3-shutter slitlet + IFU). Toggles + a shared PA (deg,
   // east-of-north). Optionally pinned to a fixed sky position; null = follow view centre.
   const [msaOn, setMsaOn] = useState(() => !!initialMsa?.msa);
@@ -2672,7 +2674,8 @@ export default function MapViewer({
       )}
 
       {/* Overlay layer — pointer-events only on the glyphs, so panning the map still
-          works everywhere between sources. */}
+          works everywhere between sources. Hidden by the "sources" toggle for clean screenshots. */}
+      {showSources && (
       <svg
         data-overlay="sources"
         width="100%" height="100%"
@@ -2713,6 +2716,7 @@ export default function MapViewer({
           );
         })}
       </svg>
+      )}
 
       {/* NIRSpec aperture overlays — MSA 3-shutter slitlet (cyan) + IFU 3"×3" (magenta) +
           full MSA 4-quadrant field (amber), centred on the view (or pinned sky pos),
@@ -2913,6 +2917,23 @@ export default function MapViewer({
           })()}
         </svg>
       )}
+
+      {/* Sources on/off toggle — bottom-left, above the scale bar. Hides the catalog markers so
+          you can screenshot a clean fitsgl colour image. */}
+      <button
+        onClick={() => setShowSources(v => !v)}
+        className="mono"
+        title={showSources ? "Hide the catalog source markers (for a clean colour-image screenshot)" : "Show the catalog source markers"}
+        style={{
+          position: "absolute", left: 14, bottom: 44, zIndex: 16, pointerEvents: "auto",
+          background: "rgba(13,10,26,0.82)", backdropFilter: "blur(6px)",
+          border: "1px solid var(--border-bright)", borderRadius: 6,
+          color: showSources ? "var(--text-muted)" : "#5ee0e0", cursor: "pointer",
+          fontSize: "0.66rem", padding: "5px 9px",
+        }}
+      >
+        {showSources ? "◉ sources" : "○ sources"}
+      </button>
 
       {/* Adaptive scale bar — bottom-left. Length + label recomputed every frame from the
           live zoom, snapped to a nice round arcsec/arcmin value. */}
