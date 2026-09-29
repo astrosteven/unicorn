@@ -60,6 +60,10 @@ import FitsglControls, {
 import {
   loadField,
   loadFilters,
+  loadSpecz,
+  loadIntPz,
+  loadDb,
+  DB_COLS,
   corralBase,
   fieldCatDir,
   type FieldConfig,
@@ -452,18 +456,21 @@ export const DEFAULT_FILTERS: MapFilters = {
   selectedOnly: false, zMin: null, zMax: null, magMin: null, magMax: null, magFilter: "F277W", query: "",
 };
 
-// One query-evaluable row from the base index at position i (the numeric built-ins the query
-// language understands directly; per-band mag/snr/flux/colors need the lazy filters file and
-// aren't available here). Keys match the Search column names so makePredicate/colGetter read them.
+// One query-evaluable row from the base index at position i. Base built-ins come from the index;
+// per-band mag/snr/flux/colors, campfire czspec/czqual, Dense-Basis and int_pz columns come from
+// the lazy sidecars, passed in `extra` (each a position-aligned column). Keys match the Search
+// column names so makePredicate/colGetter read them — so the map supports the SAME query language.
 type QRow = Record<string, number | null>;
-function idxQueryRow(idx: FieldIndex, i: number): QRow {
+function idxQueryRow(idx: FieldIndex, i: number, extra?: Record<string, NumCol>): QRow {
   const g = (c: NumCol | undefined) => (c ? (c[i] ?? null) : null);
-  return {
+  const row: QRow = {
     za: g(idx.za), zspec: g(idx.zspec), m277: g(idx.m277), m444: g(idx.m444),
     m1500: g(idx.m1500), m1300: g(idx.m1300), mabs: g(idx.mabs), beta: g(idx.beta),
     chia: g(idx.chia), z_lowz: g(idx.z_lowz), zl68: g(idx.zl68), zu68: g(idx.zu68),
     selected: g(idx.selected), inspected: g(idx.inspected), sample: g(idx.sample),
   };
+  if (extra) for (const k in extra) { const c = extra[k]; row[k] = c ? (c[i] ?? null) : null; }
+  return row;
 }
 
 // A source that passed the active filters, with the geometry needed to draw it.
@@ -476,7 +483,7 @@ type Src = {
 
 // Precompute the filtered source list (positions + ellipse params). Recomputed only
 // when the index, mag column, or filters change — NOT per frame.
-function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters, pred: ((r: QRow) => boolean) | null): Src[] {
+function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters, pred: ((r: QRow) => boolean) | null, qExtra?: Record<string, NumCol>): Src[] {
   const n = idx.n;
   const sel = idx.selected, za = idx.za;
   const a = idx.a_image, b = idx.b_image, kr = idx.kron_radius, theta = idx.theta ?? null;
@@ -499,7 +506,7 @@ function filterSources(idx: FieldIndex, magCol: NumCol, f: MapFilters, pred: ((r
     }
     // Free-form query (za/zspec/m444/… on the base index) — applied last so it only runs on
     // sources that pass the cheap range filters.
-    if (pred && !pred(idxQueryRow(idx, i))) continue;
+    if (pred && !pred(idxQueryRow(idx, i, qExtra))) continue;
     const xi = x![i], yi = y![i];
     if (xi == null || yi == null) continue;
     // Ellipse params (Kron): semi-axes a*kron, b*kron; PA theta deg CCW from +x.
@@ -1302,6 +1309,42 @@ export default function MapViewer({
     return () => { cancelled = true; };
   }, [idx, magBand, magRangeActive]);
 
+  // Sidecar columns the free-form query needs beyond the base index (per-band flux for mag/snr/color,
+  // campfire czspec/czqual, Dense-Basis, int_pz). Loaded lazily when the query references them and
+  // attached position-aligned so the map evaluates the SAME query language as the Search page.
+  const [qExtra, setQExtra] = useState<Record<string, NumCol> | null>(null);
+  useEffect(() => {
+    const q = filters.query.toLowerCase();
+    if (!q.trim() || !idx) { setQExtra(null); return; }
+    let cancelled = false;
+    (async () => {
+      const needFilt = /\b(?:mag|snr|flux|fluxerr)_[a-z0-9]+\b/.test(q) || /\b[a-z][a-z0-9]*-[a-z][a-z0-9]*\b/.test(q);
+      const needSpecz = /\bcz(spec|qual)\b/.test(q);
+      const needDb = DB_COLS.some(c => new RegExp(`\\b${c}\\b`).test(q));
+      const needIp = /\bint_(pz|zgt|cen)/.test(q);
+      const [fx, sz, db, ip] = await Promise.all([
+        needFilt ? loadFilters(field) : Promise.resolve(null),
+        needSpecz ? loadSpecz(field) : Promise.resolve(null),
+        needDb ? loadDb(field) : Promise.resolve(null),
+        needIp ? loadIntPz(field) : Promise.resolve(null),
+      ]);
+      if (cancelled) return;
+      const extra: Record<string, NumCol> = {};
+      if (fx) for (const k in fx) if (k.startsWith("flux_") || k.startsWith("fluxerr_")) extra[k] = fx[k];
+      if (db) for (const c of DB_COLS) if (db[c]) extra[c] = db[c];
+      if (ip) for (const k in ip) if (k.startsWith("int_")) extra[k] = ip[k];
+      if (sz) {
+        const ids = idx.id ?? [];
+        const cz: (number | null)[] = new Array(ids.length).fill(null);
+        const cq: (number | null)[] = new Array(ids.length).fill(null);
+        for (let i = 0; i < ids.length; i++) { const r = sz[String(ids[i])]; if (r) { cz[i] = r.z; cq[i] = r.q; } }
+        extra["czspec"] = cz as NumCol; extra["czqual"] = cq as NumCol;
+      }
+      setQExtra(Object.keys(extra).length ? extra : null);
+    })();
+    return () => { cancelled = true; };
+  }, [filters.query, field, idx]);
+
   // Compile the free-form query once per keystroke; expose its error for the sidebar. A blank
   // query is a no-op (pred = null). Reuses the exact Search query language.
   const queryPred = useMemo(() => {
@@ -1315,8 +1358,8 @@ export default function MapViewer({
 
   // Rebuild the filtered source list when index / mag column / filters / query change.
   const sources = useMemo(
-    () => (idx ? filterSources(idx, magRangeActive ? magCol : null, filters, queryPred.test) : []),
-    [idx, magCol, filters, magRangeActive, queryPred],
+    () => (idx ? filterSources(idx, magRangeActive ? magCol : null, filters, queryPred.test, qExtra ?? undefined) : []),
+    [idx, magCol, filters, magRangeActive, queryPred, qExtra],
   );
   // Count reported to the sidebar: the queued subset when a handoff is active, else all.
   const countShown = useCallback((list: Src[]) => {
