@@ -102,34 +102,43 @@ def _norm_row(row):
     }
 
 
-# campfire's public Supabase (anon key is baked into their client JS -- NOT a secret; the
-# `objects` table is world-readable via RLS, so no login is needed).
-CAMPFIRE_URL = "https://puyczxwyuzpnqvpachip.supabase.co"
-CAMPFIRE_ANON = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-                 "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1eWN6eHd5dXpwbnF2cGFjaGlwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMjMxODAsImV4cCI6MjA3Njc5OTE4MH0."
-                 "o6iXMir99WyzcPs7HpjEL2vtwxavqNZ-kJVYSF6HCx0")
-CAMPFIRE_COLS = "object_id,field,ra,dec,redshift,redshift_quality,photo_z,n_spectra"
-PAGE = 5000
+# CAMPFIRE's authenticated REST API. The old anonymous Supabase/PostgREST route was closed in a
+# security fix (~2026-10-11) and will NOT be reopened. We now authenticate with a Bearer API key
+# from a DEDICATED UNICORN account that has NO program access — so only PUBLIC programs are visible,
+# exactly the set the old anon query returned. The key lives in the CAMPFIRE_API_KEY env var
+# (a GitHub Actions secret), NEVER in the repo. Make one at campfire.hollisakins.com/profile/api-keys
+# (signed in as the no-access account); it starts with sk_live_ and is shown once.
+CAMPFIRE_API = "https://campfire.hollisakins.com/api/v1/objects"
+# Only probable (3) + secure (4) redshifts — values an inspector signed off on. (The old query
+# also pulled quality-0 "uninspected" automated fits, which it shouldn't have.) Server-side filter.
+# Set to "2,3,4" to also include Tentative (q=2); style those differently on the sites if so.
+CAMPFIRE_QUALITY = "3,4"
+PAGE = 5000   # rows per page (max 10000)
 
 
 def fetch_campfire_catalog():
-    """Pull the live campfire spec-z catalog from its public Supabase PostgREST endpoint
-    (anon key, no login). Paginates via Range headers. Returns [{id,cf,ra,dec,z,q}, ...]."""
-    import urllib.request
-    base = (f"{CAMPFIRE_URL}/rest/v1/objects?select={CAMPFIRE_COLS}"
-            f"&redshift=not.is.null&order=id.asc")
-    rows, off = [], 0
+    """Pull the live campfire spec-z catalog from its authenticated REST API (/api/v1/objects,
+    Bearer key; a no-access account → public programs only). Cursor-paginated; the response is
+    {"data":[...], "pagination":{"next_cursor":...}}. Returns [{id,cf,ra,dec,z,q}, ...].
+    Requires CAMPFIRE_API_KEY in the environment."""
+    import urllib.request, urllib.parse, os
+    key = os.environ.get("CAMPFIRE_API_KEY")
+    if not key:
+        raise SystemExit("ERROR: CAMPFIRE_API_KEY not set. Add it as a GitHub Actions secret "
+                         "(a key from a no-access account at campfire.hollisakins.com/profile/api-keys).")
+    params = {"redshift_quality": CAMPFIRE_QUALITY, "limit": str(PAGE)}
+    rows = []
     while True:
-        req = urllib.request.Request(base, headers={
-            "apikey": CAMPFIRE_ANON, "Authorization": f"Bearer {CAMPFIRE_ANON}",
-            "Accept": "application/json", "Range": f"{off}-{off + PAGE - 1}",
+        req = urllib.request.Request(f"{CAMPFIRE_API}?{urllib.parse.urlencode(params)}", headers={
+            "Authorization": f"Bearer {key}", "Accept": "application/json",
         })
-        with urllib.request.urlopen(req, timeout=60) as r:
-            page = json.load(r)
-        rows.extend(page)
-        if len(page) < PAGE:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            body = json.load(r)
+        rows.extend(body.get("data", []))
+        cursor = (body.get("pagination") or {}).get("next_cursor")
+        if not cursor:
             break
-        off += PAGE
+        params["cursor"] = cursor   # SAME filters every page — a cursor with different filters → HTTP 400
     return [_norm_row(r) for r in rows]
 
 

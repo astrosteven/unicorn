@@ -32,6 +32,8 @@ jobs:
         run: pip install --quiet numpy scipy
 
       - name: Pull campfire + rebuild sidecars
+        env:
+          CAMPFIRE_API_KEY: ${{ secrets.CAMPFIRE_API_KEY }}
         run: python scripts/refresh_campfire_specz.py --indexdir public/searchindex
 
       - name: Commit if changed
