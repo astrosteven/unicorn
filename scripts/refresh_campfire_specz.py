@@ -131,6 +131,9 @@ def fetch_campfire_catalog():
     while True:
         req = urllib.request.Request(f"{CAMPFIRE_API}?{urllib.parse.urlencode(params)}", headers={
             "Authorization": f"Bearer {key}", "Accept": "application/json",
+            # campfire.hollisakins.com is behind Cloudflare, which 403s the default
+            # "Python-urllib/*" User-Agent (error 1010). Send a real UA so the request reaches the API.
+            "User-Agent": "Mozilla/5.0 (compatible; unicorn-specz-daily/1.0; +https://astrosteven.github.io/unicorn)",
         })
         with urllib.request.urlopen(req, timeout=120) as r:
             body = json.load(r)
