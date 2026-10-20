@@ -40,18 +40,18 @@ type Field = {
 
 // All nine fields are live on the public Corral tree (unicorn/Catalogs/<DIR>/).
 const FIELDS: Field[] = [
-  { id: "ceers",         name: "CEERS",         dir: "CEERS",         prefix: "ceers",        version: "0.98", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
-  { id: "egs",           name: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.98", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
-  { id: "goods-s",       name: "GOODS-S",       dir: "GOODSS",        prefix: "goodss",       version: "0.95", available: true, variants: WFC3_NOBB },
-  { id: "goods-n",       name: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.95", available: true, variants: BASE_PZ },
-  { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.95", available: true, variants: BASE_PZ },
-  { id: "primer-uds",    name: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.95", available: true, variants: NO_WFC3 },
-  { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.95", available: true, variants: BASE_PZ },
-  { id: "a2744",         name: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.98", available: true, variants: NO_WFC3 },
-  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.95", available: true, variants: BASE_PZ },
+  { id: "ceers",         name: "CEERS",         dir: "CEERS",         prefix: "ceers",        version: "0.99", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
+  { id: "egs",           name: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.99", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
+  { id: "goods-s",       name: "GOODS-S",       dir: "GOODSS",        prefix: "goodss",       version: "0.99", available: true, variants: WFC3_NOBB },
+  { id: "goods-n",       name: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.99", available: true, variants: BASE_PZ },
+  { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.99", available: true, variants: BASE_PZ },
+  { id: "primer-uds",    name: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.99", available: true, variants: NO_WFC3 },
+  { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.99", available: true, variants: BASE_PZ },
+  { id: "a2744",         name: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.99", available: true, variants: NO_WFC3 },
+  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.99", available: true, variants: BASE_PZ },
 ];
 
-// Real file sizes for the live CEERS v0.98 release, keyed by row key.
+// Real file sizes for the live CEERS v0.99 release, keyed by row key.
 const CEERS_SIZES: Record<string, string> = {
   readme: "24 KB",
   photom: "2.4 GB",
@@ -301,7 +301,7 @@ export default function CatalogsPage() {
         </h1>
         <p style={{ color: "var(--text-muted)", fontSize: "0.95rem", maxWidth: "640px" }}>
           All UNICORN data products are FITS binary tables with embedded column descriptions
-          and units (per-field versions <span className="mono" style={{ color: "var(--accent)" }}>v0.95–v0.98</span>).
+          and units (all fields now at <span className="mono" style={{ color: "var(--accent)" }}>v0.99</span>).
           See the <a href="/unicorn/data/readme" style={{ color: "var(--accent2)", textDecoration: "none" }}>Catalog Guide</a> for
           full column &amp; format documentation (always current).
         </p>
