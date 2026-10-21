@@ -294,10 +294,28 @@ const _intpzPromise: Record<string, Promise<Record<string, NumCol>>> = {};
 // Fetch a JSON file, transparently handling a gzipped (.json.gz) sibling. The
 // large search index is served gzipped (~8x smaller) so it transfers reliably;
 // prefer the .gz and decompress in-browser, falling back to plain .json.
+// Corral occasionally stalls a request indefinitely (TTFB → never). The card fetches below
+// have no natural timeout, so one stall would hang a card for minutes. fetchT gives every
+// Corral request a hard timeout + a couple of retries, so a transient stall fails fast and
+// re-tries instead of spinning forever.
+async function fetchT(url: string, init?: RequestInit, ms = 12000, retries = 2): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, { ...init, signal: ctrl.signal });
+    } catch (e) {
+      if (attempt >= retries) throw e;   // give up after the last retry
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
 async function fetchJsonMaybeGz(url: string): Promise<any> {
   if (typeof DecompressionStream !== "undefined") {
     try {
-      const r = await fetch(`${url}.gz`);
+      const r = await fetchT(`${url}.gz`);
       if (r.ok && r.body) {
         const ds = new DecompressionStream("gzip");
         const text = await new Response(r.body.pipeThrough(ds)).text();
@@ -305,7 +323,7 @@ async function fetchJsonMaybeGz(url: string): Promise<any> {
       }
     } catch { /* fall through to plain JSON */ }
   }
-  const r = await fetch(url);
+  const r = await fetchT(url);
   if (!r.ok) throw new Error(`fetch ${url} -> ${r.status}`);
   return r.json();
 }
@@ -655,7 +673,7 @@ async function fetchPackedCard(objBase: string, fc: FieldConfig, id: number, buc
   const ent = idx?.[String(id)];
   if (!ent) return null;
   const [off, len] = ent;
-  const r = await fetch(`${objBase}/cards/${fc.prefix}_cards_${bucket}.bin`, {
+  const r = await fetchT(`${objBase}/cards/${fc.prefix}_cards_${bucket}.bin`, {
     headers: { Range: `bytes=${off}-${off + len - 1}` },
   });
   if (!r.ok) return null;
@@ -677,8 +695,8 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
       if (o == null) return null;
     } else {
       // Legacy per-object cards under web/cards/ (older uploads used web/objects/).
-      let r = await fetch(`${objBase}/cards/${fc.prefix}_${id}.json`);
-      if (!r.ok) r = await fetch(`${objBase}/objects/${fc.prefix}_${id}.json`);
+      let r = await fetchT(`${objBase}/cards/${fc.prefix}_${id}.json`);
+      if (!r.ok) r = await fetchT(`${objBase}/objects/${fc.prefix}_${id}.json`);
       if (!r.ok) return null;
       o = await r.json();
     }

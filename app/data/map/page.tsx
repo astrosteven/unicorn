@@ -383,8 +383,10 @@ export default function MapPage() {
       const g = pendingGotoRef.current;
       if (!g) return;
       if (handleGoto(g, deeplinkFov)) { pendingGotoRef.current = null; return; }
-      if (++tries < 30) timer = setTimeout(tick, 200);   // up to ~6 s for tiles/WCS
-      else pendingGotoRef.current = null;
+      // Big fields (COSMOS: 86 MB index + slow tile/WCS warm-up) can take far longer than a
+      // few seconds, so keep retrying for ~45 s before giving up with a hint.
+      if (++tries < 180) timer = setTimeout(tick, 250);
+      else { pendingGotoRef.current = null; setGotoMsg("map still loading — use the Go-to box to jump to the ID"); }
     };
     timer = setTimeout(tick, 150);
     return () => clearTimeout(timer);
