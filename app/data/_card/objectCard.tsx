@@ -717,9 +717,14 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
     if (cIdx) selFail = selFailFromIndex(cIdx, cIdx.id.indexOf(id));
     const cf = (await loadSpecz(fc))[String(id)];   // campfire spec-z match, if any
     await loadLabels();                             // ensure labels are cached for labelFor()
-    const nickname = labelFor(o.field, id);         // famous-object label, if any
+    // The packed card stores the catalog field name (strupcase(prefix), e.g. "PRIMERUDS",
+    // "GOODSS") which does NOT match the site's canonical hyphenated name (fc.field,
+    // "PRIMER-UDS", "GOODS-S"). Downstream the card render gate, the map, and labelFor all
+    // compare against fc.field, so a mismatch leaves the card stuck "Loading…" for every
+    // hyphenated field. Normalize to the canonical name here, at the one boundary.
+    const nickname = labelFor(fc.field, id);        // famous-object label, if any
     return {
-      field: o.field, row: o.row, pz: o.pz, modelFluxes: o.modelFluxes,
+      field: fc.field, row: o.row, pz: o.pz, modelFluxes: o.modelFluxes,
       zgrid: zg.zgrid, pzArr: o.pzArr,
       zgridLowz: zg.zgridLowz, pzArrLowz: o.pzArrLowz, pzAlt: o.pzAlt,
       sedWave: zg.sedWave, sed: o.sed, sedLowz: o.sedLowz,

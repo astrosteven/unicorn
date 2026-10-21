@@ -1210,7 +1210,7 @@ export default function SearchPage() {
     const s = (v: unknown) => (typeof v === "string" && v ? v : undefined);
     const fluxOfMag = (mag: unknown) => (typeof mag === "number" && Number.isFinite(mag) ? Math.pow(10, (31.4 - mag) / 2.5) : undefined);
     return {
-      field: (typeof r.field === "string" ? r.field : m.fc.field),
+      field: m.fc.field,   // canonical site name (the index/card store "PRIMERUDS"; the site uses "PRIMER-UDS")
       row: {
         ID: m.id, RA: n(r.ra), DEC: n(r.dec), X: n(r.x), Y: n(r.y), TILE: s(r.tile),
         FLUX_F277W: fluxOfMag(r.m277), FLUX_F444W: fluxOfMag(r.m444),
