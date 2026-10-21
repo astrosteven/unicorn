@@ -294,38 +294,46 @@ const _intpzPromise: Record<string, Promise<Record<string, NumCol>>> = {};
 // Fetch a JSON file, transparently handling a gzipped (.json.gz) sibling. The
 // large search index is served gzipped (~8x smaller) so it transfers reliably;
 // prefer the .gz and decompress in-browser, falling back to plain .json.
-// Corral occasionally stalls a request indefinitely (TTFB → never). The card fetches below
-// have no natural timeout, so one stall would hang a card for minutes. fetchT gives every
-// Corral request a hard timeout + a couple of retries, so a transient stall fails fast and
-// re-tries instead of spinning forever.
-async function fetchT(url: string, init?: RequestInit, ms = 12000, retries = 2): Promise<Response> {
-  for (let attempt = 0; ; attempt++) {
+// Corral occasionally stalls a request — sometimes at connect/headers, sometimes MID-BODY
+// (headers arrive fast, then the stream stops). The card fetches have no natural timeout, so
+// one stall hangs the card for minutes. runT races the ENTIRE operation (connect + headers +
+// body read) against a hard timeout under one AbortController — so an abort cancels a stalled
+// body stream too — and retries a few times so a transient stall recovers.
+async function runT<T>(fn: (signal: AbortSignal) => Promise<T>, ms = 9000, tries = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), ms);
     try {
-      return await fetch(url, { ...init, signal: ctrl.signal });
+      return await fn(ctrl.signal);
     } catch (e) {
-      if (attempt >= retries) throw e;   // give up after the last retry
+      lastErr = e;   // timeout/abort or network error → retry
     } finally {
       clearTimeout(timer);
     }
   }
+  throw lastErr;
 }
 
 async function fetchJsonMaybeGz(url: string): Promise<any> {
-  if (typeof DecompressionStream !== "undefined") {
-    try {
-      const r = await fetchT(`${url}.gz`);
-      if (r.ok && r.body) {
-        const ds = new DecompressionStream("gzip");
-        const text = await new Response(r.body.pipeThrough(ds)).text();
-        return JSON.parse(text);
+  return runT(async (signal) => {
+    if (typeof DecompressionStream !== "undefined") {
+      try {
+        const r = await fetch(`${url}.gz`, { signal });
+        if (r.ok && r.body) {
+          const ds = new DecompressionStream("gzip");
+          // .text() runs under `signal`, so a mid-body stall aborts instead of hanging.
+          return JSON.parse(await new Response(r.body.pipeThrough(ds)).text());
+        }
+      } catch (e) {
+        if ((e as { name?: string })?.name === "AbortError") throw e;   // timeout → let runT retry
+        /* else fall through to plain JSON */
       }
-    } catch { /* fall through to plain JSON */ }
-  }
-  const r = await fetchT(url);
-  if (!r.ok) throw new Error(`fetch ${url} -> ${r.status}`);
-  return r.json();
+    }
+    const r = await fetch(url, { signal });
+    if (!r.ok) throw new Error(`fetch ${url} -> ${r.status}`);
+    return r.json();
+  });
 }
 
 export async function loadField(fc: FieldConfig): Promise<{ idx: FieldIndex; zg: ZGrid }> {
@@ -673,15 +681,17 @@ async function fetchPackedCard(objBase: string, fc: FieldConfig, id: number, buc
   const ent = idx?.[String(id)];
   if (!ent) return null;
   const [off, len] = ent;
-  const r = await fetchT(`${objBase}/cards/${fc.prefix}_cards_${bucket}.bin`, {
-    headers: { Range: `bytes=${off}-${off + len - 1}` },
+  return runT(async (signal) => {
+    const r = await fetch(`${objBase}/cards/${fc.prefix}_cards_${bucket}.bin`, {
+      headers: { Range: `bytes=${off}-${off + len - 1}` }, signal,
+    });
+    if (!r.ok) return null;
+    let bytes = new Uint8Array(await r.arrayBuffer());   // under `signal` → mid-body stall aborts
+    // If the server ignored Range and sent the whole pack (200, not 206), slice to our card.
+    if (r.status === 200 && bytes.length > len) bytes = bytes.slice(off, off + len);
+    const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+    return JSON.parse(text);
   });
-  if (!r.ok) return null;
-  let bytes = new Uint8Array(await r.arrayBuffer());
-  // If the server ignored Range and sent the whole pack (200, not 206), slice to our card.
-  if (r.status === 200 && bytes.length > len) bytes = bytes.slice(off, off + len);
-  const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
-  return JSON.parse(text);
 }
 
 export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promise<SourceResult | null> {
@@ -695,10 +705,12 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
       if (o == null) return null;
     } else {
       // Legacy per-object cards under web/cards/ (older uploads used web/objects/).
-      let r = await fetchT(`${objBase}/cards/${fc.prefix}_${id}.json`);
-      if (!r.ok) r = await fetchT(`${objBase}/objects/${fc.prefix}_${id}.json`);
-      if (!r.ok) return null;
-      o = await r.json();
+      o = await runT(async (signal) => {
+        let r = await fetch(`${objBase}/cards/${fc.prefix}_${id}.json`, { signal });
+        if (!r.ok) r = await fetch(`${objBase}/objects/${fc.prefix}_${id}.json`, { signal });
+        return r.ok ? r.json() : null;
+      });
+      if (o == null) return null;
     }
     let selFail: SourceResult["selFail"] | undefined;
     const cIdx = cachedIndex(fc.field);
