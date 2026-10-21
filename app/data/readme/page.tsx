@@ -362,7 +362,7 @@ export default function ReadmePage() {
         [<C key="v94">v0.94</C>, "GOODS-N/S → JADES DR5; hot+cold+f444 segmap subregion 100→600 px; photo-z → SFHZ+Larson22 with measured zero-point offsets and the LAZY Asada CGM implementation."],
         [<C key="v95">v0.95–v0.97</C>, "photo-z outputs consolidated into a single 4-ext FITS per run; shared template bases; D_APER moved to photom ext 2; added EELG and BBonly runs + EELG recovery branch; added spec-z / source-of-interest / MABS_1500 / BETA columns; multi-tile support with tile-provenance columns."],
         [<C key="v98">v0.98</C>, "file prefix standardized (e.g. ceers_*); CEERS/EGS/A2744 live; COSMOS being re-run as a tiled reduction."],
-        [<C key="v99">v0.99</C>, "all nine fields live on refreshed imaging; added the F470N narrow band to photometry; COSMOS completed as a full tiled reduction; full-band color cutouts (fitsgl) for every field."],
+        [<C key="v99">v0.99</C>, "all nine fields live on refreshed imaging; added the F470N narrow band to CEERS + EGS; EGS gained HST WFC3 photometry; COSMOS completed as a full tiled reduction; full-band color cutouts (fitsgl) for every field."],
       ]} />
 
     </main>

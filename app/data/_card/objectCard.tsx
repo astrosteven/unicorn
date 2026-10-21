@@ -417,8 +417,9 @@ export async function loadIntPz(fc: FieldConfig): Promise<Record<string, NumCol>
 }
 
 // Dense Basis physical properties (<prefix>_db_v<ver>.json[.gz]): parallel arrays aligned
-// to index order, exposed as queryable columns. Available for every field except EGS and COSMOS
-// (CEERS, GOODS-S/N, A2744, NGDEEP, PRIMER-UDS/COSMOS — scripts/make_db_sidecar.py); no sidecar → null.
+// to index order, exposed as queryable columns (scripts/make_db_sidecar.py). As of v0.99 the db
+// sidecars are NOT yet regenerated for any field (position-aligned, so they can't be reused across
+// the re-reduction) — pending Katie's v0.99 run; loaders return null until then (columns go dark).
 export const DB_COLS = [
   "mass", "mass_16", "mass_84", "av", "av_16", "av_84",
   "sfr10", "sfr10_16", "sfr10_84", "sfr100", "sfr100_16", "sfr100_84",

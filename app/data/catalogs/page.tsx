@@ -19,13 +19,13 @@ const PZ_VARIANTS = [
   { key: "circles",  label: "Photo-z — Circles",   dir: "Photoz_Circles", desc: "Photo-z using circular-aperture photometry" },
   { key: "bbonly",   label: "Photo-z — Broadband", dir: "Photoz_BBonly",  desc: "Photo-z using broad-band filters only (medium bands excluded)" },
   { key: "wfc3",     label: "Photo-z — WFC3",      dir: "Photoz_WFC3",    desc: "Photo-z including HST WFC3 aperture photometry" },
+  { key: "lrd",      label: "Photo-z — LRD",       dir: "Photoz_lrd",     desc: "Photo-z with the little-red-dot (LRD / AGN) template set" },
 ];
 // Per-field photo-z variant sets (verified against the public Corral tree — every
 // field has fiducial/eelg/circles; bbonly + wfc3 vary by field).
-const ALL_PZ    = ["fiducial", "eelg", "circles", "bbonly", "wfc3"];  // CEERS, EGS
-const WFC3_NOBB = ["fiducial", "eelg", "circles", "wfc3"];            // GOODS-S
-const NO_WFC3   = ["fiducial", "eelg", "circles", "bbonly"];          // PRIMER-UDS, A2744
-const BASE_PZ   = ["fiducial", "eelg", "circles"];                    // GOODS-N, NGDEEP, PRIMER-COSMOS, COSMOS
+// Verified against the public Corral tree at v0.99 (per-field Photoz* dir probe).
+const WITH_WFC3 = ["fiducial", "eelg", "circles", "bbonly", "wfc3", "lrd"]; // CEERS, EGS, GOODS-S, PRIMER-COSMOS
+const NO_WFC3   = ["fiducial", "eelg", "circles", "bbonly", "lrd"];         // GOODS-N, NGDEEP, PRIMER-UDS, A2744, COSMOS
 
 type Field = {
   id: string;
@@ -36,19 +36,20 @@ type Field = {
   available: boolean;  // true once files are live on Corral
   variants: string[];  // PZ_VARIANTS keys present for this field
   programs?: string[]; // JWST programs whose imaging is included
+  ancillary?: boolean; // segmap/PSFs/depths/area/completeness on the public tree (default true)
 };
 
 // All nine fields are live on the public Corral tree (unicorn/Catalogs/<DIR>/).
 const FIELDS: Field[] = [
-  { id: "ceers",         name: "CEERS",         dir: "CEERS",         prefix: "ceers",        version: "0.99", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
-  { id: "egs",           name: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.99", available: true, variants: ALL_PZ, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
-  { id: "goods-s",       name: "GOODS-S",       dir: "GOODSS",        prefix: "goodss",       version: "0.99", available: true, variants: WFC3_NOBB },
-  { id: "goods-n",       name: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.99", available: true, variants: BASE_PZ },
-  { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.99", available: true, variants: BASE_PZ },
+  { id: "ceers",         name: "CEERS",         dir: "CEERS",         prefix: "ceers",        version: "0.99", available: true, variants: WITH_WFC3, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
+  { id: "egs",           name: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.99", available: true, variants: WITH_WFC3, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
+  { id: "goods-s",       name: "GOODS-S",       dir: "GOODSS",        prefix: "goodss",       version: "0.99", available: true, variants: WITH_WFC3 },
+  { id: "goods-n",       name: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.99", available: true, variants: NO_WFC3 },
+  { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.99", available: true, variants: WITH_WFC3 },
   { id: "primer-uds",    name: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.99", available: true, variants: NO_WFC3 },
-  { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.99", available: true, variants: BASE_PZ },
+  { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.99", available: true, variants: NO_WFC3 },
   { id: "a2744",         name: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.99", available: true, variants: NO_WFC3 },
-  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.99", available: true, variants: BASE_PZ },
+  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.99", available: true, variants: NO_WFC3, ancillary: false },
 ];
 
 // Real file sizes for the live CEERS v0.99 release, keyed by row key.
@@ -115,21 +116,9 @@ function fieldFiles(field: Field): FileRow[] {
   // Real byte sizes are only tabulated for CEERS; other fields show "—" (file still downloads).
   const size = (key: string) => (available && field.id === "ceers" ? CEERS_SIZES[key] ?? "—" : "—");
 
-  // COSMOS is the no-VIS release (the site serves the no-VIS solution): selected/flags carry
-  // the _novis suffix and the photo-z variants live in Photoz*_novis dirs. Segmap/PSFs/depths
-  // aren't on the public tree for COSMOS, so they're omitted.
-  if (field.id === "cosmos") {
-    return [
-      { label: "Photometry", desc: "Source positions, morphology, fluxes in all filters (Kron + circular apertures; ext 2 = aperture diameters)", file: `${f}_photom_v${v}.fits`, href: `${base}/${f}_photom_v${v}.fits`, size: "—", ext: 2 },
-      { label: "Photo-z — Fiducial (no-VIS)", desc: "Fiducial photo-z, Euclid VIS excluded (the COSMOS default)", file: `Photoz_novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
-      { label: "Photo-z — EELG (no-VIS)", desc: "EELG template set, no-VIS", file: `Photoz_eelg_novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_eelg_novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
-      { label: "Photo-z — Circles (no-VIS)", desc: "Circular-aperture photometry, no-VIS", file: `Photoz_Circles_Novis/${f}_photz_v${v}.fits`, href: `${base}/Photoz_Circles_Novis/${f}_photz_v${v}.fits`, size: "—", ext: 4 },
-      { label: "Selected Sample", desc: "High-confidence galaxy sample with inspection flags and redshift assignments", file: `${f}_selected_v${v}_novis.fits`, href: `${base}/${f}_selected_v${v}_novis.fits`, size: "—", ext: 1 },
-      { label: "Detection Flags", desc: "Per-source detection criteria (SNR, Lyman-break, error-map, edge)", file: `Flags/${f}_detectionflags_v${v}_novis.fits`, href: `${base}/Flags/${f}_detectionflags_v${v}_novis.fits`, size: "—", ext: 1 },
-      { label: "Selection Flags", desc: "Per-source photo-z selection criteria (int P(z), za, chi², dchi², sample)", file: `Flags/${f}_selectionflags_v${v}_novis.fits`, href: `${base}/Flags/${f}_selectionflags_v${v}_novis.fits`, size: "—", ext: 1 },
-    ];
-  }
-
+  // COSMOS note: the site serves the no-VIS solution, but at v0.99 the files no longer carry a
+  // _novis suffix (no-VIS IS the default naming). COSMOS is tiled and has no segmap/PSFs/depths/
+  // area/completeness on the public tree (ancillary:false), so it flows through the generic path.
   const files: FileRow[] = [
     {
       label: "Photometry",
@@ -178,6 +167,11 @@ function fieldFiles(field: Field): FileRow[] {
       size: size("selflags"),
       ext: 1,
     },
+  );
+
+  // Ancillary products (segmap / PSFs / depths / area / completeness). Not on the public tree
+  // for tiled COSMOS (ancillary:false), so they're gated to avoid dead download rows.
+  if (field.ancillary !== false) files.push(
     {
       label: "Segmentation Map",
       desc: "Source-Extractor segmentation map (gzipped FITS image)",

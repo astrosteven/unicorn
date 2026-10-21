@@ -19,7 +19,7 @@ const FIELDS = [
     fov: 0.25,
     area: "106 arcmin²",
     imaging: "JWST NIRCam + HST ACS/WFC3",
-    filters: ["F435W","F606W","F814W","F070W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
+    filters: ["F435W","F606W","F814W","F070W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F470N","F480M"],
     program: "CEERS (ERS 1345), MINERVA (GO 7814), SPAM (GO 8559)",
     notes: "Custom UNICORN single-tile reduction",
   },
@@ -32,9 +32,9 @@ const FIELDS = [
     fov: 0.25,
     area: "171 arcmin²",
     imaging: "JWST NIRCam + HST ACS/WFC3",
-    filters: ["F435W","F606W","F814W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
+    filters: ["F435W","F606W","F814W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F470N","F480M","F098M","F105W","F125W","F140W","F160W"],
     program: "CEERS (ERS 1345), MINERVA (GO 7814), SPAM (GO 8559)",
-    notes: "Tiled reduction (coming soon)",
+    notes: "Custom UNICORN tiled reduction (NE + SW)",
   },
   {
     id: "goods-s",
@@ -70,8 +70,8 @@ const FIELDS = [
     dec: 2.206,
     fov: 0.30,
     area: "262 arcmin²",
-    imaging: "JWST NIRCam",
-    filters: ["F435W","F606W","F814W","F090W","F115W","F140M","F150W","F182M","F200W","F210M","F250M","F277W","F335M","F356W","F410M","F444W","F480M"],
+    imaging: "JWST NIRCam + HST ACS",
+    filters: ["F435W","F606W","F814W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
     program: "PRIMER (GO 1837), COSMOS-Web (GO 1727), MINERVA (GO 7814), COSMOS-3D (GO 5893)",
     notes: "Custom UNICORN reduction",
   },
@@ -83,8 +83,8 @@ const FIELDS = [
     dec: -5.189,
     fov: 0.30,
     area: "253 arcmin²",
-    imaging: "JWST NIRCam",
-    filters: ["F435W","F606W","F814W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
+    imaging: "JWST NIRCam + HST ACS",
+    filters: ["F435W","F606W","F814W","F070W","F090W","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
     program: "PRIMER (GO 1837), MINERVA (GO 7814)",
     notes: "Custom UNICORN reduction",
   },
@@ -122,8 +122,8 @@ const FIELDS = [
     dec: 2.206,
     fov: 0.35,
     area: "1274 arcmin²",
-    imaging: "JWST NIRCam",
-    filters: ["F606W","F814W","F090W","F115W","F140M","F150W","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
+    imaging: "JWST NIRCam + HST ACS/WFC3",
+    filters: ["F435W","F606W","F814W","F090W","F098M","F115W","F140M","F150W","F162M","F182M","F200W","F210M","F250M","F277W","F300M","F335M","F356W","F360M","F410M","F430M","F444W","F460M","F480M"],
     program: "COSMOS-Web (GO 1727), COSMOS-3D (GO 5893)",
     notes: "Custom UNICORN reduction",
   },
@@ -132,7 +132,7 @@ const FIELDS = [
 // Accent colors cycling through the UNICORN palette
 const FIELD_COLORS = [
   "#8e6bb8","#b07cc6","#d48ec9","#6b51a3",
-  "#4a3a8a","#ef9fcd","#ffb3d9","#b07cc6",
+  "#4a3a8a","#ef9fcd","#ffb3d9","#b07cc6","#d48ec9",
 ];
 
 export default function FieldsPage() {
