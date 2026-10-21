@@ -82,6 +82,8 @@ export async function fetchFitsglStamp(
   await Promise.all(
     bands.map(async (band) => {
       const url = `${base}/${band}/manifest.json`;
+      const _t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      let _nTry = 0, _nOk = 0;
       try {
         const mani = await once(maniCache, url, () => loadManifest(url));
         const pyr = await once(pyrCache, url, () => TilePyramid.load(url, { useWorker: false }));
@@ -104,7 +106,19 @@ export async function fetchFitsglStamp(
             if (tx < 0 || ty < 0 || tx >= gridTx || ty >= gridTy) continue;
             if (!pyr.hasTile(0, tx, ty)) continue;
             let tile: Float32Array;
-            try { tile = await pyr.getTile(0, tx, ty); } catch { continue; }
+            _nTry++;
+            // getTile has no internal timeout: a stalled fetch hangs the whole montage. Race it so
+            // a stalled sub-tile is skipped (partial montage) instead of freezing the card.
+            try {
+              tile = await Promise.race([
+                pyr.getTile(0, tx, ty),
+                new Promise<Float32Array>((_, rej) => setTimeout(() => rej(new Error("getTile timeout")), 8000)),
+              ]);
+              _nOk++;
+            } catch (e) {
+              console.warn(`[fitsgl ${field}/${band}] getTile(${tx},${ty}) failed: ${(e as Error)?.message}`);
+              continue;
+            }
             const ox = tx * ts, oy = ty * ts; // this tile's global-pixel origin (fpack tiles are ts×ts)
             for (let j = 0; j < ts; j++) {
               const ry = oy + j - ry0; if (ry < 0 || ry >= rw) continue;
@@ -115,6 +129,7 @@ export async function fetchFitsglStamp(
             }
           }
         }
+        console.log(`[fitsgl ${field}/${band}] gx=${gx} gy=${gy} grid=${gridTx}x${gridTy} tiles ${_nOk}/${_nTry} ok in ${((typeof performance!=="undefined"?performance.now():Date.now())-_t0).toFixed(0)}ms`);
         // 2) Resample to a NORTH-UP, EAST-LEFT cutout via the WCS so the grayscale stamps share the
         //    exact orientation of the fitsgl colour image. output pixel → sky → mosaic pixel → sample.
         const cut = new Float32Array(size * size).fill(NaN);
@@ -131,9 +146,10 @@ export async function fetchFitsglStamp(
             if (Number.isFinite(v)) anyPix = true;
           }
         }
-        if (!anyPix) { errors.push({ band, error: "off-tile / all-NaN" }); }
+        if (!anyPix) { console.warn(`[fitsgl ${field}/${band}] off-tile / all-NaN (gx/gy outside data?)`); errors.push({ band, error: "off-tile / all-NaN" }); }
         else out.push({ band, w: size, h: size, noise: madNoise(cut), pixels: cut });
       } catch (e) {
+        console.warn(`[fitsgl ${field}/${band}] band failed: ${e instanceof Error ? e.message : String(e)}`);
         errors.push({ band, error: e instanceof Error ? e.message : String(e) });
       } finally {
         done++; if (onProgress) onProgress(done, bands.length);
