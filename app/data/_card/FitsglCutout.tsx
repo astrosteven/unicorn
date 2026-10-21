@@ -170,6 +170,11 @@ export function FitsglCutout({
   const base = useMemo(() => resolveBase(field), [field]);
   const [status, setStatus] = useState<Status>(base ? "loading" : "empty");
   const [prep, setPrep] = useState<Prepared | null>(null);
+  // @fitsgl/core tile fetches have no timeout: a transient Corral stall during the viewer's
+  // first tile load leaves it drawing nothing forever (onFrame never fires, onError never
+  // throws) → permanent spinner. reloadKey remounts the viewer to retry a stalled load.
+  const [reloadKey, setReloadKey] = useState(0);
+  const retriesRef = useRef(0);
   const handleRef = useRef<FitsViewerHandle | null>(null);
   // Latest target, read by the (construction-fixed) onFrame trampoline.
   const targetRef = useRef({ ra, dec, fovArcsec });
@@ -278,6 +283,23 @@ export function FitsglCutout({
     }
   }, [prep, placeCamera]);
 
+  // Watchdog: if the viewer hasn't drawn its first frame within the grace period (a stalled
+  // Corral tile fetch), remount it to retry; after a couple of tries, give up to "empty" so the
+  // card shows nothing rather than an eternal spinner.
+  useEffect(() => {
+    if (!prep || status !== "loading") return;
+    const t = setTimeout(() => {
+      if (retriesRef.current < 2) {
+        retriesRef.current += 1;
+        placedRef.current = false;
+        setReloadKey((k) => k + 1);   // remount <FitsViewer> → fresh tile fetch
+      } else {
+        setStatus("empty");
+      }
+    }, 11000);
+    return () => clearTimeout(t);
+  }, [prep, status, reloadKey]);
+
   if (!base || status === "empty") return null;
 
   return (
@@ -300,6 +322,7 @@ export function FitsglCutout({
       >
         {prep && (
           <FitsViewer
+            key={reloadKey}
             ref={handleRef}
             config={prep.viewer}
             onReady={onReady}
