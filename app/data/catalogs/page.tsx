@@ -38,6 +38,7 @@ type Field = {
   programs?: string[]; // JWST programs whose imaging is included
   ancillary?: boolean;      // segmap/PSFs/depths/area/completeness on the public tree (default true)
   ancillaryTiles?: string[]; // tiled fields with PER-TILE ancillary products (e.g. EGS: ["ne","sw"]); no segmap
+  tiledDir?: string;        // many-tile field: per-tile ancillary products live in this subdir, surfaced as a browse link
 };
 
 // All nine fields are live on the public Corral tree (unicorn/Catalogs/<DIR>/).
@@ -50,7 +51,7 @@ const FIELDS: Field[] = [
   { id: "primer-uds",    name: "PRIMER-UDS",    dir: "PRIMER-UDS",    prefix: "primeruds",    version: "0.99", available: true, variants: NO_WFC3 },
   { id: "ngdeep",        name: "NGDEEP",        dir: "NGDEEP",        prefix: "ngdeep",       version: "0.99", available: true, variants: NO_WFC3 },
   { id: "a2744",         name: "A2744",         dir: "A2744",         prefix: "a2744",        version: "0.99", available: true, variants: NO_WFC3 },
-  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.99", available: true, variants: NO_WFC3, ancillary: false },
+  { id: "cosmos",        name: "COSMOS",        dir: "COSMOS",        prefix: "cosmos",       version: "0.99", available: true, variants: NO_WFC3, ancillary: false, tiledDir: "tiled_files" },
 ];
 
 // Real file sizes for the live CEERS v0.99 release, keyed by row key.
@@ -220,6 +221,16 @@ function fieldFiles(field: Field): FileRow[] {
       size: size("completeness"),
     },
   );
+
+  // Many-tile field (COSMOS, 20 tiles × 5 products = 100 files): surface them as a single browse
+  // link into the tiled_files/ subdir rather than 100 individual rows.
+  if (field.tiledDir) files.push({
+    label: "Per-tile ancillary products",
+    desc: "Segmentation maps, PSFs, 5σ depths, survey area & completeness — one set per tile (browse directory)",
+    file: `${field.tiledDir}/`,
+    href: `${base}/${field.tiledDir}/`,
+    size: "—",
+  });
   return files;
 }
 
