@@ -36,13 +36,14 @@ type Field = {
   available: boolean;  // true once files are live on Corral
   variants: string[];  // PZ_VARIANTS keys present for this field
   programs?: string[]; // JWST programs whose imaging is included
-  ancillary?: boolean; // segmap/PSFs/depths/area/completeness on the public tree (default true)
+  ancillary?: boolean;      // segmap/PSFs/depths/area/completeness on the public tree (default true)
+  ancillaryTiles?: string[]; // tiled fields with PER-TILE ancillary products (e.g. EGS: ["ne","sw"]); no segmap
 };
 
 // All nine fields are live on the public Corral tree (unicorn/Catalogs/<DIR>/).
 const FIELDS: Field[] = [
   { id: "ceers",         name: "CEERS",         dir: "CEERS",         prefix: "ceers",        version: "0.99", available: true, variants: WITH_WFC3, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
-  { id: "egs",           name: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.99", available: true, variants: WITH_WFC3, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"] },
+  { id: "egs",           name: "EGS",           dir: "EGS",           prefix: "egs",          version: "0.99", available: true, variants: WITH_WFC3, programs: ["CEERS", "SPAM", "MINERVA", "CAPERS"], ancillaryTiles: ["ne", "sw"] },
   { id: "goods-s",       name: "GOODS-S",       dir: "GOODSS",        prefix: "goodss",       version: "0.99", available: true, variants: WITH_WFC3 },
   { id: "goods-n",       name: "GOODS-N",       dir: "GOODSN",        prefix: "goodsn",       version: "0.99", available: true, variants: NO_WFC3 },
   { id: "primer-cosmos", name: "PRIMER-COSMOS", dir: "PRIMER-COSMOS", prefix: "primercosmos", version: "0.99", available: true, variants: WITH_WFC3 },
@@ -169,9 +170,20 @@ function fieldFiles(field: Field): FileRow[] {
     },
   );
 
-  // Ancillary products (segmap / PSFs / depths / area / completeness). Not on the public tree
-  // for tiled COSMOS (ancillary:false), so they're gated to avoid dead download rows.
-  if (field.ancillary !== false) files.push(
+  // Ancillary products (segmap / PSFs / depths / area / completeness). COSMOS (tiled) has none on
+  // the public tree (ancillary:false). EGS (tiled) has PER-TILE products (egs-ne_*, egs-sw_*) and
+  // no segmap, so it emits per-tile rows via ancillaryTiles; single-mosaic fields use the default.
+  if (field.ancillaryTiles) {
+    for (const t of field.ancillaryTiles) {
+      const T = t.toUpperCase();
+      files.push(
+        { label: `PSFs (${T})`,        desc: `Empirical point-spread functions per filter, ${T} tile (tar.gz)`, file: `${f}-${t}_psfs_v${v}.tar.gz`,                       href: `${base}/${f}-${t}_psfs_v${v}.tar.gz`,                       size: "—" },
+        { label: `5σ Depths (${T})`,   desc: `Per-filter 5σ point-source depths, ${T} tile`,                     file: `${f}-${t}_5sig-depths_v${v}.txt`,                      href: `${base}/${f}-${t}_5sig-depths_v${v}.txt`,                      size: "—" },
+        { label: `Survey Area (${T})`, desc: `Effective survey area per filter (arcmin²), ${T} tile`,            file: `${f}-${t}_area.txt`,                                   href: `${base}/${f}-${t}_area.txt`,                                   size: "—" },
+        { label: `Completeness (${T})`, desc: `Point-source completeness vs. magnitude, ${T} tile`,              file: `${f}-${t}_pointsource_completeness_v${v}.txt`,         href: `${base}/${f}-${t}_pointsource_completeness_v${v}.txt`,         size: "—" },
+      );
+    }
+  } else if (field.ancillary !== false) files.push(
     {
       label: "Segmentation Map",
       desc: "Source-Extractor segmentation map (gzipped FITS image)",
