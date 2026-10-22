@@ -19,7 +19,7 @@ export type Field = {
 };
 
 export const FIELDS: Field[] = [
-  { name: "CEERS",         version: "0.99", sources: "174,454", color: "#b07cc6", available: true,
+  { name: "CEERS",         version: "0.99", sources: "174,525", color: "#b07cc6", available: true,
     region: "Extended Groth Strip (single-tile UNICORN reduction)", geometry: "single-tile",
     provenance: "JWST NIRCam + HST ACS/WFC3 from CEERS (ERS 1345), MINERVA (GO 7814), SPAM (GO 8559)" },
   { name: "GOODS-S",       version: "0.99", sources: "343,967", color: "#6b51a3", available: true,
