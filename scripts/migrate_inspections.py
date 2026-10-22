@@ -27,7 +27,7 @@ SERVICE-ROLE key (RLS blocks anon) — pass via env, never on the command line:
   # apply:
   /opt/anaconda3/envs/capers/bin/python scripts/migrate_inspections.py --apply
 """
-import argparse, gzip, json, os, sys, time, urllib.request, urllib.parse
+import argparse, csv, gzip, json, os, sys, time, urllib.request, urllib.parse
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -95,8 +95,18 @@ def main():
         print(f"  {field}: {old} -> {new}  ({sep:.3f}\")")
     if len(plan) > 40: print(f"  ... +{len(plan)-40} more")
 
+    # Audit report of every re-keyed ("bad") inspection, so each can be confirmed object-by-object.
+    # Written in BOTH dry-run and apply. sep should be tiny (<~0.1"); a large sep flags a dubious match.
+    rep = os.path.join(HERE, "migration_report.csv")
+    with open(rep, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["field", "old_obj_id", "new_obj_id", "sep_arcsec", "decision", "ra", "dec", "inspector", "notes"])
+        for field, old, new, sep, r in sorted(plan, key=lambda x: -x[3]):  # worst (largest sep) first
+            w.writerow([field, old, new, f"{sep:.4f}", r.get("decision"), r.get("ra"), r.get("dec"), r.get("inspector"), r.get("notes")])
+    print(f"audit report -> {rep}  ({len(plan)} re-keyed rows, worst-sep first)")
+
     if not args.apply:
-        print("\nDRY-RUN — nothing written. Re-run with --apply to migrate.")
+        print("\nDRY-RUN — nothing written to Supabase. Review migration_report.csv, then re-run with --apply.")
         return
 
     json.dump(backup, open(args.backup, "w"), indent=0)
