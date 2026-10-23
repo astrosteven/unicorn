@@ -147,8 +147,8 @@ export default function Home() {
             { label: "Survey Fields",   value: String(FIELDS.length) },
             { label: "Total Sources",   value: TOTAL_SOURCES.toLocaleString() },
             { label: "Total Area",      value: "0.97 deg²" },
-            { label: "5σ F277W > 29",   value: "0.36 deg²" },
-            { label: "5σ F277W > 30",   value: "0.08 deg²" },
+            { label: "Depth (5σ) > 29", value: "0.36 deg²" },
+            { label: "Depth (5σ) > 30", value: "0.08 deg²" },
           ].map(s => (
             <div key={s.label}>
               <div className="mono" style={{
