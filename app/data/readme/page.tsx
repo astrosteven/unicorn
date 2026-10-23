@@ -7,6 +7,10 @@
 import Link from "next/link";
 import { FIELDS } from "../page";
 
+// Total catalog size, derived from the FIELDS registry (sources are formatted strings), so it
+// stays current as fields are re-run.
+const TOTAL_SOURCES = FIELDS.reduce((s, f) => s + (Number(String(f.sources).replace(/,/g, "")) || 0), 0);
+
 // ---- Small presentational helpers (match the catalogs/fields pages) --------
 
 function SectionRule({ label }: { label: string }) {
@@ -108,6 +112,8 @@ export default function ReadmePage() {
       {/* ------------------------------------------------------------------ */}
       <SectionRule label="FIELDS IN THIS RELEASE" />
       <P>
+        The v0.99 release spans <b style={{ color: "var(--text)" }}>{FIELDS.length} fields</b> and{" "}
+        <b style={{ color: "var(--text)" }}>{TOTAL_SOURCES.toLocaleString()} sources</b> in total.
         Version and source counts are the live values from the site registry — this table is rendered from
         that registry, so it stays current automatically as fields are re-run. All fields listed are
         currently public.
