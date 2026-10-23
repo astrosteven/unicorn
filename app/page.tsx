@@ -1,17 +1,20 @@
 import Link from "next/link";
 import Image from "next/image";
 
+// `count` = number of sources in each field's v0.99 catalog (keep in sync with the data-overview
+// FIELDS in app/data/page.tsx). TOTAL_SOURCES is derived, so the headline stat updates automatically.
 const FIELDS = [
-  { name: "CEERS",          full: "Cosmic Evolution Early Release Science — Extended Groth Strip (single-tile reduction)" },
-  { name: "EGS",            full: "Extended Groth Strip — tiled reduction" },
-  { name: "PRIMER-UDS",     full: "Public Release IMaging for Extragalactic Research — Ultra Deep Survey" },
-  { name: "PRIMER-COSMOS",  full: "Public Release IMaging for Extragalactic Research — COSMOS" },
-  { name: "GOODS-S",        full: "Great Observatories Origins Deep Survey South (JADES DR5)" },
-  { name: "GOODS-N",        full: "Great Observatories Origins Deep Survey North (JADES DR5)" },
-  { name: "NGDEEP",         full: "Next Generation Deep Extragalactic Exploratory Public Survey" },
-  { name: "Abell 2744",     full: "Abell 2744 Galaxy Cluster" },
-  { name: "COSMOS",         full: "Cosmic Evolution Survey" },
+  { name: "CEERS",          count: 174525,  full: "Cosmic Evolution Early Release Science — Extended Groth Strip (single-tile reduction)" },
+  { name: "EGS",            count: 264916,  full: "Extended Groth Strip — tiled reduction" },
+  { name: "PRIMER-UDS",     count: 377276,  full: "Public Release IMaging for Extragalactic Research — Ultra Deep Survey" },
+  { name: "PRIMER-COSMOS",  count: 444712,  full: "Public Release IMaging for Extragalactic Research — COSMOS" },
+  { name: "GOODS-S",        count: 343967,  full: "Great Observatories Origins Deep Survey South (JADES DR5)" },
+  { name: "GOODS-N",        count: 223748,  full: "Great Observatories Origins Deep Survey North (JADES DR5)" },
+  { name: "NGDEEP",         count: 29998,   full: "Next Generation Deep Extragalactic Exploratory Public Survey" },
+  { name: "Abell 2744",     count: 120576,  full: "Abell 2744 Galaxy Cluster" },
+  { name: "COSMOS",         count: 1823849, full: "Cosmic Evolution Survey" },
 ];
+const TOTAL_SOURCES = FIELDS.reduce((s, f) => s + f.count, 0);
 
 // Assign brand colors across the palette
 const FIELD_ACCENTS = [
@@ -139,8 +142,8 @@ export default function Home() {
           gap: "2rem",
         }}>
           {[
-            { label: "Survey Fields", value: "10" },
-            { label: "Total Sources",  value: "—" },
+            { label: "Survey Fields", value: String(FIELDS.length) },
+            { label: "Total Sources",  value: TOTAL_SOURCES.toLocaleString() },
             { label: "Redshift Range", value: "0 – 12+" },
             { label: "Telescopes",     value: "HST+JWST" },
           ].map(s => (
@@ -186,6 +189,9 @@ export default function Home() {
               </div>
               <div style={{ fontSize: "0.76rem", color: "var(--text-muted)", lineHeight: 1.45 }}>
                 {field.full}
+              </div>
+              <div className="mono" style={{ fontSize: "0.72rem", color: "var(--text-dim)", marginTop: "8px" }}>
+                {field.count.toLocaleString()} sources
               </div>
             </div>
           ))}
