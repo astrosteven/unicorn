@@ -142,10 +142,13 @@ export default function Home() {
           gap: "2rem",
         }}>
           {[
-            { label: "Survey Fields", value: String(FIELDS.length) },
-            { label: "Total Sources",  value: TOTAL_SOURCES.toLocaleString() },
-            { label: "Redshift Range", value: "0 – 12+" },
-            { label: "Telescopes",     value: "HST+JWST" },
+            // Area stats: summed over every field's depth tiers (F277W 5σ depth, LW area), incl. EGS
+            // NE/SW + COSMOS's 20 tiles. Total 3,503 arcmin²; >29 = 1,297; >30 = 275 (2026-10 v0.99).
+            { label: "Survey Fields",   value: String(FIELDS.length) },
+            { label: "Total Sources",   value: TOTAL_SOURCES.toLocaleString() },
+            { label: "Total Area",      value: "0.97 deg²" },
+            { label: "5σ F277W > 29",   value: "0.36 deg²" },
+            { label: "5σ F277W > 30",   value: "0.08 deg²" },
           ].map(s => (
             <div key={s.label}>
               <div className="mono" style={{
