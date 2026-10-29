@@ -295,7 +295,22 @@ export default function CatalogsPage() {
   function makeScript(rows: { file: string; href: string }[], name: string) {
     const lines = ["#!/bin/bash", `# UNICORN catalog download — ${name}`,
       "# Preserves the <FIELD>/Photoz*/ and <FIELD>/Flags/ subdirectory layout.", "set -e", ""];
-    for (const r of rows) lines.push(`curl -fL --create-dirs -o "${r.file}" "${r.href}"`);
+    for (const r of rows) {
+      if (r.file.endsWith("/")) {
+        // Directory of many files (COSMOS per-tile products): curl can't fetch a directory,
+        // so read the server's autoindex listing and download each entry into it. curl-only
+        // (no wget dependency, works on macOS); a failing listing fetch just downloads nothing.
+        const dir = r.file.replace(/\/$/, "");
+        lines.push(
+          `# ${dir}/ — directory of per-tile files; download each from the server listing`,
+          `curl -fsSL "${r.href}" | grep -oE 'href="[^"?][^"]*"' | sed -E 's/^href="//; s/"$//' | grep -vE '^/|^\\.\\.?/?$' | while IFS= read -r fn; do`,
+          `  curl -fL --create-dirs -o "${dir}/$fn" "${r.href}$fn"`,
+          `done`,
+        );
+      } else {
+        lines.push(`curl -fL --create-dirs -o "${r.file}" "${r.href}"`);
+      }
+    }
     lines.push("");
     const blob = new Blob([lines.join("\n")], { type: "text/x-shellscript" });
     const a = document.createElement("a");
