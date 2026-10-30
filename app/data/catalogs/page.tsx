@@ -66,6 +66,7 @@ const CEERS_SIZES: Record<string, string> = {
   depths: "4 KB",
   area: "4 KB",
   completeness: "32 KB",
+  db: "84 MB",
   pz_fiducial: "2.6 GB",
   pz_eelg: "2.6 GB",
   pz_circles: "2.6 GB",
@@ -143,6 +144,17 @@ function fieldFiles(field: Field): FileRow[] {
       ext: 4,
     });
   }
+
+  // Dense-Basis physical properties (stellar mass, Av, SFR). One FITS per field, row-matched
+  // to the catalog by src_id. Live for all 9 fields at v0.99 (Katie Chworowsky's DB run).
+  files.push({
+    label: "Dense-Basis Physical Properties",
+    desc: "Stellar mass, Av, and SFR (10 & 100 Myr) with 16/50/84 percentiles, from Dense-Basis SED fitting",
+    file: `${f}_DB_v${v}.fits`,
+    href: `${base}/${f}_DB_v${v}.fits`,
+    size: size("db"),
+    ext: 1,
+  });
 
   files.push(
     {
