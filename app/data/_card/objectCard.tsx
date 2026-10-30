@@ -299,7 +299,7 @@ const _intpzPromise: Record<string, Promise<Record<string, NumCol>>> = {};
 // one stall hangs the card for minutes. runT races the ENTIRE operation (connect + headers +
 // body read) against a hard timeout under one AbortController — so an abort cancels a stalled
 // body stream too — and retries a few times so a transient stall recovers.
-async function runT<T>(fn: (signal: AbortSignal) => Promise<T>, ms = 9000, tries = 3): Promise<T> {
+async function runT<T>(fn: (signal: AbortSignal) => Promise<T>, ms = 12000, tries = 5): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < tries; attempt++) {
     const ctrl = new AbortController();
