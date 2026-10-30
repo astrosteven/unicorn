@@ -653,8 +653,8 @@ async function cardMeta(objBase: string, fc: FieldConfig): Promise<{ bucket: num
   })();
   _cardMetaPromise[fc.field] = p;
   const m = await p;
-  _cardMeta[fc.field] = m;
-  delete _cardMetaPromise[fc.field];
+  if (m) _cardMeta[fc.field] = m;   // cache only success; a null (transient Corral stall) must NOT
+  delete _cardMetaPromise[fc.field]; // poison the field — leave it uncached so the next call retries.
   return m;
 }
 
@@ -668,8 +668,8 @@ async function cardIdx(objBase: string, fc: FieldConfig, bucket: number): Promis
   })();
   _cardIdxPromise[key] = p;
   const idx = await p;
-  _cardIdxCache[key] = idx;
-  delete _cardIdxPromise[key];
+  if (idx) _cardIdxCache[key] = idx;   // cache only success; never cache a null from a transient
+  delete _cardIdxPromise[key];          // stall, or every card in this bucket is dead for the session.
   return idx;
 }
 
