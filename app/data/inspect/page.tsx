@@ -12,7 +12,7 @@ import dynamic from "next/dynamic";
 import type { Session } from "@supabase/supabase-js";
 import { supabase, type Inspection, type InspectDecision } from "@/lib/supabase";
 import {
-  SEARCH_FIELDS, loadField, fetchObject, SEDPlot, PZPlot, clearInspectCaches,
+  SEARCH_FIELDS, loadField, loadDb, fetchObject, SEDPlot, PZPlot, clearInspectCaches,
   type SourceResult, type FieldConfig, type FieldIndex,
 } from "@/app/data/_card/objectCard";
 import { precacheStamp } from "@/lib/fitsglStamp";
@@ -110,13 +110,14 @@ type QueueRow = {
   dec: number | null;
   za: number | null;
   mabs: number | null;
+  mstar: number | null;        // Dense-Basis log10 stellar mass (from the db sidecar)
   decision: InspectDecision;   // resumed from Supabase, else "not_inspected"
   notes: string;
 };
 // The composite identity of a row.
 const rowKey = (r: QueueRow) => `${r.field}:${r.id}`;
 
-type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "decision";
+type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "mstar" | "decision";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 const DECISIONS: { key: InspectDecision; label: string; color: string; hot: string }[] = [
@@ -194,6 +195,8 @@ function Inspector({ email }: { email: string }) {
     try {
       for (const f of targets) {
         const { idx } = await loadField(f);
+        // Dense-Basis log stellar mass for the M* table column (index-aligned; best-effort).
+        const dbmass = (await loadDb(f).catch(() => null))?.mass ?? null;
         // ids removed FROM this field's selected sample: loadField already zeroed their
         // `selected`, so buildQueue can't see they were once selected — pass them explicitly
         // so "show removed" can re-include them for review / un-removal.
@@ -201,7 +204,13 @@ function Inspector({ email }: { email: string }) {
         if (showRem) for (const rec of byKey.values()) if (rec.field === f.field && rec.decision === "remove") remIds.add(Number(rec.obj_id));
         const built = external
           ? external.objects.filter(o => o.field === f.field).map(extToRow)
-          : buildQueue(idx, f.field, minz, selOnly, remIds);
+          : buildQueue(idx, f.field, minz, selOnly, remIds, dbmass);
+        // Handoff rows carry no mstar — attach it by mapping id -> index position.
+        if (external && dbmass) {
+          const idPos = new Map<number, number>();
+          for (let i = 0; i < idx.n; i++) idPos.set(idx.id[i], i);
+          for (const row of built) { const p = idPos.get(row.id); if (p != null) row.mstar = dbmass[p] ?? null; }
+        }
         for (const row of built) {
           const rec = byKey.get(rowKey(row));
           if (rec) { row.decision = rec.decision; row.notes = rec.notes ?? ""; }
@@ -487,7 +496,7 @@ function Inspector({ email }: { email: string }) {
             <thead style={{ position: "sticky", top: 0, background: "var(--bg-elev, #16112a)", zIndex: 1 }}>
               <tr>
                 {([
-                  ["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"],
+                  ["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"], ["M*", "mstar"],
                 ] as [string, SortKey][]).map(([label, key]) => (
                   <th key={key} onClick={() => toggleSort(key)}
                     style={{ padding: "7px 8px", textAlign: key === "decision" ? "center" : key === "field" ? "left" : "right", color: sortKey === key ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap", userSelect: "none" }}>
@@ -497,8 +506,8 @@ function Inspector({ email }: { email: string }) {
               </tr>
             </thead>
             <tbody>
-              {rows == null && <tr><td colSpan={7} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading queue…</td></tr>}
-              {rows != null && view.length === 0 && <tr><td colSpan={7} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>no rows match</td></tr>}
+              {rows == null && <tr><td colSpan={8} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading queue…</td></tr>}
+              {rows != null && view.length === 0 && <tr><td colSpan={8} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>no rows match</td></tr>}
               {view.map(r => {
                 const active = selKey === rowKey(r);
                 return (
@@ -513,6 +522,7 @@ function Inspector({ email }: { email: string }) {
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.dec != null ? r.dec.toFixed(5) : "—"}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text)" }}>{r.za != null ? r.za.toFixed(2) : "—"}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.mabs != null ? r.mabs.toFixed(2) : "—"}</td>
+                    <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.mstar != null ? r.mstar.toFixed(2) : "—"}</td>
                   </tr>
                 );
               })}
@@ -592,6 +602,9 @@ function InspectCard({ src }: { src: SourceResult }) {
           <span style={{ color: "var(--text)" }}> · z_a={za.toFixed(2)}</span>
           {src.mabs != null && <span style={{ color: "var(--text-muted)" }}> · M_UV={src.mabs.toFixed(2)}</span>}
           {src.beta != null && <span style={{ color: "var(--text-muted)" }}> · β={src.beta.toFixed(2)}</span>}
+          {src.db?.mass != null && <span style={{ color: "var(--text-muted)" }}> · logM⋆={Number(src.db?.mass).toFixed(2)}</span>}
+          {src.db?.sfr10 != null && <span style={{ color: "var(--text-muted)" }}> · logSFR={Number(src.db?.sfr10).toFixed(2)}</span>}
+          {src.db?.z != null && <span style={{ color: "var(--text-muted)" }}> · z_DB={Number(src.db?.z).toFixed(2)}</span>}
           {src.selected === 1 && <span style={{ color: "var(--amber)" }}> · ★selected</span>}
         </span>
         <span style={{ display: "inline-flex", alignItems: "center", gap: "10px" }}>
@@ -648,10 +661,10 @@ function externalFields(q: ExternalQueue): FieldConfig[] {
   return SEARCH_FIELDS.filter(f => names.has(f.field));
 }
 function extToRow(o: ExtObj): QueueRow {
-  return { field: o.field, id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, decision: "not_inspected", notes: "" };
+  return { field: o.field, id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, mstar: null, decision: "not_inspected", notes: "" };
 }
 
-function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedOnly: boolean, removedIds?: Set<number>): QueueRow[] {
+function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedOnly: boolean, removedIds?: Set<number>, dbmass?: (number | null)[] | null): QueueRow[] {
   const out: QueueRow[] = [];
   for (let i = 0; i < idx.n; i++) {
     const za = idx.za[i];
@@ -666,6 +679,7 @@ function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedO
       dec: idx.dec[i] ?? null,
       za,
       mabs: idx.mabs?.[i] ?? null,
+      mstar: dbmass?.[i] ?? null,
       decision: "not_inspected",
       notes: "",
     });

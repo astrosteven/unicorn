@@ -29,6 +29,7 @@ COLS = {
     "av": "av_50", "av_16": "av_16", "av_84": "av_84",
     "sfr10": "sfr10_50", "sfr10_16": "sfr10_16", "sfr10_84": "sfr10_84",
     "sfr100": "sfr100_50", "sfr100_16": "sfr100_16", "sfr100_84": "sfr100_84",
+    "z": "z_50", "z_16": "z_16", "z_84": "z_84",   # dense-basis photo-z (compare vs fiducial za)
 }
 
 
@@ -61,6 +62,8 @@ def main():
               f"({100 * matched / len(iid):.1f}%); DB has {len(sid)} rows")
 
     def clean(col):
+        if col not in db.columns.names:   # field's DB lacks this column → all null, don't crash
+            return [None] * len(iid)
         a = np.asarray(db[col], dtype=float)
         out = []
         for r in order:

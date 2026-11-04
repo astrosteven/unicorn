@@ -93,6 +93,7 @@ export interface SourceResult {
   cfield?: string;    // campfire field slug, for the spectrum deep-link
   cid?: string;       // campfire object_id, for the spectrum deep-link
   nickname?: LabelRec;  // famous-object label (e.g. "Maisie's Galaxy"), if this is a named source
+  db?: Record<string, number | null> | null;  // this object's Dense-Basis values (mass/av/sfr10/sfr100/z + 16/84)
 }
 
 // ---- named-object labels ---------------------------------------------------
@@ -443,12 +444,13 @@ export async function loadIntPz(fc: FieldConfig): Promise<Record<string, NumCol>
 }
 
 // Dense Basis physical properties (<prefix>_db_v<ver>.json[.gz]): parallel arrays aligned
-// to index order, exposed as queryable columns (scripts/make_db_sidecar.py). As of v0.99 the db
-// sidecars are NOT yet regenerated for any field (position-aligned, so they can't be reused across
-// the re-reduction) — pending Katie's v0.99 run; loaders return null until then (columns go dark).
+// to index order, exposed as queryable columns + shown on the card (scripts/make_db_sidecar.py).
+// Live for all 9 fields at v0.99 (Katie Chworowsky's DB run). `z` is the dense-basis photo-z
+// (z_50), handy to compare against the fiducial za.
 export const DB_COLS = [
   "mass", "mass_16", "mass_84", "av", "av_16", "av_84",
   "sfr10", "sfr10_16", "sfr10_84", "sfr100", "sfr100_16", "sfr100_84",
+  "z", "z_16", "z_84",
 ] as const;
 const _dbCache: Record<string, Record<string, NumCol> | null> = {};
 const _dbPromise: Record<string, Promise<Record<string, NumCol> | null>> = {};
@@ -467,7 +469,8 @@ export async function loadDb(fc: FieldConfig): Promise<Record<string, NumCol> | 
     }
   })();
   const db = await _dbPromise[fc.field];
-  _dbCache[fc.field] = db;
+  if (db) _dbCache[fc.field] = db;   // cache only success; a null (transient stall) must not poison the field
+  delete _dbPromise[fc.field];
   return db;
 }
 
@@ -714,7 +717,13 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
     }
     let selFail: SourceResult["selFail"] | undefined;
     const cIdx = cachedIndex(fc.field);
-    if (cIdx) selFail = selFailFromIndex(cIdx, cIdx.id.indexOf(id));
+    const pos = cIdx ? cIdx.id.indexOf(id) : -1;
+    if (cIdx && pos >= 0) selFail = selFailFromIndex(cIdx, pos);
+    // Dense-Basis physical properties for THIS object (cached per field; same index alignment).
+    const dball = await loadDb(fc);
+    const db = (dball && pos >= 0)
+      ? Object.fromEntries(DB_COLS.map(k => [k, dball[k]?.[pos] ?? null]))
+      : undefined;
     const cf = (await loadSpecz(fc))[String(id)];   // campfire spec-z match, if any
     await loadLabels();                             // ensure labels are cached for labelFor()
     // The packed card stores the catalog field name (strupcase(prefix), e.g. "PRIMERUDS",
@@ -736,7 +745,7 @@ export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promi
       rgbUrl: `${corralBase()}/${fieldCatDir(fc)}/web/rgb/${fc.prefix}_${id}.png`,
       selFail,
       czspec: cf?.z ?? undefined, czqual: cf?.q ?? undefined, cfield: cf?.cf, cid: cf?.cid,
-      nickname,
+      nickname, db,
     };
   } catch {
     return null;
@@ -1215,6 +1224,11 @@ export function ResultCard({ src }: { src: SourceResult }) {
             ["m₄₄₄",  flux2mag(f444)],
             ["M_UV",   src.mabs != null ? src.mabs.toFixed(2) : "—"],
             ["β",      src.beta != null ? src.beta.toFixed(2) : "—"],
+            // Dense-Basis physical properties (log10; z_DB = DB photo-z vs fiducial z_a)
+            ["log M⋆",     src.db?.mass   != null ? Number(src.db?.mass).toFixed(2)   : "—"],
+            ["log SFR₁₀",  src.db?.sfr10  != null ? Number(src.db?.sfr10).toFixed(2)  : "—"],
+            ["log SFR₁₀₀", src.db?.sfr100 != null ? Number(src.db?.sfr100).toFixed(2) : "—"],
+            ["z_DB",       src.db?.z      != null ? Number(src.db?.z).toFixed(2)      : "—"],
             ["rh,277", rh277 > 0 ? `${rh277.toFixed(2)}px` : "—"],
             ["rh,444", rh444 > 0 ? `${rh444.toFixed(2)}px` : "—"],
           ].map(([label, val]) => (
