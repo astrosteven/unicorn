@@ -22,7 +22,7 @@ import { LiveStampMontage } from "@/app/data/inspect/LiveStampMontage";
 const FitsglCutout = dynamic(() => import("@/app/data/_card/FitsglCutout").then(m => m.FitsglCutout), { ssr: false });
 // Inspection color cutout: 1.5" on a side, stretched hard (bring up faint flux) so it
 // works as a quick "is this real?" check. Tunable.
-const INSPECT_FOV = 1.5;
+const INSPECT_FOV = 2.5;
 const INSPECT_TRILOGY = { noiselum: 0.32, noisesig: 1.0, noisesig0: 1.0 };
 // Bands shown in the live grayscale montage: ALL bands EXCEPT WFC3 (f105w/f125w/f140w/f160w),
 // in wavelength order. The Worker now reads each cutout as thin multipart row-slices (~10 KB),
