@@ -3,16 +3,21 @@
 // obj_ids and lets the user mark Keep / Undecided / Remove — persisted to public.query_inspections
 // (per-user, RLS-scoped). This NEVER touches the catalog `selected` flag or the global
 // `inspections` table — it's a personal workspace. Reuses the inspector's <InspectCard> for an
-// identical card (SED / P(z) / cutout + overlay), plus CSV export of the decisions.
+// identical card (SED / P(z) / cutout + overlay), has a sortable queue table (like the default
+// inspector), and CSV export of the decisions.
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import { supabase, type SavedQuery, type InspectDecision } from "@/lib/supabase";
-import { SEARCH_FIELDS, loadField, fetchObject, cachedIndex, type SourceResult } from "@/app/data/_card/objectCard";
+import { SEARCH_FIELDS, loadField, loadDb, fetchObject, cachedIndex, type SourceResult } from "@/app/data/_card/objectCard";
 import { InspectCard } from "@/app/data/inspect/page";
 
-type Row = { field: string; id: number; decision: InspectDecision; notes: string };
+type Row = {
+  field: string; id: number; decision: InspectDecision; notes: string;
+  ra: number | null; dec: number | null; za: number | null; mabs: number | null; mstar: number | null;
+};
+type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "mstar" | "decision";
 const rowKey = (r: { field: string; id: number }) => `${r.field}:${r.id}`;
 const DECS: { key: InspectDecision; label: string; color: string; hot: string }[] = [
   { key: "not_inspected", label: "Not Inspected", color: "var(--text-dim)", hot: "n" },
@@ -40,9 +45,12 @@ function Inner() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [selKey, setSelKey] = useState<string | null>(null);
   const [card, setCard] = useState<SourceResult | null | "loading" | "notfound">(null);
+  const [sortKey, setSortKey] = useState<SortKey>("za");
+  const [sortDir, setSortDir] = useState<1 | -1>(-1);   // default: brightest/highest-z first
   const cardCache = useRef(new Map<string, SourceResult | null>());
 
-  // Load the saved query + build the queue from its snapshot + resume prior decisions.
+  // Load the saved query, build the queue, resume prior decisions, then enrich rows with
+  // ra/dec/za/M_UV/M* (from each field's index + db sidecar) so the table can sort on them.
   useEffect(() => {
     if (!session || !qid) return;
     let cancel = false;
@@ -53,18 +61,52 @@ function Inner() {
       setQuery(data as SavedQuery);
       const oi = (data as SavedQuery).obj_ids || {};
       const base: Row[] = [];
-      for (const [f, ids] of Object.entries(oi)) for (const id of ids as number[]) base.push({ field: f, id, decision: "not_inspected", notes: "" });
+      for (const [f, ids] of Object.entries(oi)) for (const id of ids as number[])
+        base.push({ field: f, id, decision: "not_inspected", notes: "", ra: null, dec: null, za: null, mabs: null, mstar: null });
       const { data: dec } = await supabase.from("query_inspections").select("field,obj_id,decision,notes").eq("query_id", qid);
       if (cancel) return;
       const m = new Map<string, { decision: InspectDecision; notes: string }>();
       for (const d of (dec ?? []) as { field: string; obj_id: number; decision: InspectDecision; notes: string | null }[])
         m.set(`${d.field}:${d.obj_id}`, { decision: d.decision, notes: d.notes ?? "" });
       for (const r of base) { const x = m.get(rowKey(r)); if (x) { r.decision = x.decision; r.notes = x.notes; } }
-      setRows(base);
+      setRows(base);                             // show fast (field/id/decision)…
       if (base.length) setSelKey(rowKey(base[0]));
+      // …then enrich with sortable quantities from each field's index + db.
+      const fields = [...new Set(base.map(r => r.field))];
+      for (const f of fields) {
+        const fc = SEARCH_FIELDS.find(x => x.field === f);
+        if (!fc) continue;
+        await loadField(fc);
+        const dbmass = (await loadDb(fc).catch(() => null))?.mass ?? null;
+        if (cancel) return;
+        const idx = cachedIndex(f);
+        if (!idx) continue;
+        const pos = new Map<number, number>();
+        for (let i = 0; i < idx.n; i++) pos.set(idx.id[i], i);
+        for (const r of base) if (r.field === f) {
+          const i = pos.get(r.id);
+          if (i != null) { r.ra = idx.ra[i] ?? null; r.dec = idx.dec[i] ?? null; r.za = idx.za?.[i] ?? null; r.mabs = idx.mabs?.[i] ?? null; r.mstar = dbmass?.[i] ?? null; }
+        }
+      }
+      if (!cancel) setRows([...base]);           // re-set with enriched values
     })();
     return () => { cancel = true; };
   }, [session, qid]);
+
+  // Sorted view (the queue order the user sees + navigates).
+  const view = useMemo(() => {
+    if (!rows) return [];
+    const get = (r: Row): number | string =>
+      sortKey === "field" ? r.field : sortKey === "decision" ? r.decision
+        : (r[sortKey] ?? (sortDir === 1 ? Infinity : -Infinity));
+    return [...rows].sort((a, b) => {
+      const av = get(a), bv = get(b);
+      if (av < bv) return -1 * sortDir;
+      if (av > bv) return 1 * sortDir;
+      return a.id - b.id;
+    });
+  }, [rows, sortKey, sortDir]);
+  const toggleSort = (k: SortKey) => { if (k === sortKey) setSortDir(d => (d === 1 ? -1 : 1)); else { setSortKey(k); setSortDir(1); } };
 
   // Load the selected object's card (cached per row).
   useEffect(() => {
@@ -94,21 +136,20 @@ function Inner() {
     const row = rows.find(r => rowKey(r) === selKey);
     if (!row) return;
     setRows(rs => rs!.map(r => rowKey(r) === selKey ? { ...r, decision: d } : r));
-    const i = rows.findIndex(r => rowKey(r) === selKey);
-    if (i >= 0 && i + 1 < rows.length) setSelKey(rowKey(rows[i + 1]));   // auto-advance
+    const i = view.findIndex(r => rowKey(r) === selKey);   // auto-advance in sorted order
+    if (i >= 0 && i + 1 < view.length) setSelKey(rowKey(view[i + 1]));
     const { error } = await supabase.from("query_inspections").upsert(
       { user_id: session.user.id, query_id: qid, field: row.field, obj_id: row.id, decision: d, notes: row.notes || null },
       { onConflict: "query_id,field,obj_id" });
     if (error) console.error("query_inspection save failed:", error.message);
-  }, [selKey, rows, session, qid]);
+  }, [selKey, rows, view, session, qid]);
 
-  // Keyboard: k/u/r/n decide + auto-advance; ↓/j and ↑ navigate.
   const nav = useCallback((delta: number) => {
-    if (!rows || !selKey) return;
-    const i = rows.findIndex(r => rowKey(r) === selKey);
+    if (!view.length || !selKey) return;
+    const i = view.findIndex(r => rowKey(r) === selKey);
     const j = i + delta;
-    if (j >= 0 && j < rows.length) setSelKey(rowKey(rows[j]));
-  }, [rows, selKey]);
+    if (j >= 0 && j < view.length) setSelKey(rowKey(view[j]));
+  }, [view, selKey]);
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
@@ -125,19 +166,11 @@ function Inner() {
     return () => window.removeEventListener("keydown", h);
   }, [decide, nav]);
 
-  // CSV export of the user's decisions (field, id, ra, dec via the loaded index, decision, notes).
-  async function exportCsv() {
+  // CSV export of the user's decisions (field, id, ra, dec, decision, notes).
+  function exportCsv() {
     if (!rows || !query || query === "notfound") return;
-    const fields = [...new Set(rows.map(r => r.field))];
-    for (const f of fields) { const fc = SEARCH_FIELDS.find(x => x.field === f); if (fc) await loadField(fc); }
-    const pos: Record<string, Map<number, number>> = {};
-    for (const f of fields) { const idx = cachedIndex(f); if (idx) { const m = new Map<number, number>(); for (let i = 0; i < idx.n; i++) m.set(idx.id[i], i); pos[f] = m; } }
     const lines = ["field,obj_id,ra,dec,decision,notes"];
-    for (const r of rows) {
-      const idx = cachedIndex(r.field); const p = pos[r.field]?.get(r.id);
-      const ra = idx && p != null ? idx.ra[p] : "", dec = idx && p != null ? idx.dec[p] : "";
-      lines.push(`${r.field},${r.id},${ra},${dec},${r.decision},"${(r.notes || "").replace(/"/g, '""')}"`);
-    }
+    for (const r of rows) lines.push(`${r.field},${r.id},${r.ra ?? ""},${r.dec ?? ""},${r.decision},"${(r.notes || "").replace(/"/g, '""')}"`);
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -151,6 +184,7 @@ function Inner() {
   if (!qid || query === "notfound") return <Centered>Query not found. <Link href="/data/queries" style={{ color: "var(--accent)" }}>← My Queries</Link></Centered>;
 
   const prog = rows ? { total: rows.filter(r => r.decision !== "not_inspected").length, keep: rows.filter(r => r.decision === "keep").length, remove: rows.filter(r => r.decision === "remove").length, undecided: rows.filter(r => r.decision === "undecided").length } : null;
+  const fmt = (v: number | null, d = 2) => v == null ? "—" : v.toFixed(d);
 
   return (
     <main style={{ padding: "1.5rem 2rem", maxWidth: "1400px", margin: "0 auto" }}>
@@ -168,22 +202,43 @@ function Inner() {
         private workspace — these decisions never change the catalog · keys: k keep · u undecided · r remove · n reset · ↑/↓ nav
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 300px) 1fr", gap: "1rem", alignItems: "start" }}>
-        {/* queue */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 420px) 1fr", gap: "1rem", alignItems: "start" }}>
+        {/* sortable queue table */}
         <div className="card" style={{ padding: 0, maxHeight: "calc(100vh - 170px)", overflow: "auto", position: "sticky", top: "84px" }}>
-          {rows == null && <div style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading…</div>}
-          {rows && rows.length === 0 && <div style={{ padding: "1.5rem", color: "var(--text-muted)", fontSize: "0.82rem" }}>No sources in this saved query.</div>}
-          {rows?.map(r => {
-            const active = rowKey(r) === selKey;
-            return (
-              <div key={rowKey(r)} onClick={() => setSelKey(rowKey(r))}
-                style={{ cursor: "pointer", padding: "6px 10px", display: "flex", alignItems: "center", gap: "8px", background: active ? "rgba(196,144,216,0.16)" : "transparent", borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent", borderBottom: "1px solid var(--border)" }}>
-                <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: decColor(r.decision), flexShrink: 0 }} />
-                <span className="mono" style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>{r.field}</span>
-                <span className="mono" style={{ fontSize: "0.72rem", color: "var(--accent)", fontWeight: 700, marginLeft: "auto" }}>{r.id}</span>
-              </div>
-            );
-          })}
+          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Space Mono', monospace", fontSize: "0.72rem" }}>
+            <thead style={{ position: "sticky", top: 0, background: "var(--bg)", zIndex: 1 }}>
+              <tr>
+                {([["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"], ["M*", "mstar"]] as [string, SortKey][]).map(([label, key]) => (
+                  <th key={key} onClick={() => toggleSort(key)}
+                    style={{ padding: "7px 7px", textAlign: key === "decision" ? "center" : key === "field" ? "left" : "right", color: sortKey === key ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap", userSelect: "none" }}>
+                    {label}{sortKey === key ? (sortDir === 1 ? " ▲" : " ▼") : ""}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows == null && <tr><td colSpan={8} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading…</td></tr>}
+              {rows && view.length === 0 && <tr><td colSpan={8} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>No sources in this saved query.</td></tr>}
+              {view.map(r => {
+                const active = rowKey(r) === selKey;
+                return (
+                  <tr key={rowKey(r)} onClick={() => setSelKey(rowKey(r))}
+                    style={{ cursor: "pointer", background: active ? "rgba(196,144,216,0.16)" : "transparent", borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent" }}>
+                    <td style={{ padding: "5px 7px", textAlign: "center" }}>
+                      <span title={r.decision} style={{ display: "inline-block", width: "9px", height: "9px", borderRadius: "50%", background: decColor(r.decision), verticalAlign: "middle" }} />
+                    </td>
+                    <td style={{ padding: "5px 7px", textAlign: "left", color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.field}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--accent)", fontWeight: 700 }}>{r.id}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.ra, 5)}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.dec, 5)}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text)" }}>{fmt(r.za)}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.mabs)}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.mstar)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
 
         {/* card + decision bar */}
