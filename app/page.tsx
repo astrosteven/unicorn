@@ -22,6 +22,18 @@ const FIELD_ACCENTS = [
   "#4a3a8a", "#ef9fcd", "#ffb3d9", "#b07cc6",
 ];
 
+// "What's New" — prepend an entry (newest first) when a user-facing feature ships.
+const UPDATES: { date: string; title: string; body: string }[] = [
+  { date: "Nov 2026", title: "Dense-Basis physical properties",
+    body: "Stellar mass, star-formation rate, dust (Aᵥ), and a Dense-Basis redshift now appear on every object card, are queryable, and are included in the catalog downloads." },
+  { date: "Oct 2026", title: "v0.99 — all nine fields live",
+    body: "CEERS, EGS, GOODS-S, GOODS-N, PRIMER-COSMOS, PRIMER-UDS, A2744, NGDEEP, and COSMOS are all searchable, with photometry, photo-z variants, and downloadable catalogs." },
+  { date: "Sep 2026", title: "Live color + per-band cutouts",
+    body: "Every object card renders a color image and per-filter cutouts on the fly from the imaging — no pre-baked stamps." },
+  { date: "Sep 2026", title: "Per-filter & named-object search",
+    body: "Query by magnitude, S/N, flux, or color in any band — and find famous sources (Maisie's Galaxy, GN-z11, …) by name." },
+];
+
 export default function Home() {
   return (
     <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -51,6 +63,7 @@ export default function Home() {
             <Link href="/data" className="navlink">Overview</Link>
             <Link href="/data/fields" className="navlink">Fields</Link>
             <Link href="/data/readme" className="navlink">Catalog Guide</Link>
+            <a href="#updates" className="navlink">Updates</a>
           </div>
         </div>
         <Link href="/login" className="btn btn-primary" style={{ padding: "7px 18px", fontSize: "0.78rem" }}>
@@ -196,6 +209,27 @@ export default function Home() {
               <div className="mono" style={{ fontSize: "0.72rem", color: "var(--text-dim)", marginTop: "8px" }}>
                 {field.count.toLocaleString()} sources
               </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* What's New */}
+      <section id="updates" style={{ padding: "0 2rem 5rem", maxWidth: "880px", margin: "0 auto", width: "100%" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "2.5rem" }}>
+          <div style={{ width: "32px", height: "1px", background: "linear-gradient(90deg, var(--pink-purple), var(--pink-light))" }} />
+          <span className="mono" style={{ color: "var(--accent2)", fontSize: "0.72rem", letterSpacing: "0.18em" }}>
+            WHAT&apos;S NEW
+          </span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {UPDATES.map((u, i) => (
+            <div key={i} className="card" style={{ padding: "1rem 1.25rem", borderLeft: "3px solid var(--accent)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", alignItems: "baseline" }}>
+                <span className="mono" style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--accent)" }}>{u.title}</span>
+                <span className="mono" style={{ fontSize: "0.68rem", color: "var(--text-dim)", whiteSpace: "nowrap" }}>{u.date}</span>
+              </div>
+              <div style={{ fontSize: "0.82rem", color: "var(--text-muted)", lineHeight: 1.5, marginTop: "5px" }}>{u.body}</div>
             </div>
           ))}
         </div>
