@@ -24,6 +24,8 @@ const FIELD_ACCENTS = [
 
 // "What's New" — prepend an entry (newest first) when a user-facing feature ships.
 const UPDATES: { date: string; title: string; body: string }[] = [
+  { date: "Nov 2026", title: "Save & inspect your own samples",
+    body: "Signed-in users can save a Search query to a private list, then open it in a personal inspector to triage sources (Keep / Undecided / Remove) and export their own subsample. Your decisions are private and never change the catalog." },
   { date: "Nov 2026", title: "Dense-Basis physical properties",
     body: "Stellar mass, star-formation rate, dust (Aᵥ), and a Dense-Basis redshift now appear on every object card, are queryable, and are included in the catalog downloads." },
   { date: "Oct 2026", title: "v0.99 — all nine fields live",
