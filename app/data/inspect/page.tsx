@@ -579,7 +579,7 @@ function Inspector({ email }: { email: string }) {
 // Compact object view for inspection: everything on one screen — a one-line header,
 // the "why not selected" reasons, then SED + P(z) + the hard-stretched 1.5" color in a
 // single row, with the filter-stamp montage below. No properties grid / flag button.
-function InspectCard({ src }: { src: SourceResult }) {
+export function InspectCard({ src }: { src: SourceResult }) {
   const za = src.pz["ZA"] ?? 0;
   const normalize = (arr: number[] | undefined, grid: number[] | undefined) => {
     if (!arr || !grid || arr.length !== grid.length) return undefined;
