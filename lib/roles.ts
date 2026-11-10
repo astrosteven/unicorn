@@ -23,7 +23,7 @@ export type Role = "pending" | "general" | "key" | "admin";
 export const PUBLIC_ROUTES = ["/data/fields", "/data/readme"];
 
 // General tier adds these; key adds the two after; admin gets its own page too.
-const GENERAL_ROUTES = ["/data/catalogs", "/data/map", "/data/search"];
+const GENERAL_ROUTES = ["/data/catalogs", "/data/map", "/data/search", "/data/queries"];
 const KEY_ROUTES     = ["/data/inspect", "/data/review"];
 const ADMIN_ROUTES   = ["/data/admin"];
 

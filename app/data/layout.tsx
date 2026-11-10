@@ -17,6 +17,7 @@ const NAV_LINKS: { href: string; label: string; min: Role | null; group: NavGrou
   { href: "/data/catalogs", label: "Catalogs",      min: "general", group: "general" },
   { href: "/data/map",      label: "Explore",       min: "general", group: "general" },
   { href: "/data/search",   label: "Search",        min: "general", group: "general" },
+  { href: "/data/queries",  label: "My Queries",    min: "general", group: "general" },
   { href: "/data/review",   label: "Review",        min: "key",     group: "key" },
   { href: "/data/inspect",  label: "Inspect",       min: "key",     group: "key" },
   { href: "/data/admin",    label: "Admin",         min: "admin",   group: "admin" },
