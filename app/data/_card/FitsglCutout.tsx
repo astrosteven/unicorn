@@ -159,6 +159,8 @@ export function FitsglCutout({
   fovArcsec = DEFAULT_FOV_ARCSEC,
   trilogy,
   showLabel = true,
+  sources,
+  onSourceClick,
 }: {
   field: string;
   ra: number;
@@ -166,6 +168,10 @@ export function FitsglCutout({
   fovArcsec?: number;
   trilogy?: Partial<TrilogyParams>;  // per-instance stretch override
   showLabel?: boolean;
+  // Catalog sources to outline on the cutout. a/b are semi-axes IN IMAGE PIXELS (already
+  // ×kron); theta in degrees (THETA_IMAGE). target = the source the card is centered on.
+  sources?: { id: number; x: number; y: number; a: number; b: number; theta: number; target?: boolean }[];
+  onSourceClick?: (id: number) => void;
 }) {
   const base = useMemo(() => resolveBase(field), [field]);
   const [status, setStatus] = useState<Status>(base ? "loading" : "empty");
@@ -182,6 +188,12 @@ export function FitsglCutout({
   const trilogyRef = useRef(trilogy);
   trilogyRef.current = trilogy;
   const placedRef = useRef(false);
+  // Segmap-style source overlay: outline each catalog source (Kron ellipse) on the cutout,
+  // computed by mapping image-pixel ellipse points through the viewer's imageToScreen (so it
+  // tracks the display's zoom/flip/rotation exactly). Recomputed for a few frames after the
+  // camera settles / the target changes. boxRef = the cutout box (for client→local coords).
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [ellipses, setEllipses] = useState<{ id: number; pts: string; target: boolean }[]>([]);
   // On-card color stretch (persisted noiselum), live-adjustable via the slider below the cutout.
   const [nlum, setNlum] = useState(DEFAULT_COLOR_NLUM);
   const nlumRef = useRef(nlum);
@@ -300,6 +312,40 @@ export function FitsglCutout({
     return () => clearTimeout(t);
   }, [prep, status, reloadKey]);
 
+  // Recompute the source-ellipse overlay once the cutout is drawn + whenever the target or
+  // source list changes. Poll a handful of frames so we catch the camera settling (the view
+  // is static afterwards — no pan/zoom), then stop.
+  useEffect(() => {
+    if (status !== "ready" || !sources || !sources.length) { setEllipses([]); return; }
+    let raf = 0, n = 0;
+    const compute = () => {
+      const h = handleRef.current, box = boxRef.current;
+      if (h && box) {
+        const rect = box.getBoundingClientRect();
+        const N = 28;
+        const out: { id: number; pts: string; target: boolean }[] = [];
+        for (const s of sources) {
+          const th = (s.theta || 0) * Math.PI / 180, ct = Math.cos(th), stt = Math.sin(th);
+          const pts: string[] = [];
+          let ok = true;
+          for (let k = 0; k < N; k++) {
+            const phi = (2 * Math.PI * k) / N;
+            const ix = s.x + s.a * Math.cos(phi) * ct - s.b * Math.sin(phi) * stt;
+            const iy = s.y + s.a * Math.cos(phi) * stt + s.b * Math.sin(phi) * ct;
+            const p = h.imageToScreen(ix, iy);
+            if (!p) { ok = false; break; }
+            pts.push(`${(p.x - rect.left).toFixed(1)},${(p.y - rect.top).toFixed(1)}`);
+          }
+          if (ok) out.push({ id: s.id, pts: pts.join(" "), target: !!s.target });
+        }
+        setEllipses(out);
+      }
+      if (++n < 24) raf = requestAnimationFrame(compute);
+    };
+    compute();
+    return () => cancelAnimationFrame(raf);
+  }, [status, ra, dec, fovArcsec, sources]);
+
   if (!base || status === "empty") return null;
 
   return (
@@ -310,6 +356,7 @@ export function FitsglCutout({
         </div>
       )}
       <div
+        ref={boxRef}
         style={{
           position: "relative",
           width: CUTOUT_PX,
@@ -364,6 +411,21 @@ export function FitsglCutout({
               }}
             />
           </div>
+        )}
+        {status === "ready" && ellipses.length > 0 && (
+          <svg width={CUTOUT_PX} height={CUTOUT_PX} viewBox={`0 0 ${CUTOUT_PX} ${CUTOUT_PX}`}
+               style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+            {ellipses.map(e => (
+              <polygon key={e.id} points={e.pts}
+                fill={e.target ? "rgba(240,192,112,0.06)" : "none"}
+                stroke={e.target ? "var(--amber)" : "rgba(130,180,255,0.85)"}
+                strokeWidth={e.target ? 1.8 : 1}
+                onClick={onSourceClick ? () => onSourceClick(e.id) : undefined}
+                style={{ pointerEvents: onSourceClick ? "auto" : "none", cursor: onSourceClick ? "pointer" : "default" }}>
+                <title>{`ID ${e.id}${e.target ? " (this source)" : ""}`}</title>
+              </polygon>
+            ))}
+          </svg>
         )}
       </div>
       {showLabel && (

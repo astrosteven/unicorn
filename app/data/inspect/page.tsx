@@ -12,7 +12,7 @@ import dynamic from "next/dynamic";
 import type { Session } from "@supabase/supabase-js";
 import { supabase, type Inspection, type InspectDecision } from "@/lib/supabase";
 import {
-  SEARCH_FIELDS, loadField, loadDb, fetchObject, SEDPlot, PZPlot, clearInspectCaches,
+  SEARCH_FIELDS, loadField, loadDb, fetchObject, cachedIndex, SEDPlot, PZPlot, ResultCard, clearInspectCaches,
   type SourceResult, type FieldConfig, type FieldIndex,
 } from "@/app/data/_card/objectCard";
 import { precacheStamp } from "@/lib/fitsglStamp";
@@ -593,6 +593,35 @@ function InspectCard({ src }: { src: SourceResult }) {
     ? [src.selFail.det ? "detection" : null, src.selFail.pix ? "image" : null,
        src.selFail.z ? (src.selFail.zsub.length ? `photo-z (${src.selFail.zsub.join(", ")})` : "photo-z") : null].filter(Boolean)
     : [];
+  const fc = useMemo(() => SEARCH_FIELDS.find(f => f.field === src.field), [src.field]);
+  // Catalog sources inside the cutout FOV → Kron-ellipse outlines on the color cutout
+  // (target source gold, neighbors blue). Pixel box filter off the index's x/a_image/etc.
+  const overlaySources = useMemo(() => {
+    const idx = fc ? cachedIndex(fc.field) : undefined;
+    if (!idx || ra == null || dec == null || !idx.x || !idx.a_image) return undefined;
+    const r0 = Number(ra), d0 = Number(dec), cosd = Math.cos(d0 * Math.PI / 180);
+    const half = (INSPECT_FOV / 2 / 3600) * 1.4;   // deg + margin so edge sources still show
+    const tid = Number(src.row["ID"]);
+    const out: { id: number; x: number; y: number; a: number; b: number; theta: number; target?: boolean }[] = [];
+    for (let i = 0; i < idx.n; i++) {
+      const xi = idx.x[i], ai = idx.a_image[i];
+      if (xi == null || ai == null) continue;
+      if (Math.abs((idx.ra[i] - r0) * cosd) > half || Math.abs(idx.dec[i] - d0) > half) continue;
+      const kron = idx.kron_radius?.[i] ?? 1;
+      out.push({ id: idx.id[i], x: xi, y: idx.y![i]!, a: ai * kron, b: (idx.b_image?.[i] ?? ai) * kron, theta: idx.theta?.[i] ?? 0, target: idx.id[i] === tid });
+    }
+    return out;
+  }, [fc, ra, dec, src]);
+  // Click a source outline → pop up its full card (same card as the query page).
+  const [popupId, setPopupId] = useState<number | null>(null);
+  const [popupSrc, setPopupSrc] = useState<SourceResult | null | "loading">(null);
+  useEffect(() => {
+    if (popupId == null || !fc) { setPopupSrc(null); return; }
+    setPopupSrc("loading");
+    let cancel = false;
+    (async () => { const { zg } = await loadField(fc); const s = await fetchObject(fc, popupId, zg); if (!cancel) setPopupSrc(s ?? null); })();
+    return () => { cancel = true; };
+  }, [popupId, fc]);
   return (
     <div className="card" style={{ padding: "0.8rem 1rem" }}>
       <div className="mono" style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "6px 12px", fontSize: "0.76rem", marginBottom: fails.length ? "4px" : "8px" }}>
@@ -630,12 +659,27 @@ function InspectCard({ src }: { src: SourceResult }) {
         </div>
         {ra != null && dec != null && (
           <div style={{ flexShrink: 0 }}>
-            <FitsglCutout field={(src.field ?? "").toUpperCase()} ra={Number(ra)} dec={Number(dec)} fovArcsec={INSPECT_FOV} trilogy={INSPECT_TRILOGY} />
+            <FitsglCutout field={(src.field ?? "").toUpperCase()} ra={Number(ra)} dec={Number(dec)} fovArcsec={INSPECT_FOV} trilogy={INSPECT_TRILOGY} sources={overlaySources} onSourceClick={setPopupId} />
           </div>
         )}
       </div>
       {ra != null && dec != null && Number.isFinite(Number(ra)) && Number.isFinite(Number(dec)) && (
         <LiveStampMontage field={src.field} ra={Number(ra)} dec={Number(dec)} bands={INSPECT_STAMP_BANDS} fallbackUrl={src.stampUrl} aperSNR={src.aperSNR} />
+      )}
+      {popupId != null && (
+        <div onClick={() => setPopupId(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(8,6,18,0.8)", zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", overflow: "auto", padding: "4vh 1rem" }}>
+          <div onClick={e => e.stopPropagation()} style={{ maxWidth: "820px", width: "100%" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+              <span className="mono" style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{src.field} · ID {popupId}</span>
+              <button onClick={() => setPopupId(null)} className="mono"
+                style={{ background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.35)", borderRadius: "5px", padding: "4px 12px", cursor: "pointer", fontSize: "0.8rem" }}>close ✕</button>
+            </div>
+            {popupSrc === "loading" && <div className="card" style={{ padding: "1.5rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace", fontSize: "0.8rem" }}>loading card…</div>}
+            {popupSrc === null && <div className="card" style={{ padding: "1.5rem", color: "var(--text-muted)", fontSize: "0.82rem" }}>No card for ID {popupId}.</div>}
+            {popupSrc && popupSrc !== "loading" && <ResultCard src={popupSrc} />}
+          </div>
+        </div>
       )}
     </div>
   );
