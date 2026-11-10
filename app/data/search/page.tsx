@@ -9,6 +9,8 @@ import ScatterPlot from "./ScatterPlot";  // interactive SVG scatter of the matc
 import { fetchStamp, type StampResult } from "@/lib/photometry";  // live FITS cutouts (Worker /stamp) for the card download
 import { precacheStamp, fetchFitsglStamp, fitsglStampAvailable } from "@/lib/fitsglStamp";  // fitsgl-tile stamps + prefetch
 import { logUsage } from "@/lib/usage";  // per-user activity (admin dashboard)
+import { supabase } from "@/lib/supabase";  // saved queries (logged-in users)
+import type { Session } from "@supabase/supabase-js";
 // Shared object-card module (data wiring + card renderer), also used by the Explore/Map page.
 import {
   CARD_STAMP_BANDS,
@@ -745,6 +747,14 @@ function ColorCapture({ mod, prep, ra, dec, onDone }: {
 
 export default function SearchPage() {
   const [mode, setMode] = useState<SearchMode>("id");
+  // Logged-in session (for "Save query" — anonymous users see a sign-in hint instead).
+  const [session, setSession] = useState<Session | null>(null);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
   const [idInput, setIdInput] = useState("");
   const [nameInput, setNameInput] = useState("");
   const [coordInput, setCoordInput] = useState("");   // single "RA, Dec" (deg) entry
@@ -1114,6 +1124,32 @@ export default function SearchPage() {
     if (!objs.length) return;
     try { localStorage.setItem("inspectQueue", JSON.stringify({ label: queryInput, ts: Date.now(), objects: objs })); } catch { /* quota */ }
     window.open("/unicorn/data/inspect", "_blank");
+  }
+
+  // Save the current query to the signed-in user's PRIVATE list (public.saved_queries) for later
+  // personal inspection. Snapshots the matched ids at save time (frozen set, v0.99). Capped so a
+  // pathological "everything" query can't blow the row size. RLS scopes the row to this user.
+  const SAVE_CAP = 50000;
+  async function saveQuery() {
+    if (!session) { window.alert("Sign in (Access Data) to save queries to your list."); return; }
+    const all = queryAllRef.current;
+    if (!all.length) { window.alert("Run a query with results first."); return; }
+    const name = window.prompt("Name this saved query:", (mode === "query" ? queryInput : `${mode} search`).slice(0, 80));
+    if (!name) return;
+    const byField: Record<string, number[]> = {};
+    let n = 0;
+    for (const m of all) { if (n >= SAVE_CAP) break; (byField[m.fc.field] ??= []).push(m.id); n++; }
+    const kept = Math.min(all.length, SAVE_CAP);
+    setSaveState("saving");
+    const { error } = await supabase.from("saved_queries").insert({
+      user_id: session.user.id, name,
+      fields: Object.keys(byField),
+      where_expr: mode === "query" ? queryInput : `[${mode}]`,
+      obj_ids: byField, catalog_version: "0.99", n_results: kept,
+    });
+    if (error) { setSaveState("error"); window.alert("Save failed: " + error.message); return; }
+    setSaveState("saved"); setTimeout(() => setSaveState("idle"), 2500);
+    window.alert(`Saved "${name}" — ${kept.toLocaleString()} sources (v0.99)${all.length > SAVE_CAP ? ` (capped from ${all.length.toLocaleString()})` : ""}. Open it under “My Queries”.`);
   }
 
   // Hand the current query's matched objects to the color map (via localStorage — must
@@ -2185,6 +2221,11 @@ export default function SearchPage() {
               title="Open these matched objects in the visual inspector"
               style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--accent2)", border: "1px solid rgba(239,159,205,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer" }}>
               ⇢ inspect these ({Math.min(queryTotal, INSPECT_HANDOFF_CAP).toLocaleString()})
+            </button>
+            <button onClick={saveQuery} className="mono"
+              title={session ? "Save this query to your private list for later personal inspection" : "Sign in (Access Data) to save queries"}
+              style={{ marginLeft: "8px", background: "var(--accent-dim)", color: "var(--amber)", border: "1px solid rgba(240,192,112,0.3)", borderRadius: "5px", padding: "7px 14px", fontSize: "0.75rem", cursor: "pointer", opacity: session ? 1 : 0.6 }}>
+              {saveState === "saving" ? "saving…" : saveState === "saved" ? "✓ saved" : "★ save query"}
             </button>
             <button onClick={downloadRegion} className="mono"
               title="Download a DS9 region file (.reg) — 0.5″ fk5 circles for the full matched list"

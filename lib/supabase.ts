@@ -42,3 +42,28 @@ export type Inspection = {
   inspector: string | null;
   updated_at?: string;
 };
+
+// Saved queries + PRIVATE per-user inspection (public.saved_queries / public.query_inspections).
+// Separate from the global `inspections` table: each user's own workspace (RLS scoped to auth.uid(),
+// plus an admin SELECT policy). Decisions here NEVER touch the catalog `selected` flag.
+export type SavedQuery = {
+  id?: string;
+  user_id?: string;
+  name: string;
+  fields: string[] | null;
+  where_expr: string | null;
+  obj_ids: Record<string, number[]> | null;   // snapshot {field:[ids]} matched at save time
+  catalog_version: string;
+  n_results: number | null;
+  created_at?: string;
+};
+export type QueryInspection = {
+  id?: string;
+  user_id?: string;
+  query_id: string;
+  field: string;
+  obj_id: number;
+  decision: InspectDecision;   // same keep/undecided/remove scale, private scope
+  notes: string | null;
+  updated_at?: string;
+};
