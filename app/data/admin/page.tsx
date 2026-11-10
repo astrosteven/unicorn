@@ -34,6 +34,9 @@ export default function AdminPage() {
   // Per-day site activity (visits / searches / active users), from admin_daily_activity RPC.
   type DailyRow = { day: string; n_visits: number; n_searches: number; n_downloads: number; n_active_users: number };
   const [daily, setDaily] = useState<DailyRow[] | null>(null);
+  // Admin view of ALL users' saved queries (the admin RLS policy lets us read everyone's).
+  type UQRow = { id: string; user_id: string; name: string; where_expr: string | null; catalog_version: string; n_results: number | null; created_at: string; email: string; n_inspected: number };
+  const [uq, setUq] = useState<UQRow[] | null>(null);
   const load = useCallback(async () => {
     setErr("");
     // Daily activity rollup (best-effort; null if the RPC isn't installed yet).
@@ -57,6 +60,24 @@ export default function AdminPage() {
       return (b.created_at ?? "").localeCompare(a.created_at ?? "");
     });
     setRows(sorted);
+
+    // User Queries: everyone's saved queries + a per-query decision count (joined to emails).
+    const sq = await supabase.from("saved_queries")
+      .select("id,user_id,name,where_expr,catalog_version,n_results,created_at")
+      .order("created_at", { ascending: false });
+    if (!sq.error && sq.data) {
+      const [prof, qi] = await Promise.all([
+        supabase.from("profiles").select("user_id,email"),
+        supabase.from("query_inspections").select("query_id"),
+      ]);
+      const emailBy = new Map<string, string>();
+      for (const p of (prof.data ?? []) as { user_id: string; email: string | null }[]) emailBy.set(p.user_id, p.email ?? "");
+      const cntBy = new Map<string, number>();
+      for (const d of (qi.data ?? []) as { query_id: string }[]) cntBy.set(d.query_id, (cntBy.get(d.query_id) ?? 0) + 1);
+      setUq((sq.data as Omit<UQRow, "email" | "n_inspected">[]).map(q => ({
+        ...q, email: emailBy.get(q.user_id) || q.user_id.slice(0, 8) + "…", n_inspected: cntBy.get(q.id) ?? 0,
+      })));
+    } else setUq([]);
   }, []);
 
   useEffect(() => { if (role === "admin") load(); }, [role, load]);
@@ -201,6 +222,44 @@ export default function AdminPage() {
           </tbody>
         </table>
       </div>
+
+      {/* User Queries — admin-only view of everyone's saved queries (debugging). */}
+      {uq && uq.length > 0 && (
+        <div style={{ marginTop: "2.5rem" }}>
+          <h2 className="page-title" style={{ fontSize: "1.05rem", color: "var(--text)", marginBottom: "4px" }}>User Queries</h2>
+          <p style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginBottom: "10px" }}>
+            All users&apos; saved queries ({uq.length}) — their private workspaces, listed here for debugging. Their inspection decisions never touch the catalog.
+          </p>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78rem", fontFamily: "'Space Mono', monospace" }}>
+              <thead>
+                <tr style={{ color: "var(--text-muted)" }}>
+                  <th style={{ ...td, textAlign: "left" }}>user</th>
+                  <th style={{ ...td, textAlign: "left" }}>name</th>
+                  <th style={{ ...td, textAlign: "left" }}>query</th>
+                  <th style={{ ...td, textAlign: "right" }}>v</th>
+                  <th style={{ ...td, textAlign: "right" }}>sources</th>
+                  <th style={{ ...td, textAlign: "right" }}>inspected</th>
+                  <th style={{ ...td, textAlign: "left" }}>saved</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uq.map(q => (
+                  <tr key={q.id}>
+                    <td style={td}>{q.email}</td>
+                    <td style={td}>{q.name}</td>
+                    <td style={{ ...td, color: "var(--text-dim)", maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={q.where_expr ?? ""}>{q.where_expr}</td>
+                    <td style={{ ...td, textAlign: "right" }}>{q.catalog_version}</td>
+                    <td style={{ ...td, textAlign: "right" }}>{(q.n_results ?? 0).toLocaleString()}</td>
+                    <td style={{ ...td, textAlign: "right" }}>{q.n_inspected}</td>
+                    <td style={{ ...td, color: "var(--text-dim)" }}>{q.created_at.slice(0, 10)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

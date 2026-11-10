@@ -24,15 +24,19 @@ export default function MyQueriesPage() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [err, setErr] = useState("");
   const load = useCallback(async () => {
+    if (!session) return;
     setErr("");
+    // Filter to OWN rows explicitly: RLS scopes regular users to their own, but the admin
+    // policy would otherwise return everyone's here. Admin sees all under /data/admin → User Queries.
     const { data, error } = await supabase.from("saved_queries")
       .select("id,name,fields,where_expr,catalog_version,n_results,created_at")
+      .eq("user_id", session.user.id)
       .order("created_at", { ascending: false });
     if (error) { setErr(error.message); setRows([]); return; }
     const base = (data ?? []) as Row[];
     // Per-query decision progress (N+1, fine for a personal list).
     for (const q of base) {
-      const { data: d } = await supabase.from("query_inspections").select("decision").eq("query_id", q.id);
+      const { data: d } = await supabase.from("query_inspections").select("decision").eq("query_id", q.id).eq("user_id", session.user.id);
       const c: Prog = { keep: 0, remove: 0, undecided: 0, total: d?.length ?? 0 };
       for (const x of (d ?? []) as { decision: string }[]) {
         if (x.decision === "keep") c.keep++; else if (x.decision === "remove") c.remove++;
@@ -41,7 +45,7 @@ export default function MyQueriesPage() {
       q._prog = c;
     }
     setRows(base);
-  }, []);
+  }, [session]);
   useEffect(() => { if (session) load(); }, [session, load]);
 
   async function rename(q: Row) {
