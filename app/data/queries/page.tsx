@@ -12,6 +12,14 @@ import { supabase, type SavedQuery } from "@/lib/supabase";
 type Prog = { keep: number; remove: number; undecided: number; total: number };
 type Row = SavedQuery & { id: string; created_at: string; _prog?: Prog };
 
+// Link to re-open a saved query in Search (edit / re-run). Query-mode queries round-trip via
+// the existing ?q= contract (Search seeds the box + auto-runs). Special modes (by-name/id/coord/
+// map, stored as "[mode]") have no runnable expression → just open Search.
+const searchHref = (q: { where_expr?: string | null }) =>
+  q.where_expr && !q.where_expr.startsWith("[")
+    ? `/data/search?q=${encodeURIComponent(q.where_expr)}`
+    : "/data/search";
+
 export default function MyQueriesPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
@@ -34,17 +42,20 @@ export default function MyQueriesPage() {
       .order("created_at", { ascending: false });
     if (error) { setErr(error.message); setRows([]); return; }
     const base = (data ?? []) as Row[];
-    // Per-query decision progress (N+1, fine for a personal list).
-    for (const q of base) {
-      const { data: d } = await supabase.from("query_inspections").select("decision").eq("query_id", q.id).eq("user_id", session.user.id);
-      const c: Prog = { keep: 0, remove: 0, undecided: 0, total: d?.length ?? 0 };
-      for (const x of (d ?? []) as { decision: string }[]) {
-        if (x.decision === "keep") c.keep++; else if (x.decision === "remove") c.remove++;
-        else if (x.decision === "undecided") c.undecided++;
-      }
-      q._prog = c;
+    setRows(base);     // show the query cards immediately; progress badges fill in a beat later
+    // Decision progress for ALL queries in ONE fetch (was an N+1 — a separate round-trip per
+    // saved query, which made the list slow once a user had several), then aggregate by query_id.
+    const { data: dec } = await supabase.from("query_inspections")
+      .select("query_id,decision").eq("user_id", session.user.id);
+    const byQ = new Map<string, Prog>();
+    for (const x of (dec ?? []) as { query_id: string; decision: string }[]) {
+      const c = byQ.get(x.query_id) ?? { keep: 0, remove: 0, undecided: 0, total: 0 };
+      c.total++;
+      if (x.decision === "keep") c.keep++; else if (x.decision === "remove") c.remove++;
+      else if (x.decision === "undecided") c.undecided++;
+      byQ.set(x.query_id, c);
     }
-    setRows(base);
+    setRows(base.map(q => ({ ...q, _prog: byQ.get(q.id) ?? { keep: 0, remove: 0, undecided: 0, total: 0 } })));
   }, [session]);
   useEffect(() => { if (session) load(); }, [session, load]);
 
@@ -116,6 +127,8 @@ export default function MyQueriesPage() {
                 style={{ textDecoration: "none", background: "var(--accent-dim)", color: "var(--accent)", border: "1px solid rgba(196,144,216,0.35)", borderRadius: "5px", padding: "5px 14px", fontSize: "0.76rem" }}>
                 inspect →
               </Link>
+              <Link href={searchHref(q)} className="mono" title="Open this query in Search to edit or re-run it"
+                style={{ textDecoration: "none", color: "var(--text-dim)", fontSize: "0.72rem" }}>↻ rerun</Link>
               <button onClick={() => rename(q)} className="mono" style={{ background: "none", border: "none", color: "var(--text-dim)", fontSize: "0.72rem", cursor: "pointer" }}>rename</button>
               <button onClick={() => del(q)} className="mono" style={{ background: "none", border: "none", color: "var(--text-dim)", fontSize: "0.72rem", cursor: "pointer" }}>delete</button>
             </div>

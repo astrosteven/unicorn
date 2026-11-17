@@ -192,6 +192,10 @@ function Inner() {
         <h1 className="page-title" style={{ fontSize: "1.5rem", color: "var(--text)" }}>{query?.name ?? "…"}</h1>
         <span className="mono" style={{ fontSize: "0.72rem", color: "var(--text-dim)" }}>
           <Link href="/data/queries" style={{ color: "var(--accent)", textDecoration: "none" }}>← My Queries</Link>
+          {query && query.where_expr && !query.where_expr.startsWith("[") && (
+            <>  ·  <Link href={`/data/search?q=${encodeURIComponent(query.where_expr)}`} title="Open this query in Search to edit or re-run it"
+              style={{ color: "var(--accent)", textDecoration: "none" }}>↻ open in Search</Link></>
+          )}
           {query && <>  ·  v{query.catalog_version} · {(query.n_results ?? 0).toLocaleString()} sources</>}
           {prog && <>  ·  inspected {prog.total}/{rows!.length}  (<span style={{ color: "var(--green)" }}>{prog.keep}k</span>/<span style={{ color: "var(--amber)" }}>{prog.undecided}u</span>/<span style={{ color: "var(--red)" }}>{prog.remove}r</span>)</>}
           {"  ·  "}
