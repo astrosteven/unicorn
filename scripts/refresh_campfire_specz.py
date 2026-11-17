@@ -116,6 +116,32 @@ CAMPFIRE_QUALITY = "3,4"
 PAGE = 5000   # rows per page (max 10000)
 
 
+_TRANSIENT_HTTP = {429, 500, 502, 503, 504}
+
+
+def _get_json_with_retry(req, tries=5, base_delay=5):
+    """urlopen(req) + json.load, retrying with linear backoff on transient upstream failures.
+    campfire sits behind Cloudflare and intermittently returns 502/503/504 — a single blip
+    should NOT fail the daily cron (it just emails a false alarm). Re-raises after `tries`."""
+    import time, urllib.request, urllib.error
+    for attempt in range(1, tries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code in _TRANSIENT_HTTP and attempt < tries:
+                wait = base_delay * attempt
+                print(f"  campfire HTTP {e.code} (attempt {attempt}/{tries}) — retrying in {wait}s", flush=True)
+                time.sleep(wait); continue
+            raise
+        except urllib.error.URLError as e:   # connection reset / DNS / timeout
+            if attempt < tries:
+                wait = base_delay * attempt
+                print(f"  campfire connection error ({e.reason}; attempt {attempt}/{tries}) — retrying in {wait}s", flush=True)
+                time.sleep(wait); continue
+            raise
+
+
 def fetch_campfire_catalog():
     """Pull the live campfire spec-z catalog from its authenticated REST API (/api/v1/objects,
     Bearer key; a no-access account → public programs only). Cursor-paginated; the response is
@@ -135,8 +161,7 @@ def fetch_campfire_catalog():
             # "Python-urllib/*" User-Agent (error 1010). Send a real UA so the request reaches the API.
             "User-Agent": "Mozilla/5.0 (compatible; unicorn-specz-daily/1.0; +https://astrosteven.github.io/unicorn)",
         })
-        with urllib.request.urlopen(req, timeout=120) as r:
-            body = json.load(r)
+        body = _get_json_with_retry(req)
         rows.extend(body.get("data", []))
         cursor = (body.get("pagination") or {}).get("next_cursor")
         if not cursor:
