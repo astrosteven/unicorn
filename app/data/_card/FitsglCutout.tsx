@@ -194,6 +194,8 @@ export function FitsglCutout({
   // camera settles / the target changes. boxRef = the cutout box (for client→local coords).
   const boxRef = useRef<HTMLDivElement>(null);
   const [ellipses, setEllipses] = useState<{ id: number; pts: string; target: boolean }[]>([]);
+  // Aperture-overlay on/off toggle (default on). Only surfaced when this cutout has sources.
+  const [showAper, setShowAper] = useState(true);
   // On-card color stretch (persisted noiselum), live-adjustable via the slider below the cutout.
   const [nlum, setNlum] = useState(DEFAULT_COLOR_NLUM);
   const nlumRef = useRef(nlum);
@@ -412,7 +414,7 @@ export function FitsglCutout({
             />
           </div>
         )}
-        {status === "ready" && ellipses.length > 0 && (
+        {status === "ready" && showAper && ellipses.length > 0 && (
           <svg width={CUTOUT_PX} height={CUTOUT_PX} viewBox={`0 0 ${CUTOUT_PX} ${CUTOUT_PX}`}
                style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
             {ellipses.map(e => (
@@ -426,6 +428,18 @@ export function FitsglCutout({
               </polygon>
             ))}
           </svg>
+        )}
+        {status === "ready" && sources && sources.length > 0 && (
+          <button onClick={() => setShowAper(s => !s)}
+            title={showAper ? "Hide photometry apertures" : "Show photometry apertures"}
+            style={{ position: "absolute", top: 6, right: 6, zIndex: 3, pointerEvents: "auto",
+              fontFamily: "'Space Mono', monospace", fontSize: "0.58rem", lineHeight: 1,
+              background: showAper ? "rgba(240,192,112,0.9)" : "rgba(13,10,26,0.72)",
+              color: showAper ? "#0d0a1a" : "var(--text-muted)",
+              border: `1px solid ${showAper ? "var(--amber)" : "var(--border)"}`,
+              borderRadius: "4px", padding: "3px 6px", cursor: "pointer", backdropFilter: "blur(2px)" }}>
+            ⬭ aper
+          </button>
         )}
       </div>
       {showLabel && (

@@ -376,5 +376,18 @@
   "z_type": "phot",
   "ref": "Kokorev+2025 (ApJL)",
   "note": "Robust z~15.8 photometric candidate behind Abell S1063."
+ },
+ {
+  "name": "CAPERS-LRD-z9",
+  "aka": [
+   "CAPERS-COSMOS-119334"
+  ],
+  "field": "COSMOS/PRIMER-COSMOS",
+  "ra": 150.13625,
+  "dec": 2.30803,
+  "z": 9.288,
+  "z_type": "spec",
+  "ref": "Taylor+2025",
+  "note": "The highest-redshift broad-line AGN known — a gas-enshrouded Little Red Dot at z=9.288 (CAPERS NIRSpec)."
  }
 ]
