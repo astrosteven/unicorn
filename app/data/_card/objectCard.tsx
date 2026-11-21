@@ -191,6 +191,13 @@ export function RgbStamp({ url }: { url: string }) {
 
 // ---- data wiring -----------------------------------------------------------
 export const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalogs";
+// Optional fast mirror of the per-object CARD files (web/cards/) on Cloudflare R2 (zero egress,
+// CDN-fronted → not subject to Corral/TACC latency). EMPTY = disabled (read everything from Corral).
+// When set to the R2 public base — same path layout as Corral, i.e. ".../Catalogs" with the bucket
+// holding Legacy/<FIELD>/web/cards/... — cards read from R2 first and FALL BACK to Corral on any
+// failure (so a partial or hiccuping R2 never breaks a card). Stamps/RGB/index stay on Corral.
+// Flip the whole migration on/off by setting/blanking this one string. See scripts/publish_to_r2.sh.
+export const R2_BASE = "";
 // 2026-09: the pre-AS1063 fields were moved under Catalogs/Legacy/ on Corral; AS1063 (and any
 // future new field) lives at the Catalogs/ top level. fieldCatDir() returns the catalog path
 // segment for a field's per-object files (cards/stamps/rgb + Corral index fallback). To REVERT the
@@ -647,12 +654,26 @@ const _cardMetaPromise: Record<string, Promise<{ bucket: number } | null>> = {};
 const _cardIdxCache: Record<string, Record<string, [number, number]> | null> = {};   // `${field}:${bucket}`
 const _cardIdxPromise: Record<string, Promise<Record<string, [number, number]> | null>> = {};
 
-async function cardMeta(objBase: string, fc: FieldConfig): Promise<{ bucket: number } | null> {
+// Per-object CARD read bases, in priority order. Cards (SED/P(z)) can be mirrored to R2 (fast,
+// TACC-independent); everything else stays on Corral. With R2_BASE set we read cards from R2 and
+// fall back to Corral on any failure. A ?data= override wins and is used alone (dev/custom host).
+function objWebBases(fc: FieldConfig): string[] {
+  const seg = `${fieldCatDir(fc)}/web`;
+  const ov = dataOverride();
+  if (ov) return [`${ov}/${seg}`];
+  const corral = `${CORRAL_DEFAULT}/${seg}`;
+  return R2_BASE ? [`${R2_BASE}/${seg}`, corral] : [corral];
+}
+
+async function cardMeta(bases: string[], fc: FieldConfig): Promise<{ bucket: number } | null> {
   if (fc.field in _cardMeta) return _cardMeta[fc.field];
   if (fc.field in _cardMetaPromise) return _cardMetaPromise[fc.field];
   const p = (async () => {
-    try { return await fetchJsonMaybeGz(`${objBase}/cards/${fc.prefix}_cards.manifest.json`) as { bucket: number }; }
-    catch { return null; }   // no manifest → legacy per-object layout
+    for (const b of bases) {   // R2 first, Corral fallback; 404 on all bases → legacy per-object layout
+      try { return await fetchJsonMaybeGz(`${b}/cards/${fc.prefix}_cards.manifest.json`) as { bucket: number }; }
+      catch { /* try next base */ }
+    }
+    return null;
   })();
   _cardMetaPromise[fc.field] = p;
   const m = await p;
@@ -661,13 +682,16 @@ async function cardMeta(objBase: string, fc: FieldConfig): Promise<{ bucket: num
   return m;
 }
 
-async function cardIdx(objBase: string, fc: FieldConfig, bucket: number): Promise<Record<string, [number, number]> | null> {
+async function cardIdx(bases: string[], fc: FieldConfig, bucket: number): Promise<Record<string, [number, number]> | null> {
   const key = `${fc.field}:${bucket}`;
   if (key in _cardIdxCache) return _cardIdxCache[key];
   if (key in _cardIdxPromise) return _cardIdxPromise[key];
   const p = (async () => {
-    try { return await fetchJsonMaybeGz(`${objBase}/cards/${fc.prefix}_cards_${bucket}.idx.json`) as Record<string, [number, number]>; }
-    catch { return null; }   // bucket has no objects
+    for (const b of bases) {   // R2 first, Corral fallback; absent on all → bucket has no objects
+      try { return await fetchJsonMaybeGz(`${b}/cards/${fc.prefix}_cards_${bucket}.idx.json`) as Record<string, [number, number]>; }
+      catch { /* try next base */ }
+    }
+    return null;
   })();
   _cardIdxPromise[key] = p;
   const idx = await p;
@@ -678,40 +702,48 @@ async function cardIdx(objBase: string, fc: FieldConfig, bucket: number): Promis
 
 // Fetch one packed card by range-reading its gzip'd blob and inflating it. Returns null if the
 // object isn't present in its bucket (→ genuinely no card).
-async function fetchPackedCard(objBase: string, fc: FieldConfig, id: number, bucketSize: number): Promise<any | null> {
+async function fetchPackedCard(bases: string[], fc: FieldConfig, id: number, bucketSize: number): Promise<any | null> {
   const bucket = Math.floor(id / bucketSize);
-  const idx = await cardIdx(objBase, fc, bucket);
+  const idx = await cardIdx(bases, fc, bucket);
   const ent = idx?.[String(id)];
   if (!ent) return null;
   const [off, len] = ent;
   return runT(async (signal) => {
-    const r = await fetch(`${objBase}/cards/${fc.prefix}_cards_${bucket}.bin`, {
-      headers: { Range: `bytes=${off}-${off + len - 1}` }, signal,
-    });
-    if (!r.ok) return null;
-    let bytes = new Uint8Array(await r.arrayBuffer());   // under `signal` → mid-body stall aborts
-    // If the server ignored Range and sent the whole pack (200, not 206), slice to our card.
-    if (r.status === 200 && bytes.length > len) bytes = bytes.slice(off, off + len);
-    const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
-    return JSON.parse(text);
+    for (const b of bases) {   // R2 first, Corral fallback — the .bin is byte-identical across mirrors
+      try {
+        const r = await fetch(`${b}/cards/${fc.prefix}_cards_${bucket}.bin`, {
+          headers: { Range: `bytes=${off}-${off + len - 1}` }, signal,
+        });
+        if (!r.ok) continue;
+        let bytes = new Uint8Array(await r.arrayBuffer());   // under `signal` → mid-body stall aborts
+        // If the server ignored Range and sent the whole pack (200, not 206), slice to our card.
+        if (r.status === 200 && bytes.length > len) bytes = bytes.slice(off, off + len);
+        const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+        return JSON.parse(text);
+      } catch { /* aborted or network error → try next base */ }
+    }
+    return null;
   });
 }
 
 export async function fetchObject(fc: FieldConfig, id: number, zg: ZGrid): Promise<SourceResult | null> {
   try {
-    const objBase = `${corralBase()}/${fieldCatDir(fc)}/web`;
+    const bases = objWebBases(fc);   // R2 (if enabled) → Corral fallback; cards only
     let o: any;
-    const meta = await cardMeta(objBase, fc);
+    const meta = await cardMeta(bases, fc);
     if (meta && meta.bucket > 0) {
       // Packed layout: range-read the single card. Absent from its bucket → no card.
-      o = await fetchPackedCard(objBase, fc, id, meta.bucket);
+      o = await fetchPackedCard(bases, fc, id, meta.bucket);
       if (o == null) return null;
     } else {
       // Legacy per-object cards under web/cards/ (older uploads used web/objects/).
       o = await runT(async (signal) => {
-        let r = await fetch(`${objBase}/cards/${fc.prefix}_${id}.json`, { signal });
-        if (!r.ok) r = await fetch(`${objBase}/objects/${fc.prefix}_${id}.json`, { signal });
-        return r.ok ? r.json() : null;
+        for (const b of bases) {
+          let r = await fetch(`${b}/cards/${fc.prefix}_${id}.json`, { signal });
+          if (!r.ok) r = await fetch(`${b}/objects/${fc.prefix}_${id}.json`, { signal });
+          if (r.ok) return r.json();
+        }
+        return null;
       });
       if (o == null) return null;
     }
