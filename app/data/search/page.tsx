@@ -247,6 +247,10 @@ function dedupeByPosition(all: MatchEntry[], radiusArcsec: number): MatchEntry[]
   return all.filter((_, i) => keep[i]);
 }
 const DEDUP_RADIUS_ARCSEC = 0.05;
+// Upload-List RA/Dec match radius (arcsec). Fixed (the upload box has no per-entry radius field,
+// unlike By-RA/Dec); each coord takes the single best match within this radius. Keep in sync with
+// the "Accepted formats" help text under the upload box.
+const UPLOAD_MATCH_RADIUS = 0.5;
 // Value-extractor for a sortable column, keyed by the header label / dynamic queryCol name.
 // Fixed columns read the fixed fields; dynamic queryCols use colGetter on the index row.
 function sortValueGetter(col: string): (m: MatchEntry) => number | string | null {
@@ -1548,25 +1552,19 @@ export default function SearchPage() {
           l.name.toLowerCase().includes(q) || (l.aka ?? []).some(a => a.toLowerCase().includes(q)));
         const entries: MatchEntry[] = [];
         const speczByField = new Map<string, Awaited<ReturnType<typeof loadSpecz>>>();
+        // Always resolve each named hit against the FULL field index — the enriched label carries
+        // only za/m444/zspec/selected, so a label-only row has no RA/Dec (or other columns), which
+        // left name-search results with blank RA/Dec: broke the CSV download, the "inspect these"
+        // handoff, and the position-based "remove duplicates". Name hits are few → cheap to load.
         for (const l of hits) {
           const fc = avail.find(f => f.field === l.field);
           if (!fc) continue;
-          const enriched = typeof l.za === "number" || typeof l.m444 === "number"
-            || typeof l.zspec === "number" || typeof l.selected === "number";
-          if (enriched) {
-            const r: IdxRow = {
-              za: l.za ?? null, m444: l.m444 ?? null, zspec: l.zspec ?? null,
-              selected: typeof l.selected === "number" ? l.selected : null,
-            };
-            entries.push({ fc, id: l.id, r, cz: null });
-          } else {
-            const { idx } = await loadField(fc);   // fallback: un-enriched (just-added) name
-            const i = idx.id.indexOf(l.id);
-            if (i < 0) continue;
-            if (!speczByField.has(fc.field)) speczByField.set(fc.field, await loadSpecz(fc));
-            const cz = speczByField.get(fc.field)?.[String(l.id)] ?? null;
-            entries.push({ fc, id: l.id, r: indexRowAt(idx, i, cz), cz });
-          }
+          const { idx } = await loadField(fc);
+          const i = idx.id.indexOf(l.id);
+          if (i < 0) continue;   // id not in the current index (stale label) → skip
+          if (!speczByField.has(fc.field)) speczByField.set(fc.field, await loadSpecz(fc));
+          const cz = speczByField.get(fc.field)?.[String(l.id)] ?? null;
+          entries.push({ fc, id: l.id, r: indexRowAt(idx, i, cz), cz });
         }
         if (entries.length === 0) { setStatus("notfound"); setMatchSummary(`No named object matches "${nameInput.trim()}".`); return; }
         commitMatches(entries, [], [], t => `${t.toLocaleString()} named match${t === 1 ? "" : "es"} for "${nameInput.trim()}"`);
@@ -1709,13 +1707,21 @@ export default function SearchPage() {
           if (!Number.isFinite(id)) return;
           for (const L of loaded) { const i = L.idx.id.indexOf(id); if (i >= 0) { pushMatch(L, i); return; } }
         };
+        // One match per uploaded coordinate, within UPLOAD_MATCH_RADIUS. In the overlap regions
+        // (PRIMER-COSMOS↔COSMOS, CEERS↔EGS) a coord matches BOTH catalogs; rather than "whichever
+        // source is marginally closer" (which looked random to users), give deterministic precedence
+        // to the preferred field (FIELD_PRIORITY: PRIMER-COSMOS>COSMOS, CEERS>EGS), nearest breaking
+        // ties within the same rank. Non-overlapping fields have equal rank → still nearest-wins.
         const matchByRaDec = (ra: number, dec: number) => {
           if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
           let best: { L: typeof loaded[0]; i: number; sep: number } | null = null;
           for (const L of loaded) {
             for (let i = 0; i < L.idx.n; i++) {
               const sep = angSep(ra, dec, L.idx.ra[i], L.idx.dec[i]);
-              if (sep <= 0.5 && (!best || sep < best.sep)) best = { L, i, sep };
+              if (sep > UPLOAD_MATCH_RADIUS) continue;
+              if (!best) { best = { L, i, sep }; continue; }
+              const dRank = fieldRank(L.fc.field) - fieldRank(best.L.fc.field);
+              if (dRank > 0 || (dRank === 0 && sep < best.sep)) best = { L, i, sep };
             }
           }
           if (best) pushMatch(best.L, best.i);
@@ -1905,13 +1911,20 @@ export default function SearchPage() {
         {/* Upload list */}
         {mode === "upload" && (
           <div>
-            <p style={{ fontSize: "0.83rem", color: "var(--text-muted)", marginBottom: "1rem" }}>
-              Upload a text file with one entry per line. Accepted formats:
+            <p style={{ fontSize: "0.83rem", color: "var(--text-muted)", marginBottom: "0.6rem" }}>
+              Upload (or paste) a text/CSV file, one entry per line. A header row naming the columns
+              (ra, dec, id) is auto-detected; otherwise 2 numbers = RA/Dec, 1 number = ID. Accepted formats:
             </p>
-            <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem", fontSize: "0.8rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace" }}>
-              <span>• ID list: <span style={{ color: "var(--text-muted)" }}>6613</span></span>
+            <div style={{ display: "flex", gap: "1rem", marginBottom: "0.6rem", fontSize: "0.8rem", color: "var(--text-dim)", fontFamily: "'Space Mono', monospace" }}>
               <span>• RA/Dec: <span style={{ color: "var(--text-muted)" }}>214.943 52.942</span></span>
+              <span>• ID list: <span style={{ color: "var(--text-muted)" }}>6613</span></span>
             </div>
+            <p style={{ fontSize: "0.74rem", color: "var(--text-dim)", marginBottom: "1rem", lineHeight: 1.6 }}>
+              RA/Dec entries match the nearest UNICORN v0.99 source within <b>{UPLOAD_MATCH_RADIUS}&Prime;</b> (one match per
+              coordinate; in the overlap regions <b>PRIMER-COSMOS</b> and <b>CEERS</b> take precedence over COSMOS / EGS).
+              ID entries match across all fields — note IDs are <b>not unique between fields</b>, so a bare ID resolves to the
+              first field that contains it (use RA/Dec, or <span className="mono">By ID</span> with a field, to disambiguate).
+            </p>
 
             {/* Cross-match (default) vs. plot-as-is. As-is skips the UNICORN cross-match and drops
                 the raw RA/Dec straight on a chosen field's map — for planning against footprints. */}
