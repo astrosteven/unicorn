@@ -1923,8 +1923,21 @@ export default function SearchPage() {
               RA/Dec entries match the nearest UNICORN v0.99 source within <b>{UPLOAD_MATCH_RADIUS}&Prime;</b> (one match per
               coordinate; in the overlap regions <b>PRIMER-COSMOS</b> and <b>CEERS</b> take precedence over COSMOS / EGS).
               ID entries match across all fields — note IDs are <b>not unique between fields</b>, so a bare ID resolves to the
-              first field that contains it (use RA/Dec, or <span className="mono">By ID</span> with a field, to disambiguate).
+              first field that contains it — set the <b>Field</b> menu below (or use RA/Dec) to disambiguate.
             </p>
+
+            {/* Optional field restriction: limits the cross-match to one catalog (default: all fields,
+                with overlap precedence). The matcher already honors searchFieldByMode["upload"] via
+                `fields`, so this just drives that. Hidden in plot-as-is mode (that uses its own field). */}
+            {!uploadRaw && (
+              <div style={{ marginBottom: "1rem" }}>
+                <FieldSelect value={searchField} onChange={setSearchField} includeAll={true} />
+                <p style={{ fontSize: "0.72rem", color: "var(--text-dim)", marginTop: "5px" }}>
+                  Optional — restrict matching to a single catalog (default <b>All fields</b>). Pin to one field
+                  to resolve overlap ambiguity or to make an ID list unambiguous.
+                </p>
+              </div>
+            )}
 
             {/* Cross-match (default) vs. plot-as-is. As-is skips the UNICORN cross-match and drops
                 the raw RA/Dec straight on a chosen field's map — for planning against footprints. */}
