@@ -111,13 +111,15 @@ type QueueRow = {
   za: number | null;
   mabs: number | null;
   mstar: number | null;        // Dense-Basis log10 stellar mass (from the db sidecar)
+  m277: number | null;         // F277W AB mag (from the index)
+  m444: number | null;         // F444W AB mag (from the index)
   decision: InspectDecision;   // resumed from Supabase, else "not_inspected"
   notes: string;
 };
 // The composite identity of a row.
 const rowKey = (r: QueueRow) => `${r.field}:${r.id}`;
 
-type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "mstar" | "decision";
+type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "mstar" | "m277" | "m444" | "decision";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 const DECISIONS: { key: InspectDecision; label: string; color: string; hot: string }[] = [
@@ -205,11 +207,17 @@ function Inspector({ email }: { email: string }) {
         const built = external
           ? external.objects.filter(o => o.field === f.field).map(extToRow)
           : buildQueue(idx, f.field, minz, selOnly, remIds, dbmass);
-        // Handoff rows carry no mstar — attach it by mapping id -> index position.
-        if (external && dbmass) {
+        // Handoff rows carry only the basics — attach m277/m444 (and mstar) by id -> index position.
+        if (external) {
           const idPos = new Map<number, number>();
           for (let i = 0; i < idx.n; i++) idPos.set(idx.id[i], i);
-          for (const row of built) { const p = idPos.get(row.id); if (p != null) row.mstar = dbmass[p] ?? null; }
+          for (const row of built) {
+            const p = idPos.get(row.id);
+            if (p == null) continue;
+            row.m277 = idx.m277?.[p] ?? null;
+            row.m444 = idx.m444?.[p] ?? null;
+            if (dbmass) row.mstar = dbmass[p] ?? null;
+          }
         }
         for (const row of built) {
           const rec = byKey.get(rowKey(row));
@@ -496,7 +504,7 @@ function Inspector({ email }: { email: string }) {
             <thead style={{ position: "sticky", top: 0, background: "var(--bg-elev, #16112a)", zIndex: 1 }}>
               <tr>
                 {([
-                  ["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"], ["M*", "mstar"],
+                  ["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"], ["m277", "m277"], ["m444", "m444"], ["M*", "mstar"],
                 ] as [string, SortKey][]).map(([label, key]) => (
                   <th key={key} onClick={() => toggleSort(key)}
                     style={{ padding: "7px 8px", textAlign: key === "decision" ? "center" : key === "field" ? "left" : "right", color: sortKey === key ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap", userSelect: "none" }}>
@@ -506,8 +514,8 @@ function Inspector({ email }: { email: string }) {
               </tr>
             </thead>
             <tbody>
-              {rows == null && <tr><td colSpan={8} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading queue…</td></tr>}
-              {rows != null && view.length === 0 && <tr><td colSpan={8} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>no rows match</td></tr>}
+              {rows == null && <tr><td colSpan={10} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading queue…</td></tr>}
+              {rows != null && view.length === 0 && <tr><td colSpan={10} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>no rows match</td></tr>}
               {view.map(r => {
                 const active = selKey === rowKey(r);
                 return (
@@ -522,6 +530,8 @@ function Inspector({ email }: { email: string }) {
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.dec != null ? r.dec.toFixed(5) : "—"}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text)" }}>{r.za != null ? r.za.toFixed(2) : "—"}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.mabs != null ? r.mabs.toFixed(2) : "—"}</td>
+                    <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.m277 != null ? r.m277.toFixed(2) : "—"}</td>
+                    <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.m444 != null ? r.m444.toFixed(2) : "—"}</td>
                     <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--text-muted)" }}>{r.mstar != null ? r.mstar.toFixed(2) : "—"}</td>
                   </tr>
                 );
@@ -705,7 +715,7 @@ function externalFields(q: ExternalQueue): FieldConfig[] {
   return SEARCH_FIELDS.filter(f => names.has(f.field));
 }
 function extToRow(o: ExtObj): QueueRow {
-  return { field: o.field, id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, mstar: null, decision: "not_inspected", notes: "" };
+  return { field: o.field, id: o.id, ra: o.ra, dec: o.dec, za: o.za, mabs: o.mabs, mstar: null, m277: null, m444: null, decision: "not_inspected", notes: "" };
 }
 
 function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedOnly: boolean, removedIds?: Set<number>, dbmass?: (number | null)[] | null): QueueRow[] {
@@ -724,6 +734,8 @@ function buildQueue(idx: FieldIndex, fieldName: string, minZa: number, selectedO
       za,
       mabs: idx.mabs?.[i] ?? null,
       mstar: dbmass?.[i] ?? null,
+      m277: idx.m277?.[i] ?? null,
+      m444: idx.m444?.[i] ?? null,
       decision: "not_inspected",
       notes: "",
     });

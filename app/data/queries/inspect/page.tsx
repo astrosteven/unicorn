@@ -16,8 +16,9 @@ import { InspectCard } from "@/app/data/inspect/page";
 type Row = {
   field: string; id: number; decision: InspectDecision; notes: string;
   ra: number | null; dec: number | null; za: number | null; mabs: number | null; mstar: number | null;
+  m277: number | null; m444: number | null;
 };
-type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "mstar" | "decision";
+type SortKey = "field" | "id" | "ra" | "dec" | "za" | "mabs" | "mstar" | "m277" | "m444" | "decision";
 const rowKey = (r: { field: string; id: number }) => `${r.field}:${r.id}`;
 const DECS: { key: InspectDecision; label: string; color: string; hot: string }[] = [
   { key: "not_inspected", label: "Not Inspected", color: "var(--text-dim)", hot: "n" },
@@ -135,7 +136,7 @@ function Inner() {
       const oi = (data as SavedQuery).obj_ids || {};
       const base: Row[] = [];
       for (const [f, ids] of Object.entries(oi)) for (const id of ids as number[])
-        base.push({ field: f, id, decision: "not_inspected", notes: "", ra: null, dec: null, za: null, mabs: null, mstar: null });
+        base.push({ field: f, id, decision: "not_inspected", notes: "", ra: null, dec: null, za: null, mabs: null, mstar: null, m277: null, m444: null });
       const { data: dec } = await supabase.from("query_inspections").select("field,obj_id,decision,notes").eq("query_id", qid);
       if (cancel) return;
       const m = new Map<string, { decision: InspectDecision; notes: string }>();
@@ -158,7 +159,7 @@ function Inner() {
         for (let i = 0; i < idx.n; i++) pos.set(idx.id[i], i);
         for (const r of base) if (r.field === f) {
           const i = pos.get(r.id);
-          if (i != null) { r.ra = idx.ra[i] ?? null; r.dec = idx.dec[i] ?? null; r.za = idx.za?.[i] ?? null; r.mabs = idx.mabs?.[i] ?? null; r.mstar = dbmass?.[i] ?? null; }
+          if (i != null) { r.ra = idx.ra[i] ?? null; r.dec = idx.dec[i] ?? null; r.za = idx.za?.[i] ?? null; r.mabs = idx.mabs?.[i] ?? null; r.mstar = dbmass?.[i] ?? null; r.m277 = idx.m277?.[i] ?? null; r.m444 = idx.m444?.[i] ?? null; }
         }
       }
       if (!cancel) setRows([...base]);           // re-set with enriched values
@@ -261,10 +262,10 @@ function Inner() {
   function exportCsv() {
     if (!rows || !query || query === "notfound") return;
     const hasXm = !!xm;
-    const lines = ["field,obj_id,ra,dec,decision,notes" + (hasXm ? ",in_upload" : "")];
+    const lines = ["field,obj_id,ra,dec,za,m277,m444,decision,notes" + (hasXm ? ",in_upload" : "")];
     for (const r of rows) {
       const inUp = hasXm ? (xm!.matched.has(rowKey(r)) ? ",1" : ",0") : "";
-      lines.push(`${r.field},${r.id},${r.ra ?? ""},${r.dec ?? ""},${r.decision},"${(r.notes || "").replace(/"/g, '""')}"${inUp}`);
+      lines.push(`${r.field},${r.id},${r.ra ?? ""},${r.dec ?? ""},${r.za ?? ""},${r.m277 ?? ""},${r.m444 ?? ""},${r.decision},"${(r.notes || "").replace(/"/g, '""')}"${inUp}`);
     }
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const a = document.createElement("a");
@@ -359,7 +360,7 @@ function Inner() {
             <thead style={{ position: "sticky", top: 0, background: "var(--bg)", zIndex: 1 }}>
               <tr>
                 {xm && <th title="in upload list" style={{ padding: "7px 5px", textAlign: "center", color: "var(--text-muted)", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>⊕</th>}
-                {([["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"], ["M*", "mstar"]] as [string, SortKey][]).map(([label, key]) => (
+                {([["", "decision"], ["field", "field"], ["ID", "id"], ["RA", "ra"], ["Dec", "dec"], ["z_a", "za"], ["M_UV", "mabs"], ["m277", "m277"], ["m444", "m444"], ["M*", "mstar"]] as [string, SortKey][]).map(([label, key]) => (
                   <th key={key} onClick={() => toggleSort(key)}
                     style={{ padding: "7px 7px", textAlign: key === "decision" ? "center" : key === "field" ? "left" : "right", color: sortKey === key ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap", userSelect: "none" }}>
                     {label}{sortKey === key ? (sortDir === 1 ? " ▲" : " ▼") : ""}
@@ -368,9 +369,9 @@ function Inner() {
               </tr>
             </thead>
             <tbody>
-              {rows == null && <tr><td colSpan={8 + (xm ? 1 : 0)} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading…</td></tr>}
-              {rows && view.length === 0 && <tr><td colSpan={8 + (xm ? 1 : 0)} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>No sources in this saved query.</td></tr>}
-              {rows && view.length > 0 && shown.length === 0 && <tr><td colSpan={8 + (xm ? 1 : 0)} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>No sources {xmFilter === "in" ? "matched in the upload list" : "outside the upload list"}.</td></tr>}
+              {rows == null && <tr><td colSpan={10 + (xm ? 1 : 0)} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-dim)" }}>loading…</td></tr>}
+              {rows && view.length === 0 && <tr><td colSpan={10 + (xm ? 1 : 0)} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>No sources in this saved query.</td></tr>}
+              {rows && view.length > 0 && shown.length === 0 && <tr><td colSpan={10 + (xm ? 1 : 0)} style={{ padding: "1.5rem", textAlign: "center", color: "var(--text-muted)" }}>No sources {xmFilter === "in" ? "matched in the upload list" : "outside the upload list"}.</td></tr>}
               {shown.map(r => {
                 const active = rowKey(r) === selKey;
                 return (
@@ -386,6 +387,8 @@ function Inner() {
                     <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.dec, 5)}</td>
                     <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text)" }}>{fmt(r.za)}</td>
                     <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.mabs)}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.m277)}</td>
+                    <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.m444)}</td>
                     <td style={{ padding: "5px 7px", textAlign: "right", color: "var(--text-muted)" }}>{fmt(r.mstar)}</td>
                   </tr>
                 );
