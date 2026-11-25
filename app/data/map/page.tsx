@@ -9,6 +9,7 @@
 // { ssr: false }, as required by this Next 16 static export (output: "export").
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { FITSGL_CORRAL_ROOT } from "@/lib/fitsglSource";
 import {
   SEARCH_FIELDS,
   loadField,
@@ -34,7 +35,8 @@ const MapViewer = dynamic(() => import("./MapViewer"), {
   ),
 });
 
-const FITSGL_ROOT = "https://web.corral.tacc.utexas.edu/unicorn/fitsgl";
+// Corral bases; MapViewer reads R2-first via lib/fitsglSource (Corral fallback).
+const FITSGL_ROOT = FITSGL_CORRAL_ROOT;
 // Fields whose fitsgl tile pyramids are live on Corral. Add a prefix once its tiles
 // are uploaded — the switcher + per-field overlay then work automatically.
 const FITSGL_PREFIXES = ["ceers", "goodss", "goodsn", "a2744", "ngdeep", "primercosmos", "primeruds", "egs", "cosmos"];

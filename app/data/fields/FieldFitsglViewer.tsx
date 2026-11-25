@@ -20,7 +20,6 @@ import {
   defaultExplorerState,
 } from "@fitsgl/core/react";
 import {
-  loadFitsglConfig,
   DEFAULT_TRILOGY_PARAMS,
   type FitsglConfig,
   type ViewerConfig,
@@ -29,6 +28,7 @@ import {
   type StretchMode,
   type ColormapName,
 } from "@fitsgl/core";
+import { FITSGL_CORRAL_ROOT, loadFitsglWithFallback } from "@/lib/fitsglSource";
 import { CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";
 import FitsglControls, {
   RGB_WEIGHTED,
@@ -51,7 +51,7 @@ import FitsglControls, {
   type Weights,
 } from "@/app/data/_card/FitsglControls";
 
-const FITSGL_ROOT = "https://web.corral.tacc.utexas.edu/unicorn/fitsgl";
+const FITSGL_ROOT = FITSGL_CORRAL_ROOT;   // read R2-first via lib/fitsglSource
 
 // The campfire trilogy params as a full TrilogyParams (CAMPFIRE_TRILOGY is a partial override).
 const CAMPFIRE_PARAMS: TrilogyParams = { ...DEFAULT_TRILOGY_PARAMS, ...CAMPFIRE_TRILOGY };
@@ -77,8 +77,8 @@ export default function FieldFitsglViewer({
   useEffect(() => {
     let cancelled = false;
     setConfig(null); setFailed(false); setReady(false);
-    loadFitsglConfig(`${FITSGL_ROOT}/${prefix}/fitsgl.json`)
-      .then(cfg => { if (!cancelled) setConfig(cfg); })
+    loadFitsglWithFallback(`${FITSGL_ROOT}/${prefix}`)   // R2 first, Corral fallback
+      .then(({ config: cfg }) => { if (!cancelled) setConfig(cfg); })
       .catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
   }, [prefix]);

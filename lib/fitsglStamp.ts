@@ -12,6 +12,7 @@
 // field/band, decode error, empty) throws/returns partial so the caller can fall back to the Worker.
 import { fetchStamp, type StampResult, type StampBand } from "./photometry";
 import { FITSGL_BASE } from "@/app/data/_card/FitsglCutout";
+import { resolveFitsglBase } from "./fitsglSource";
 
 // Empirical cutout MAD ≈ 0.42× the formal per-pixel ERR (drizzle-correlated noise), so ×2.38 makes
 // the fitsgl noise scale match the Worker's ERR-based one — same default stretch, same look.
@@ -67,8 +68,9 @@ export async function fetchFitsglStamp(
   half = 25,
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<StampResult> {
-  const base = FITSGL_BASE[field];
-  if (!base) throw new Error(`no fitsgl tiles for ${field}`);
+  const corralBase = FITSGL_BASE[field];
+  if (!corralBase) throw new Error(`no fitsgl tiles for ${field}`);
+  const base = await resolveFitsglBase(corralBase);   // R2 first, Corral fallback
   // Dynamic import: the decode path is pure JS (no WebGL/window) but keep it out of SSR + the
   // initial bundle — only load @fitsgl/core when a stamp is actually requested.
   const core = await import("@fitsgl/core");

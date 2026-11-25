@@ -4,7 +4,8 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { useRouter } from "next/navigation";
 import JSZip from "jszip";
-import { FITSGL_BASE, CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";  // fields with a fitsgl map + campfire stretch
+import { FITSGL_BASE, CAMPFIRE_TRILOGY } from "@/app/data/_card/FitsglCutout";
+import { loadFitsglWithFallback } from "@/lib/fitsglSource";  // fields with a fitsgl map + campfire stretch
 import ScatterPlot from "./ScatterPlot";  // interactive SVG scatter of the matched set (Plot view)
 import { fetchStamp, type StampResult } from "@/lib/photometry";  // live FITS cutouts (Worker /stamp) for the card download
 import { precacheStamp, fetchFitsglStamp, fitsglStampAvailable } from "@/lib/fitsglStamp";  // fitsgl-tile stamps + prefetch
@@ -625,7 +626,7 @@ async function loadFitsgl(): Promise<FitsglMod> {
 // the run (mirrors FitsglCutout.prepare, so one field is set up at most once per zip).
 type ColorPrep = { viewer: any; params: any; single: boolean; stats: any[] | null; pixelScale: number };
 async function prepareColor(mod: FitsglMod, base: string): Promise<ColorPrep> {
-  const fitsgl = await mod.loadFitsglConfig(`${base}/fitsgl.json`);
+  const { config: fitsgl } = await loadFitsglWithFallback(base);   // R2 first, Corral fallback
   const eb = mod.explorerBandsFromConfig(fitsgl);
   const state = mod.defaultExplorerState(eb, mod.defaultViewFromConfig(fitsgl));
   const viewer = mod.deriveViewerConfig(eb, state);

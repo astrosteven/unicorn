@@ -20,8 +20,8 @@
 // MUST be client-only (WebGL2 + window): consumers dynamic-import it with { ssr:false }.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FitsViewer, type FitsViewerHandle } from "@fitsgl/core/react";
+import { FITSGL_CORRAL_ROOT, loadFitsglWithFallback } from "@/lib/fitsglSource";
 import {
-  loadFitsglConfig,
   type FitsglConfig,
   type ViewerConfig,
   skyToPix,
@@ -55,7 +55,8 @@ function loadColorNlum(): number {
 // Per-field fitsgl base URL. Only fields present here render an on-the-fly cutout;
 // others render nothing (the card simply omits the color panel). Extend as each
 // field's tiles come online on Corral. Keys match SEARCH_FIELDS[].field.
-const FITSGL_ROOT = "https://web.corral.tacc.utexas.edu/unicorn/fitsgl";
+// Corral bases; the actual read goes R2-first via lib/fitsglSource (Corral fallback).
+const FITSGL_ROOT = FITSGL_CORRAL_ROOT;
 export const FITSGL_BASE: Record<string, string> = {
   "CEERS":         `${FITSGL_ROOT}/ceers`,
   "GOODS-S":       `${FITSGL_ROOT}/goodss`,
@@ -109,7 +110,7 @@ async function prepare(base: string): Promise<Prepared> {
   if (base in _prepCache) return _prepCache[base];
   if (base in _prepPromise) return _prepPromise[base];
   _prepPromise[base] = (async () => {
-    const fitsgl = await loadFitsglConfig(`${base}/fitsgl.json`);
+    const { config: fitsgl } = await loadFitsglWithFallback(base);   // R2 first, Corral fallback
     const eb = explorerBandsFromConfig(fitsgl);
     const state = defaultExplorerState(eb, defaultViewFromConfig(fitsgl));
     const viewer = deriveViewerConfig(eb, state);

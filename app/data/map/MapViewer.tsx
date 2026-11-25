@@ -25,7 +25,6 @@ import {
   defaultExplorerState,
 } from "@fitsgl/core/react";
 import {
-  loadFitsglConfig,
   skyToPix,
   pixToSky,
   angularSeparationDeg,
@@ -37,6 +36,7 @@ import {
   type StretchMode,
   type ColormapName,
 } from "@fitsgl/core";
+import { loadFitsglWithFallback } from "@/lib/fitsglSource";
 import FitsglControls, {
   RGB_WEIGHTED,
   RGB_SIMPLE,
@@ -822,8 +822,8 @@ export default function MapViewer({
   useEffect(() => {
     let cancelled = false;
     void Promise.resolve().then(() => { if (!cancelled) { setState("loading"); setConfig(null); } });
-    loadFitsglConfig(configUrl)
-      .then(cfg => { if (!cancelled) { setConfig(cfg); setState("ready"); } })
+    loadFitsglWithFallback(configUrl.replace(/\/fitsgl\.json$/, ""))   // R2 first, Corral fallback
+      .then(({ config: cfg }) => { if (!cancelled) { setConfig(cfg); setState("ready"); } })
       .catch(err => {
         if (cancelled) return;
         console.error("[map] failed to load fitsgl config:", err);
