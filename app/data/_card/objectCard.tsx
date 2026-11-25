@@ -197,9 +197,10 @@ export const CORRAL_DEFAULT = "https://web.corral.tacc.utexas.edu/unicorn/Catalo
 // holding Legacy/<FIELD>/web/cards/... — cards read from R2 first and FALL BACK to Corral on any
 // failure (so a partial or hiccuping R2 never breaks a card). Stamps/RGB/index stay on Corral.
 // Flip the whole migration on/off by setting/blanking this one string. See scripts/publish_to_r2.sh.
-// LIVE 2026-11-22: all 9 fields' web/cards mirrored to R2 bucket unicorn-web, served via its r2.dev
-// public URL. Cards read from R2 (CDN, no TACC latency) with automatic Corral fallback.
-export const R2_BASE = "https://pub-c44aac345c474043b8fffd04b26fc8e0.r2.dev/Catalogs";
+// LIVE 2026-11-22: all 9 fields' web/cards mirrored to R2 bucket unicorn-web (automatic Corral fallback).
+// 2026-11-25: served through the `unicorn-r2` Worker (Website/r2-worker/, R2 binding — no r2.dev rate
+// limit). To revert, swap back to the r2.dev base (still enabled): https://pub-c44aac345c474043b8fffd04b26fc8e0.r2.dev
+export const R2_BASE = "https://unicorn-r2.unicorn-astro.workers.dev/Catalogs";
 // 2026-09: the pre-AS1063 fields were moved under Catalogs/Legacy/ on Corral; AS1063 (and any
 // future new field) lives at the Catalogs/ top level. fieldCatDir() returns the catalog path
 // segment for a field's per-object files (cards/stamps/rgb + Corral index fallback). To REVERT the
