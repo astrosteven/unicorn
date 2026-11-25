@@ -21,10 +21,15 @@
 #   ./publish_to_r2.sh fitsgl                 # Scope B add-on: fitsgl tiles      (~133 GB)
 #   ./publish_to_r2.sh all                    # cards + fitsgl, all fields
 #   DRYRUN=1 ./publish_to_r2.sh cards         # show what WOULD transfer; upload nothing
+#   SOURCE=corral ./publish_to_r2.sh cards    # copy from Corral's public HTTPS tree instead of
+#                                             # local disk (= exactly what the site serves now;
+#                                             # works for every field, slower: pulls from TACC)
 #
 # ── Per-machine config (override via env) ──────────────────────────────────
 #   R2_REMOTE   rclone remote name                (default: r2)
 #   R2_BUCKET   R2 bucket name                    (default: unicorn-web)
+#   SOURCE      local | corral                    (default: local)
+#   CORRAL_HOST Corral web host for SOURCE=corral (default: https://web.corral.tacc.utexas.edu)
 #   SRC_ROOTS   space-sep roots holding each field's <…>/Results/web/cards
 #               (default: Adonalsium's catalog roots — EDIT to match this machine)
 #   FITSGL_ROOT fitsgl tile tree: <FITSGL_ROOT>/<prefix>/…
@@ -34,6 +39,9 @@ R2_REMOTE="${R2_REMOTE:-r2}"
 R2_BUCKET="${R2_BUCKET:-unicorn-web}"
 SRC_ROOTS="${SRC_ROOTS:-$HOME/Research/UNICORN /Volumes/Braize/UNICORN /Volumes/Nalthis/UNICORN /Volumes/Threnody/UNICORN}"
 FITSGL_ROOT="${FITSGL_ROOT:-$HOME/Research/UNICORN/WebFiles/fitsgl_rebuild}"
+SOURCE="${SOURCE:-local}"
+CORRAL_HOST="${CORRAL_HOST:-https://web.corral.tacc.utexas.edu}"
+case "$SOURCE" in local|corral) ;; *) echo "SOURCE must be 'local' or 'corral' (got '$SOURCE')"; exit 2;; esac
 
 # prefix → Corral catalog dir (fieldCatDir) and canonical field name (from SEARCH_FIELDS).
 # (case lookups, not associative arrays, so this also runs on macOS's stock bash 3.2.)
@@ -50,6 +58,9 @@ pfx_to_field() { case "$1" in
 RCLONE=(rclone --transfers 16 --checkers 32 --fast-list --s3-chunk-size 64M
         --s3-upload-concurrency 8 --stats 10s --stats-one-line --progress)
 [ "${DRYRUN:-0}" = "1" ] && RCLONE+=(--dry-run)
+# SOURCE=corral reads Corral's Apache autoindex via rclone's on-the-fly http backend
+# (":http:/<path>" with --http-url); Corral paths mirror the R2 keys under /unicorn/.
+[ "$SOURCE" = "corral" ] && RCLONE+=(--http-url "$CORRAL_HOST")
 
 want_field() {   # $1=field ; no filter args ⇒ all
   [ ${#WANT[@]} -eq 0 ] && return 0
@@ -57,33 +68,74 @@ want_field() {   # $1=field ; no filter args ⇒ all
   return 1
 }
 
-sync_cards() {
-  echo "── Scope A: web/cards → r2://${R2_BUCKET}/Catalogs/Legacy/<FIELD>/web/cards ──"
-  local found=0
+sync_cards_corral() {
+  echo "── Scope A (from Corral): $CORRAL_HOST/unicorn/Catalogs/Legacy/<FIELD>/web/cards → r2://${R2_BUCKET}/… ──"
+  local pfx d fld
+  for pfx in $ALL_PREFIXES; do
+    d=$(pfx_to_dir "$pfx"); fld=$(pfx_to_field "$pfx")
+    want_field "$fld" || continue
+    echo "  [$fld]  corral:Legacy/$d/web/cards"
+    "${RCLONE[@]}" sync ":http:/unicorn/Catalogs/Legacy/${d}/web/cards" \
+      "${R2_REMOTE}:${R2_BUCKET}/Catalogs/Legacy/${d}/web/cards"
+  done
+}
+
+# Pass 1: discover local web/cards dirs → lines "DIR<TAB>FIELD<TAB>path" (nothing uploaded yet).
+discover_local_cards() {
+  local root cdir bin cand pfx d fld
   for root in $SRC_ROOTS; do
     [ -d "$root" ] || continue
+    # prune backup / comparison trees (e.g. v0991_prenoise_backup/, code_backups/, v099_compare/)
+    # so a stale copy is never synced onto the live field's R2 keys
     while IFS= read -r cdir; do
       # derive the field prefix from a packed-card filename in this dir (glob, not find|head —
       # a pipe here races SIGPIPE against `pipefail` and silently kills the loop)
-      local bin="" cand
+      bin=""
       for cand in "$cdir"/*_cards.manifest.json "$cdir"/*_cards_*.bin; do
         [ -e "$cand" ] && { bin="$cand"; break; }
       done
       [ -n "$bin" ] || continue
-      local pfx; pfx=$(basename "$bin"); pfx=${pfx%%_cards*}
-      local d fld; d=$(pfx_to_dir "$pfx"); fld=$(pfx_to_field "$pfx"); [ -n "$fld" ] || fld="$pfx"
-      [ -n "$d" ] || { echo "  ?? unknown prefix '$pfx' in $cdir — skipping"; continue; }
+      pfx=$(basename "$bin"); pfx=${pfx%%_cards*}
+      d=$(pfx_to_dir "$pfx"); fld=$(pfx_to_field "$pfx")
+      [ -n "$d" ] || { echo "  ?? unknown prefix '$pfx' in $cdir — skipping" >&2; continue; }
       want_field "$fld" || continue
-      found=1
-      echo "  [$fld]  $cdir"
-      "${RCLONE[@]}" sync "$cdir" "${R2_REMOTE}:${R2_BUCKET}/Catalogs/Legacy/${d}/web/cards"
-    done < <(find "$root" -type d -path "*/Results/web/cards" 2>/dev/null)
+      printf '%s\t%s\t%s\n' "$d" "$fld" "$cdir"
+    done < <(find "$root" -type d \( -iname '*backup*' -o -iname '*_compare' \) -prune \
+               -o -type d -path "*/Results/web/cards" -print 2>/dev/null)
   done
-  [ "$found" = 1 ] || { echo "  !! no web/cards dirs found under: $SRC_ROOTS"; echo "     set SRC_ROOTS for this machine."; exit 1; }
+}
+
+sync_cards() {
+  [ "$SOURCE" = "corral" ] && { sync_cards_corral; return; }
+  echo "── Scope A: web/cards → r2://${R2_BUCKET}/Catalogs/Legacy/<FIELD>/web/cards ──"
+  local plan dups d fld cdir
+  plan=$(discover_local_cards)
+  [ -n "$plan" ] || { echo "  !! no web/cards dirs found under: $SRC_ROOTS"; echo "     set SRC_ROOTS for this machine (or SOURCE=corral)."; exit 1; }
+  # two local dirs → same R2 key would overwrite each other (last one wins): refuse BEFORE uploading
+  dups=$(printf '%s\n' "$plan" | cut -f1 | sort | uniq -d)
+  if [ -n "$dups" ]; then
+    echo "  !! more than one local web/cards dir maps to the same R2 key — nothing uploaded:"
+    for d in $dups; do printf '%s\n' "$plan" | awk -F'\t' -v d="$d" '$1==d {print "       " $2 ": " $3}'; done
+    echo "     narrow SRC_ROOTS (or move/rename the stale copy)."
+    exit 1
+  fi
+  while IFS=$'\t' read -r d fld cdir; do
+    echo "  [$fld]  $cdir"
+    "${RCLONE[@]}" sync "$cdir" "${R2_REMOTE}:${R2_BUCKET}/Catalogs/Legacy/${d}/web/cards"
+  done <<< "$plan"
 }
 
 sync_fitsgl() {
-  echo "── Scope B: fitsgl tiles → r2://${R2_BUCKET}/fitsgl/<prefix> ──"
+  echo "── Scope B: fitsgl tiles → r2://${R2_BUCKET}/fitsgl/<prefix>  (source: $SOURCE) ──"
+  if [ "$SOURCE" = "corral" ]; then
+    local pfx fld
+    for pfx in $ALL_PREFIXES; do
+      fld=$(pfx_to_field "$pfx"); want_field "$fld" || continue
+      echo "  [$fld]  corral:fitsgl/$pfx"
+      "${RCLONE[@]}" sync ":http:/unicorn/fitsgl/${pfx}" "${R2_REMOTE}:${R2_BUCKET}/fitsgl/${pfx}"
+    done
+    return
+  fi
   [ -d "$FITSGL_ROOT" ] || { echo "  !! FITSGL_ROOT not found: $FITSGL_ROOT"; exit 1; }
   for pfx in $ALL_PREFIXES; do
     local src="$FITSGL_ROOT/$pfx"
