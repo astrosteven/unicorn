@@ -30,6 +30,8 @@
 #   R2_BUCKET   R2 bucket name                    (default: unicorn-web)
 #   SOURCE      local | corral                    (default: local)
 #   CORRAL_HOST Corral web host for SOURCE=corral (default: https://web.corral.tacc.utexas.edu)
+#   MAX_DELETE  refuse to delete more than this many R2 files per rclone call (default: unlimited;
+#               the scheduled GitHub Action sets it, so a bad Corral listing can't wipe the mirror)
 #   SRC_ROOTS   space-sep roots holding each field's <…>/Results/web/cards
 #               (default: Adonalsium's catalog roots — EDIT to match this machine)
 #   FITSGL_ROOT fitsgl tile tree: <FITSGL_ROOT>/<prefix>/…
@@ -56,11 +58,21 @@ pfx_to_field() { case "$1" in
   primeruds) echo PRIMER-UDS;; cosmos) echo COSMOS;; *) echo "";; esac; }
 
 RCLONE=(rclone --transfers 16 --checkers 32 --fast-list --s3-chunk-size 64M
-        --s3-upload-concurrency 8 --stats 10s --stats-one-line --progress)
+        --s3-upload-concurrency 8 --stats 10s --stats-one-line)
 [ "${DRYRUN:-0}" = "1" ] && RCLONE+=(--dry-run)
+[ -t 1 ] && RCLONE+=(--progress)                  # live bar in a terminal only (not CI logs)
+[ -n "${MAX_DELETE:-}" ] && RCLONE+=(--max-delete "$MAX_DELETE")
 # SOURCE=corral reads Corral's Apache autoindex via rclone's on-the-fly http backend
 # (":http:/<path>" with --http-url); Corral paths mirror the R2 keys under /unicorn/.
 [ "$SOURCE" = "corral" ] && RCLONE+=(--http-url "$CORRAL_HOST")
+
+# r2sync SRC DST — data files first (copy, no deletes), then a full sync that uploads the JSON
+# indexes (cards manifest/idx, fitsgl.json, per-band manifest.json) and prunes stale keys. A
+# reader therefore never sees a NEW index that points into OLD .bin/.fits.fz bytes mid-upload.
+r2sync() {
+  "${RCLONE[@]}" copy "$1" "$2" --exclude '*.json' --exclude '*.json.gz'
+  "${RCLONE[@]}" sync "$1" "$2"
+}
 
 want_field() {   # $1=field ; no filter args ⇒ all
   [ ${#WANT[@]} -eq 0 ] && return 0
@@ -75,7 +87,7 @@ sync_cards_corral() {
     d=$(pfx_to_dir "$pfx"); fld=$(pfx_to_field "$pfx")
     want_field "$fld" || continue
     echo "  [$fld]  corral:Legacy/$d/web/cards"
-    "${RCLONE[@]}" sync ":http:/unicorn/Catalogs/Legacy/${d}/web/cards" \
+    r2sync ":http:/unicorn/Catalogs/Legacy/${d}/web/cards" \
       "${R2_REMOTE}:${R2_BUCKET}/Catalogs/Legacy/${d}/web/cards"
   done
 }
@@ -121,19 +133,34 @@ sync_cards() {
   fi
   while IFS=$'\t' read -r d fld cdir; do
     echo "  [$fld]  $cdir"
-    "${RCLONE[@]}" sync "$cdir" "${R2_REMOTE}:${R2_BUCKET}/Catalogs/Legacy/${d}/web/cards"
+    r2sync "$cdir" "${R2_REMOTE}:${R2_BUCKET}/Catalogs/Legacy/${d}/web/cards"
   done <<< "$plan"
 }
 
 sync_fitsgl() {
   echo "── Scope B: fitsgl tiles → r2://${R2_BUCKET}/fitsgl/<prefix>  (source: $SOURCE) ──"
   if [ "$SOURCE" = "corral" ]; then
-    local pfx fld
+    # Each Corral fitsgl/<prefix>/ dir holds an index.html (standalone viewer), so Apache serves
+    # that instead of an autoindex and rclone would see an EMPTY dir. So: read the band dirs
+    # from fitsgl.json, sync each <band>/ (those DO autoindex), then upload fitsgl.json last.
+    local pfx fld cfg dirs b fail=0
     for pfx in $ALL_PREFIXES; do
       fld=$(pfx_to_field "$pfx"); want_field "$fld" || continue
       echo "  [$fld]  corral:fitsgl/$pfx"
-      "${RCLONE[@]}" sync ":http:/unicorn/fitsgl/${pfx}" "${R2_REMOTE}:${R2_BUCKET}/fitsgl/${pfx}"
+      if ! cfg=$(curl -fsS --retry 5 --retry-delay 10 --max-time 300 "$CORRAL_HOST/unicorn/fitsgl/$pfx/fitsgl.json"); then
+        echo "  !! [$fld] could not fetch fitsgl.json — skipping field"; fail=1; continue
+      fi
+      if ! dirs=$(printf '%s' "$cfg" | python3 -c 'import json,sys
+for d in sorted({t.split("/")[0] for b in json.load(sys.stdin)["dataset"]["bands"] for t in b["tiles"] if t.count("/")==1 and "://" not in t}): print(d)') \
+         || [ -z "$dirs" ]; then
+        echo "  !! [$fld] no band dirs parsed from fitsgl.json — skipping field"; fail=1; continue
+      fi
+      for b in $dirs; do
+        r2sync ":http:/unicorn/fitsgl/${pfx}/${b}" "${R2_REMOTE}:${R2_BUCKET}/fitsgl/${pfx}/${b}" || fail=1
+      done
+      "${RCLONE[@]}" copyto ":http:/unicorn/fitsgl/${pfx}/fitsgl.json" "${R2_REMOTE}:${R2_BUCKET}/fitsgl/${pfx}/fitsgl.json" || fail=1
     done
+    [ "$fail" = 0 ] || { echo "  !! some fitsgl fields/bands failed (see above)"; exit 1; }
     return
   fi
   [ -d "$FITSGL_ROOT" ] || { echo "  !! FITSGL_ROOT not found: $FITSGL_ROOT"; exit 1; }
@@ -143,7 +170,7 @@ sync_fitsgl() {
     local fld; fld=$(pfx_to_field "$pfx")
     want_field "$fld" || continue
     echo "  [$fld]  $src"
-    "${RCLONE[@]}" sync "$src" "${R2_REMOTE}:${R2_BUCKET}/fitsgl/${pfx}"
+    r2sync "$src" "${R2_REMOTE}:${R2_BUCKET}/fitsgl/${pfx}"
   done
 }
 

@@ -1,0 +1,68 @@
+# Mirror Corral's public tree → Cloudflare R2 (bucket unicorn-web), so the site's R2 copy of the
+# per-object cards + fitsgl cutout tiles never goes stale after an upload to Corral.
+# Nightly + on demand:  gh workflow run r2-sync.yml -f what=fitsgl -f fields="EGS"
+# Uploads only changed files (size/mtime); data files go up before their JSON indexes.
+# MAX_DELETE caps deletions per rclone call so a bad/partial Corral listing can't wipe the mirror;
+# a legitimately large prune (e.g. re-bucketed cards) → rerun manually with a higher max_delete.
+name: Sync Corral to R2
+
+on:
+  schedule:
+    - cron: "30 9 * * *"   # 03:30 US Central
+  workflow_dispatch:
+    inputs:
+      what:
+        description: "cards | fitsgl | all"
+        default: "all"
+      fields:
+        description: "space-separated fields, e.g. 'EGS COSMOS' (blank = all)"
+        default: ""
+      max_delete:
+        description: "max R2 deletions per field/pass"
+        default: "200"
+      dryrun:
+        description: "1 = show what would change, upload nothing"
+        default: "0"
+
+concurrency:
+  group: r2-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rclone (pinned)
+        run: |
+          curl -fsSLo /tmp/rclone.zip https://downloads.rclone.org/v1.76.0/rclone-v1.76.0-linux-amd64.zip
+          unzip -q /tmp/rclone.zip -d /tmp
+          sudo install -m 755 /tmp/rclone-v1.76.0-linux-amd64/rclone /usr/local/bin/rclone
+          rclone version | head -1
+
+      - name: Sync
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: https://853395fbf86cd4dc3b352db1efdf91ac.r2.cloudflarestorage.com
+          RCLONE_CONFIG_R2_ACL: private
+          RCLONE_RETRIES: "5"
+          RCLONE_LOW_LEVEL_RETRIES: "20"
+          RCLONE_TIMEOUT: "10m"
+          SOURCE: corral
+          WHAT: ${{ inputs.what || 'all' }}
+          FIELDS: ${{ inputs.fields }}
+          MAX_DELETE: ${{ inputs.max_delete || '200' }}
+          DRYRUN: ${{ inputs.dryrun || '0' }}
+        run: |
+          case "$WHAT" in cards|fitsgl|all) ;; *) echo "bad 'what': $WHAT"; exit 2;; esac
+          case "$MAX_DELETE" in ''|*[!0-9]*) echo "bad max_delete"; exit 2;; esac
+          # shellcheck disable=SC2086  # FIELDS is intentionally word-split
+          ./scripts/publish_to_r2.sh "$WHAT" $FIELDS
