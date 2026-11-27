@@ -58,7 +58,8 @@ pfx_to_field() { case "$1" in
   primeruds) echo PRIMER-UDS;; cosmos) echo COSMOS;; *) echo "";; esac; }
 
 RCLONE=(rclone --transfers 16 --checkers 32 --fast-list --s3-chunk-size 64M
-        --s3-upload-concurrency 8 --stats 10s --stats-one-line)
+        --s3-upload-concurrency 8 --stats 10s --stats-one-line
+        --s3-no-check-bucket)   # bucket-scoped token can't CreateBucket → 403 without this
 [ "${DRYRUN:-0}" = "1" ] && RCLONE+=(--dry-run)
 [ -t 1 ] && RCLONE+=(--progress)                  # live bar in a terminal only (not CI logs)
 [ -n "${MAX_DELETE:-}" ] && RCLONE+=(--max-delete "$MAX_DELETE")
